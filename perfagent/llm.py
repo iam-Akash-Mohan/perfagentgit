@@ -48,8 +48,10 @@ class GroqClient:
 
         finish = raw["choices"][0]["finish_reason"]
         stop_reason = STOP_MAP.get(finish, finish)
-
+        self.last_raw_message = raw["choices"][0]["message"]
+        
         return LLMResponse(
             content=content, stop_reason=stop_reason,
-            latency_ms=latency_ms, usage=usage
+            latency_ms=latency_ms, usage=usage,
+            last_raw_message=msg
         )

@@ -391,7 +391,7 @@ class LLMResponse(BaseModel):
     usage: Usage
     latency_ms: float
     from_cassette: bool = False
-
+    
     def tool_uses(self) -> list[dict[str, Any]]:
         return [b for b in self.content if b.get("type") == "tool_use"]
 
