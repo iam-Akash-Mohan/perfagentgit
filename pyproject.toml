@@ -30,5 +30,8 @@ perfagent = "perfagent.cli:app"
 [tool.setuptools.packages.find]
 include = ["perfagent*"]
 
+[tool.setuptools.package-data]
+"perfagent.measure" = ["*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

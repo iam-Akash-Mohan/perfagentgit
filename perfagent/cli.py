@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import typer
 
+from .measure.baseline import baseline_command
+
 app = typer.Typer(
     name="perfagent",
     help="Autonomous performance-bottleneck agent for Spring Boot endpoints.",
@@ -15,10 +17,7 @@ def understand() -> None:
     raise NotImplementedError("phase P04")
 
 
-@app.command()
-def baseline() -> None:
-    """Measure the blue-arm baseline and collect evidence."""
-    raise NotImplementedError("phase P08")
+app.command(name="baseline")(baseline_command)
 
 
 @app.command()

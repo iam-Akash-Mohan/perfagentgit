@@ -1,0 +1,101 @@
+{
+  "benchmark": [
+    {
+      "id": "search-a-p0-s1",
+      "method": "POST",
+      "path": "/api/customers/search",
+      "headers": {"Content-Type": "application/json"},
+      "body": {"name": "a", "page": 0, "size": 1},
+      "note": "Broadest filter, smallest page. Cheapest shape that still walks the enrich() path."
+    },
+    {
+      "id": "search-a-p3-s4",
+      "method": "POST",
+      "path": "/api/customers/search",
+      "headers": {"Content-Type": "application/json"},
+      "body": {"name": "a", "page": 3, "size": 4},
+      "note": "Deep page on the broad filter: same scan, different offset."
+    },
+    {
+      "id": "search-ironclad-p0-s2",
+      "method": "POST",
+      "path": "/api/customers/search",
+      "headers": {"Content-Type": "application/json"},
+      "body": {"name": "Ironclad", "page": 0, "size": 2},
+      "note": "Selective brand-name filter."
+    },
+    {
+      "id": "search-llc-p0-s1",
+      "method": "POST",
+      "path": "/api/customers/search",
+      "headers": {"Content-Type": "application/json"},
+      "body": {"name": "LLC", "page": 0, "size": 1},
+      "note": "Suffix filter, mixed case: the JPQL lowers both sides."
+    },
+    {
+      "id": "search-soylent-p1-s5",
+      "method": "POST",
+      "path": "/api/customers/search",
+      "headers": {"Content-Type": "application/json"},
+      "body": {"name": "Soylent", "page": 1, "size": 5},
+      "note": "Second page of a common brand name."
+    },
+    {
+      "id": "search-manufacturing-p0-s4",
+      "method": "POST",
+      "path": "/api/customers/search",
+      "headers": {"Content-Type": "application/json"},
+      "body": {"name": "Manufacturing", "page": 0, "size": 4},
+      "note": "Largest page in the corpus: per-row cost shows up here first."
+    },
+    {
+      "id": "search-e-p2-s3",
+      "method": "POST",
+      "path": "/api/customers/search",
+      "headers": {"Content-Type": "application/json"},
+      "body": {"name": "e", "page": 2, "size": 3},
+      "note": "Single-character filter, mid-range page."
+    },
+    {
+      "id": "search-harborview-p0-s4",
+      "method": "POST",
+      "path": "/api/customers/search",
+      "headers": {"Content-Type": "application/json"},
+      "body": {"name": "Harborview", "page": 0, "size": 4},
+      "note": "Another selective brand prefix."
+    },
+    {
+      "id": "search-ironclad-manufacturing-p0-s2",
+      "method": "POST",
+      "path": "/api/customers/search",
+      "headers": {"Content-Type": "application/json"},
+      "body": {"name": "Ironclad Manufacturing", "page": 0, "size": 2},
+      "note": "Multi-word filter with a space, to keep the LIKE pattern honest."
+    },
+    {
+      "id": "search-inc-p0-s2",
+      "method": "POST",
+      "path": "/api/customers/search",
+      "headers": {"Content-Type": "application/json"},
+      "body": {"name": "Inc", "page": 0, "size": 2},
+      "note": "Common suffix, first page."
+    },
+    {
+      "id": "search-no-match-p0-s5",
+      "method": "POST",
+      "path": "/api/customers/search",
+      "headers": {"Content-Type": "application/json"},
+      "body": {"name": "zzzz-no-such-customer", "page": 0, "size": 5},
+      "note": "Zero-row result. Exercises the filter query without any per-row enrichment, so it separates scan cost from per-row cost."
+    },
+    {
+      "id": "search-bad-size-type-4xx",
+      "method": "POST",
+      "path": "/api/customers/search",
+      "headers": {"Content-Type": "application/json"},
+      "body": {"name": "a", "page": 0, "size": "twenty"},
+      "note": "Expected 400. `size` is an int on SearchRequest, so Jackson rejects the body before any SQL runs. Keeps the error path in the measured mix."
+    }
+  ],
+  "held_back": []
+}
