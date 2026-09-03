@@ -8,7 +8,7 @@ STOP_MAP = {"tool_calls": "tool_use", "stop": "end_turn", "length": "max_tokens"
 
 class GroqClient:
 
-    def __init__(self, api_key: str, model: str = "openai/gpt-oss-20b") -> None:
+    def __init__(self, api_key: str, model: str = "openai/gpt-oss-120b") -> None:
         self.api_key = api_key
         self.model = model
     
@@ -19,11 +19,15 @@ class GroqClient:
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json={"model": self.model,
-                    "max_tokens": 256,
+                    "max_tokens": max_tokens,
                     "messages": messages,
                     "tools": tools},
                 timeout=60,
-            )        
+            )     
+        # Only surface the body when it is NOT a normal completion, so the
+        # transcript stays readable. (Proper status handling is still TODO.)
+        if r.status_code != 200:
+            print(f"\n!! HTTP {r.status_code} from Groq:\n{r.text}\n")
         latency_ms = (time.perf_counter() - start) * 1000
         return self._to_response(r.json(), latency_ms)
     
@@ -49,7 +53,7 @@ class GroqClient:
         finish = raw["choices"][0]["finish_reason"]
         stop_reason = STOP_MAP.get(finish, finish)
         self.last_raw_message = raw["choices"][0]["message"]
-        
+
         return LLMResponse(
             content=content, stop_reason=stop_reason,
             latency_ms=latency_ms, usage=usage,

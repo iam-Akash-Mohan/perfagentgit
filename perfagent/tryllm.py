@@ -12,10 +12,47 @@ TOOL = {"type": "function", "function": {
                    "properties": {"city": {"type": "string"}},
                    "required": ["city"]}}}
 
-r = c.complete(messages=[{"role": "user", "content": "Weather in Chennai?"}],
-               tools=[TOOL])
+# r = c.complete(messages=[{"role": "user", "content": "Weather in Chennai?"}],
+#                tools=[TOOL])
 
-print("stop_reason:", r.stop_reason)
-print("tool_uses:", r.tool_uses())
-print("text:", r.text())
-print("tokens:", r.usage.input_tokens, r.usage.output_tokens)
+# print("stop_reason:", r.stop_reason)
+# print("tool_uses:", r.tool_uses())
+# print("text:", r.text())
+# print("tokens:", r.usage.input_tokens, r.usage.output_tokens)
+
+
+from perfagent.llm import GroqClient
+from perfagent.agent import run_agent
+from perfagent.tools import (read_file, search_code,
+                             READ_FILE_TOOL, SEARCH_CODE_TOOL)
+
+ENDPOINT = "POST /api/customers/search"      # ← your real endpoint
+
+TASK = f"""Trace the execution path of this endpoint: {ENDPOINT}
+
+Find the controller method that handles it, then follow the calls through
+services and repositories down to the SQL or database access.
+
+Use search_code to locate things, read_file to understand them.
+Note: Spring routes may be split between a class-level @RequestMapping and a
+method-level @GetMapping/@PostMapping — compose them.
+
+When done, report:
+- the full call chain, with file:line for each step
+- every database query or repository method involved
+- anything you were unsure about
+
+Cite file:line for every claim."""
+
+c = GroqClient(api_key=os.environ["GROQ_API_KEY"])
+
+answer = run_agent(
+    client=c,
+    task=TASK,
+    tools=[READ_FILE_TOOL, SEARCH_CODE_TOOL],
+    handlers={"read_file": read_file, "search_code": search_code},
+    max_steps=25,
+)
+
+print("\n" + "=" * 60)
+print(answer)
