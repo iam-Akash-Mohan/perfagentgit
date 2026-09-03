@@ -244,10 +244,27 @@ class Probe(BaseModel):
     result: str
 
 
+class Layer(str, Enum):
+    """Where in the stack the time is claimed to go.
+
+    Diagnosis exists to stop the first plausible story from winning. Forcing
+    every hypothesis to name a layer is what makes "the SQL is slow" and "the
+    response is enormous" compete instead of blur together — and it lets code
+    check that the set actually spans more than one layer.
+    """
+    DATABASE_QUERY = "database_query"      # time inside the server executing SQL
+    ORM_HYDRATION = "orm_hydration"        # building entities from result sets
+    APPLICATION_LOGIC = "application_logic"  # our own loops and allocation
+    SERIALIZATION = "serialization"        # object graph -> JSON bytes
+    NETWORK = "network"                    # transfer and socket time
+    OTHER = "other"
+
+
 class Hypothesis(BaseModel):
     id: str
     claim: str
     mechanism: str
+    layer: Layer
     evidence: list[str]                    # must resolve to real artifact refs
     attributed_ms: float
     prediction: str

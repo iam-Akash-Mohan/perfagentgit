@@ -60,3 +60,6 @@ from perfagent.tools import _resolve
 
 print("This is the answer")
 print(answer)
+
+import json, pathlib
+pathlib.Path(".perfagent/endpoint_model.json").write_text(json.dumps(answer, indent=2))

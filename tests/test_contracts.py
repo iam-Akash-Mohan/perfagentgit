@@ -14,15 +14,17 @@ def test_citation_ref():
 def test_hypothesis_set_requires_three():
     """Forced competition: fewer than 3 hypotheses is a contract violation,
     because a single hypothesis means the model locked onto its first idea."""
-    one = Hypothesis(id="h1", claim="c", mechanism="m", evidence=["e"],
-                     attributed_ms=100, prediction="p", confidence=0.5)
+    one = Hypothesis(id="h1", claim="c", mechanism="m", layer="database_query",
+                     evidence=["e"], attributed_ms=100, prediction="p",
+                     confidence=0.5)
     with pytest.raises(ValidationError):
         HypothesisSet(hypotheses=[one], ranked_ids=["h1"], measured_total_ms=200)
 
 
 def test_attribution_validity():
     def h(i, ms):
-        return Hypothesis(id=f"h{i}", claim="c", mechanism="m", evidence=["e"],
+        return Hypothesis(id=f"h{i}", claim="c", mechanism="m",
+                          layer="database_query", evidence=["e"],
                           attributed_ms=ms, prediction="p", confidence=0.5)
     ok = HypothesisSet(hypotheses=[h(1, 100), h(2, 50), h(3, 20)],
                        ranked_ids=["h1", "h2", "h3"], measured_total_ms=200)
@@ -34,8 +36,8 @@ def test_attribution_validity():
 
 def test_confidence_bounded():
     with pytest.raises(ValidationError):
-        Hypothesis(id="h", claim="c", mechanism="m", evidence=[],
-                   attributed_ms=1, prediction="p", confidence=1.4)
+        Hypothesis(id="h", claim="c", mechanism="m", layer="database_query",
+                   evidence=[], attributed_ms=1, prediction="p", confidence=1.4)
 
 
 def test_verdict_decided_by_code_only():
@@ -73,3 +75,17 @@ def test_terminal_states_cover_all_eight():
 
 def test_risk_tiers_ordered():
     assert RiskTier.LOW < RiskTier.HIGH < RiskTier.FORBIDDEN
+
+
+def test_hypothesis_requires_a_layer():
+    """A hypothesis that does not say WHERE the time goes cannot be checked
+    for layer diversity, so the field is required rather than defaulted."""
+    with pytest.raises(ValidationError):
+        Hypothesis(id="h", claim="c", mechanism="m", evidence=[],
+                   attributed_ms=1, prediction="p", confidence=0.5)
+
+
+def test_hypothesis_rejects_an_unknown_layer():
+    with pytest.raises(ValidationError):
+        Hypothesis(id="h", claim="c", mechanism="m", layer="gpu",
+                   evidence=[], attributed_ms=1, prediction="p", confidence=0.5)
