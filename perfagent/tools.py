@@ -163,3 +163,75 @@ SEARCH_CODE_TOOL = {
         },
     },
 }
+
+def emit_endpoint_model(**kwargs) -> str:
+    return "accepted"
+
+EMIT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "emit_endpoint_model",
+        "description": (
+            "Call this ONCE when you have fully traced the endpoint. This is the "
+            "only way to finish. Every field is required."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "route": {"type": "string"},
+
+                "call_chain": {
+                    "type": "array",
+                    "description": "Every method executed, in order, from controller down.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "method": {"type": "string", "description": "e.g. CustomerService.search"},
+                            "file":   {"type": "string"},
+                            "line":   {"type": "integer"},
+                            "does":   {"type": "string"},
+                        },
+                        "required": ["method", "file", "line", "does"],
+                    },
+                },
+
+                "data_access": {
+                    "type": "array",
+                    "description": (
+                        "EVERY database access this endpoint can trigger. Include lazy "
+                        "collection loads and calls made inside loops, not only explicit "
+                        "repository queries."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "trigger": {"type": "string",
+                                        "description": "What causes it, e.g. 'repo.findByFilter' "
+                                                       "or 'lazy load of Customer.invoices'"},
+                            "kind": {"type": "string",
+                                     "enum": ["jpql_query", "native_query", "derived_query",
+                                              "lazy_collection", "lazy_association", "other"]},
+                            "file": {"type": "string"},
+                            "line": {"type": "integer"},
+                            "sql": {"type": "string", "description": "The query, if visible in code"},
+                            "executes_per_row": {
+                                "type": "boolean",
+                                "description": "TRUE if this runs once per result row (inside a "
+                                               "loop, stream, or .map over results). FALSE if it "
+                                               "runs once per request.",
+                            },
+                        },
+                        "required": ["trigger", "kind", "file", "line", "executes_per_row"],
+                    },
+                },
+
+                "uncertainties": {
+                    "type": "array",
+                    "description": "Anything you could not determine from the code alone.",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["route", "call_chain", "data_access", "uncertainties"],
+        },
+    },
+}

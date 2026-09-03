@@ -23,8 +23,8 @@ TOOL = {"type": "function", "function": {
 
 from perfagent.llm import GroqClient
 from perfagent.agent import run_agent
-from perfagent.tools import (read_file, search_code,
-                             READ_FILE_TOOL, SEARCH_CODE_TOOL)
+from perfagent.tools import (read_file, search_code, emit_endpoint_model,
+                             READ_FILE_TOOL, SEARCH_CODE_TOOL, EMIT_TOOL)
 
 ENDPOINT = "POST /api/customers/search"      # ← your real endpoint
 
@@ -42,6 +42,8 @@ When done, report:
 - every database query or repository method involved
 - anything you were unsure about
 
+When you have traced everything, call emit_endpoint_model. Do not write a prose report
+
 Cite file:line for every claim."""
 
 c = GroqClient(api_key=os.environ["GROQ_API_KEY"])
@@ -49,10 +51,12 @@ c = GroqClient(api_key=os.environ["GROQ_API_KEY"])
 answer = run_agent(
     client=c,
     task=TASK,
-    tools=[READ_FILE_TOOL, SEARCH_CODE_TOOL],
-    handlers={"read_file": read_file, "search_code": search_code},
+    tools=[READ_FILE_TOOL, SEARCH_CODE_TOOL, EMIT_TOOL],
+    handlers={"read_file": read_file, "search_code": search_code, "emit_endpoint_model": emit_endpoint_model},
     max_steps=25,
 )
 
-print("\n" + "=" * 60)
+from perfagent.tools import _resolve
+
+print("This is the answer")
 print(answer)

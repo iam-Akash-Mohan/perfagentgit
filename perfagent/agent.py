@@ -82,6 +82,8 @@ def run_agent(client, task: str, tools: list[dict],
 
         if resp.tool_uses():
             for tool in resp.tool_uses():
+                if tool["name"] == "emit_endpoint_model":
+                    return tool["input"]  
                 _say("MODEL → YOU   (asking you to run a tool)",
                      _call_sig(tool["name"], tool["input"]))
                 handler = handlers[tool["name"]]
