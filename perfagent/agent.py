@@ -106,7 +106,7 @@ def run_agent(client, task: str, tools: list[dict],
                         {"role":"tool", "tool_call_id":tool["id"], "content": result}
                     )
         print()
-        print(f"  (waiting 5s · conversation is now {len(messages)} messages)")
+        print(f"  (waiting 20s · conversation is now {len(messages)} messages)")
         print()
         print()
         time.sleep(20)

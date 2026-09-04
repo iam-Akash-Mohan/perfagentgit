@@ -65,4 +65,5 @@ Explain the mechanics, answer questions, review code that the human wrote, and p
 out what's wrong with it. The human is learning AI engineering by building this; a
 finished implementation handed over defeats the purpose.
 
-Phases marked HAND-WRITE: P01, P02, P03, P08, P13, P15 (gate rules).
+Phases marked HAND-WRITE: P01, P02, P03 (done by hand), P08, P15 (gate
+rules). P13 was generated — review compare.py before trusting a verdict.

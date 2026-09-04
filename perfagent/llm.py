@@ -8,7 +8,7 @@ STOP_MAP = {"tool_calls": "tool_use", "stop": "end_turn", "length": "max_tokens"
 
 class GroqClient:
 
-    def __init__(self, api_key: str, model: str = "openai/gpt-oss-120b") -> None:
+    def __init__(self, api_key: str, model: str = "gpt-oss-120b") -> None:
         self.api_key = api_key
         self.model = model
     
@@ -16,7 +16,7 @@ class GroqClient:
                  max_tokens: int = 4096) -> LLMResponse:
         start = time.perf_counter()
         r = httpx.post(
-                "https://api.groq.com/openai/v1/chat/completions",
+                "https://api.cerebras.ai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json={"model": self.model,
                     "max_tokens": max_tokens,

@@ -1,0 +1,8 @@
+{
+  "ignore_paths": ["$.timestamp"],
+  "order_insensitive_paths": [],
+  "numeric_epsilon": 0.0,
+  "rationale": {
+    "$.timestamp": "Spring's DefaultErrorAttributes puts a wall-clock stamp in the error-response body. It is generated at serialisation time and is not endpoint output, so it changes on every request against unmodified code. Found by recording before any patch existed, not by looking at a diff. $.status, $.error and $.path in the same body remain compared strictly."
+  }
+}

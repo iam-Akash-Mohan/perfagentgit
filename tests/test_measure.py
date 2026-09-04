@@ -66,9 +66,11 @@ def _spec(request_id: str, **body: object) -> RequestSpec:
 
 def test_shipped_corpus_loads_and_matches_the_brief() -> None:
     corpus = load_corpus()
-    assert len(corpus.benchmark) >= 12
-    assert all(r.method == "POST" for r in corpus.benchmark)
-    assert all(r.path == "/api/customers/search" for r in corpus.benchmark)
+    every = [*corpus.benchmark, *corpus.held_back]
+    assert len(every) >= 12
+    assert len(corpus.benchmark) >= 9
+    assert all(r.method == "POST" for r in every)
+    assert all(r.path == "/api/customers/search" for r in every)
 
     names = {r.body["name"] for r in corpus.benchmark if r.body and "name" in r.body}
     pages = {r.body.get("page") for r in corpus.benchmark if r.body}
@@ -76,10 +78,32 @@ def test_shipped_corpus_loads_and_matches_the_brief() -> None:
     assert len(names) > 1 and len(pages) > 1 and len(sizes) > 1
 
     # At least one request must be structurally invalid so the error path is
-    # part of the measured mix rather than a surprise in production.
+    # part of the measured mix rather than a surprise in production. It stays in
+    # the BENCHMARK set: a 400 becoming a 500 is a latency-visible change too.
     assert any(
         r.body and not isinstance(r.body.get("size"), int) for r in corpus.benchmark
     )
+
+
+def test_the_held_back_set_exercises_data_the_benchmark_set_does_not() -> None:
+    """The train/test split, asserted.
+
+    A held-back request that reuses a benchmark filter value proves nothing: a
+    fix tuned to the measured requests would have touched those rows already.
+    Distinct values AND distinct result sizes are what make the set a control.
+    """
+    corpus = load_corpus()
+    assert len(corpus.held_back) >= 3
+
+    benchmark_names = {r.body["name"] for r in corpus.benchmark if r.body}
+    held_back_names = {r.body["name"] for r in corpus.held_back if r.body}
+    assert not (benchmark_names & held_back_names), (
+        "a held-back filter value also appears in the benchmark set"
+    )
+
+    # Held-back ids never appear in the measured set, so a benchmark run can
+    # never touch them by accident.
+    assert not ({r.id for r in corpus.benchmark} & {r.id for r in corpus.held_back})
 
 
 def test_corpus_hash_is_content_addressed_and_order_sensitive() -> None:

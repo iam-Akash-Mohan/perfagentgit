@@ -46,7 +46,7 @@ When you have traced everything, call emit_endpoint_model. Do not write a prose 
 
 Cite file:line for every claim."""
 
-c = GroqClient(api_key=os.environ["GROQ_API_KEY"])
+c = GroqClient(api_key=os.environ["CEREBRAS_API_KEY"])
 
 answer = run_agent(
     client=c,
@@ -62,4 +62,4 @@ print("This is the answer")
 print(answer)
 
 import json, pathlib
-pathlib.Path(".perfagent/endpoint_model.json").write_text(json.dumps(answer, indent=2))
+# pathlib.Path(".perfagent/endpoint_model.json").write_text(json.dumps(answer, indent=2))
