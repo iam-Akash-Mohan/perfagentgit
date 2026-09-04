@@ -4,7 +4,7 @@ import json
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 class EventType(str, Enum):
@@ -15,6 +15,7 @@ class EventType(str, Enum):
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
     ARTIFACT_WRITTEN = "artifact_written"
+    PROMPT_LOADED = "prompt_loaded"
     GUARDRAIL_TRIGGERED = "guardrail_triggered"
     CHECKPOINT = "checkpoint"
     GATE_EVALUATED = "gate_evaluated"
@@ -31,6 +32,13 @@ class Trace:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.run_dir / "trace.jsonl"
         self._seq = 0
+        # Live renderers subscribe here. The trace stays the single source of
+        # what happened; --verbose is a second reader of it, not a second
+        # code path that could disagree with the file.
+        self._listeners: list[Callable[[dict[str, Any]], None]] = []
+
+    def add_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
+        self._listeners.append(listener)
 
     def emit(self, type: EventType, phase: str, **fields: Any) -> None:
         """Append one JSON line. Auto-adds ts, run, seq. Never raises —
@@ -48,13 +56,18 @@ class Trace:
             with self.path.open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
             self._seq += 1
+            for listener in self._listeners:
+                try:
+                    listener(record)
+                except Exception:  # noqa: BLE001 — a renderer must not kill a run
+                    pass
         except Exception:  # noqa: BLE001 — a broken trace must not kill a run
             pass
 
-    def read_all(self) -> list[dict]:
+    def read_all(self) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
-        events: list[dict] = []
+        events: list[dict[str, Any]] = []
         for line in self.path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:

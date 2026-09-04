@@ -16,12 +16,18 @@ dependencies = [
     "scipy",
     "pyyaml",
     "mysql-connector-python",
+    "python-dotenv",
+    # find_route parses controllers with a real parser, not a regex.
+    "tree-sitter>=0.21",
+    "tree-sitter-java>=0.23",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
     "pytest-cov",
+    "mypy",
+    "types-PyYAML",
 ]
 
 [project.scripts]

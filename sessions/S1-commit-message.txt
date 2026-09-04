@@ -1,0 +1,77 @@
+feat(S1): provider-agnostic LLM client, reusable agent loop, comprehension phase
+
+Turns the throwaway comprehension script into a real phase and fixes the three
+things underneath it.
+
+LLM client (perfagent/llm/)
+  GroqClient — a class that posted to Cerebras, with a hardcoded URL, no
+  retries, and a print() on non-200 followed by parsing the error body as a
+  completion — is replaced by a package with one factory and one switch.
+  Providers: cerebras, groq, anthropic, ollama. Keys resolved per provider by
+  the factory; no key or URL literal outside llm/. A non-200 that survives the
+  retry policy now raises with the provider's own message instead of arriving
+  three frames later as KeyError('choices'). 400 and 401 are never retried.
+  Cassettes key on the content hash of the full request body. Anthropic gets
+  prompt caching on the last system block and the last tool. `complete()` is a
+  pure function of its arguments: `last_raw_message` is gone, and
+  `LLMResponse.raw_message` is the single source of the assistant turn.
+  GroqClient survives as a deprecated alias, defaulting to the model it always
+  used, so P09 and P12 keep working until their sessions land.
+
+Agent loop (perfagent/agent.py)
+  - Deleted the unconditional time.sleep(20). It was a Groq free-tier
+    workaround costing ~5.7 minutes of an 8-minute run; rate limiting belongs
+    in the client's retry policy, where it is conditional on an actual 429.
+    Measured: a 23-step run takes 244s instead of 704s.
+  - The handler lookup moved INSIDE the guard. A hallucinated tool name raised
+    KeyError where `except KeyError` could not see it, and killed the run.
+  - The terminal tool is a parameter, not the hardcoded `emit_endpoint_model`.
+    A rejected submission is fed back as a tool result and retried.
+  - Typed LoopOutcome, LoopBudget (None is unlimited, 0 is zero) and
+    no-progress detection replace `-> str | dict`.
+  - Trace events replace print; the transcript moved to render/transcript.py
+    and is driven by those events under --verbose.
+  - GuardrailError is distinguishable from an ordinary ToolError in the trace.
+
+Tools (perfagent/tools/)
+  REPO_ROOT as a module constant — the single reason the product could not run
+  on another repo — is replaced by an injected SourceRoot. Containment
+  failures raise GuardrailError, not ValueError. search_code's per-file cap is
+  a parameter and is stated in the output, and `--sort path` makes ripgrep
+  deterministic (it is multithreaded by default, so the same search returned
+  the same lines in a different order run to run — which made every run
+  unreproducible and every cassette a coin flip). New: find_route, which
+  composes class-level and method-level mappings from the AST; get_schema,
+  which returns the indexes that ALREADY EXIST on the live database;
+  submit_endpoint_analysis, which validates every citation and can say no.
+
+Prompts (prompts/)
+  Moved out of Python string literals into files, loaded by perfagent/prompts.py
+  with their content hash recorded in the trace and on the artifact.
+
+  REMOVED from the old prompt: the phrase "down to the SQL or database
+  access". It caused the model to classify lazy-loaded per-row queries as out
+  of scope, which hid the endpoint's real bottleneck on the first run. The
+  replacement says the opposite explicitly — implicit queries are not out of
+  scope, they are frequently the whole problem — and forces a
+  once-per-request / once-per-result-row decision on every access.
+
+Contracts
+  IndexInfo and TableInfo added; EndpointModel gains tables, prompt_hash, and
+  (beyond the session spec, see the S1 report) call_chain and data_access,
+  because nothing in the existing model could hold `executes_per_row` and the
+  diagnosis phase already reads exactly those two keys. entry, path and
+  sql_sources are now DERIVED from them rather than asked for separately.
+
+Orchestrator
+  --endpoint was decorative: the CLI accepted it, the orchestrator carried it,
+  and the phase never received it. The comprehension phase now has a runner,
+  receives the endpoint, writes into the run directory, and skips only when an
+  artifact exists WHOSE ROUTE MATCHES. The diagnosis phase reads that run's
+  artifact instead of a global file.
+
+Cleanup: deleted perfagent/tryllm.py, perfagent/test.py, perfagent/Untitled.
+Regenerated .perfagent/endpoint_model.json for real; the PROVENANCE_WARNING
+from the hand-rebuild is gone.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>

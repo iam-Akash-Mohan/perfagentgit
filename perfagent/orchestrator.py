@@ -122,8 +122,9 @@ class Budget:
 class MeteredClient:
     """Wraps an LLM client so every call is charged to the run budget.
 
-    Delegates everything else, because `run_agent` reads `last_raw_message` off
-    the client between calls and a proxy that hid it would break the loop.
+    Delegates everything else, because the loop asks the client to format tool
+    results (`tool_result_messages`) and a proxy that hid provider-specific
+    methods would silently fall back to the wrong wire shape.
     """
 
     def __init__(self, inner: Any, budget: Budget, phase: str) -> None:
@@ -193,6 +194,46 @@ def _fixed(path: str) -> Callable[[Context], Path]:
 
 
 # ─────────────────────────────  phase runners  ───────────────────────────
+
+
+def _run_understand(ctx: Context) -> PhaseOutcome:
+    """Trace the endpoint the run was actually asked about.
+
+    `--endpoint` used to be decorative: the CLI accepted it, this file carried
+    it, and the phase never received it — it only checked whether an artifact
+    file existed and skipped. The endpoint is now passed in, and the skip check
+    (`_valid_endpoint_model`) compares the artifact's route against it.
+    """
+    from .agent import LoopBudget
+    from .understand.agent import understand
+
+    if ctx.repo is None:
+        raise ContractViolation(
+            "the understand phase needs a target repository. Pass --repo or "
+            "set PERFAGENT_TARGET_REPO."
+        )
+
+    model = understand(
+        repo=ctx.repo,
+        endpoint=ctx.endpoint,
+        client=_metered_llm(ctx, "understand"),
+        trace=ctx.trace,
+        budget=LoopBudget(
+            max_steps=ctx.options.get("understand_max_steps", 30),
+            max_usd=ctx.budget.max_usd,
+            max_wall_s=ctx.budget.remaining_s() if ctx.budget.max_wall_s else None,
+        ),
+        run_dir=ctx.run_dir,
+    )
+    per_row = len(model.per_row_accesses())
+    return PhaseOutcome(
+        artifact=ctx.run_dir / "endpoint_model.json",
+        summary=f"{model.route}: {len(model.call_chain)} hops, "
+                f"{len(model.data_access)} data accesses ({per_row} per-row)",
+        detail={"route": model.route, "per_row_accesses": per_row,
+                "tables": len(model.tables),
+                "prompt_hash": model.prompt_hash},
+    )
 
 
 def _run_oracle(ctx: Context) -> PhaseOutcome:
@@ -269,7 +310,10 @@ def _run_diagnose(ctx: Context) -> PhaseOutcome:
         java_home=ctx.java_home, build=ctx.options.get("build", True),
     ) as arm:
         hypothesis_set, probe_log, path = run_diagnosis(
-            base_url=arm.base_url, run_dir=ctx.run_dir, client=client
+            base_url=arm.base_url, run_dir=ctx.run_dir, client=client,
+            # This run's comprehension artifact, not a global file that may
+            # describe a different endpoint entirely.
+            endpoint_model_path=ctx.run_dir / "endpoint_model.json",
         )
     if not hypothesis_set.hypotheses:
         return PhaseOutcome(
@@ -332,7 +376,7 @@ def _run_patch(ctx: Context) -> PhaseOutcome:
     )
 
 
-def _repo_root(ctx: Context):
+def _repo_root(ctx: Context) -> Path:
     from .patch.worktree import target_repo
 
     return target_repo(ctx.repo)
@@ -456,10 +500,14 @@ def _run_ship(ctx: Context) -> PhaseOutcome:
 
 
 def _metered_llm(ctx: Context, phase: str) -> MeteredClient:
-    from .patch.agent import _require_api_key
-    from .llm import GroqClient
+    """One client per phase, built from config.
 
-    return MeteredClient(GroqClient(api_key=_require_api_key()), ctx.budget, phase)
+    The provider and model are configuration (perfagent.yml / env), not
+    literals in this file — switching provider must not require a code edit.
+    """
+    from .llm import make_client
+
+    return MeteredClient(make_client(), ctx.budget, phase)
 
 
 # ────────────────────────────  validators  ───────────────────────────────
@@ -483,13 +531,29 @@ def _valid_oracle(ctx: Context, path: Path) -> str | None:
     return None
 
 
+def _normalise_route(route: str) -> tuple[str, str]:
+    """('POST', '/api/customers/search') from any reasonable spelling."""
+    parts = str(route or "").strip().split(None, 1)
+    if len(parts) == 2:
+        method, path = parts
+    else:
+        method, path = "", parts[0] if parts else ""
+    path = "/" + path.strip().strip("/")
+    return method.strip().upper(), path
+
+
 def _valid_endpoint_model(ctx: Context, path: Path) -> str | None:
-    """The comprehension model must actually describe an endpoint.
+    """The comprehension model must describe THIS RUN'S endpoint.
 
     `_valid_json` was too weak here and it mattered: a stub file containing
     `{"phase": "understand"}` is valid JSON, so a destroyed artifact passed
     validation and the phase was skipped as though it had been done. A
     validator that only checks parseability certifies syntax, not evidence.
+
+    Route matching is the second half of the same lesson. An artifact for
+    `GET /api/customers/{id}` satisfies "a comprehension model exists" and
+    tells the rest of the pipeline nothing about the endpoint under test, so
+    a cached model for a different route must NOT let this phase skip.
     """
     problem = _valid_json(ctx, path)
     if problem:
@@ -506,6 +570,15 @@ def _valid_endpoint_model(ctx: Context, path: Path) -> str | None:
             f"{path} is not an endpoint model — missing or empty: "
             f"{', '.join(missing)}. It parses as JSON but describes nothing."
         )
+    if ctx.endpoint:
+        found = _normalise_route(str(payload.get("route", "")))
+        wanted = _normalise_route(ctx.endpoint)
+        if found != wanted:
+            return (
+                f"{path} describes {payload.get('route')!r}, but this run is "
+                f"about {ctx.endpoint!r}. A cached model for a different route "
+                f"does not satisfy this phase."
+            )
     return None
 
 
@@ -533,8 +606,8 @@ def _valid_patch(ctx: Context, path: Path) -> str | None:
 
 PIPELINE: tuple[PhaseSpec, ...] = (
     PhaseSpec(Phase.COMPREHEND, "understand",
-              _fixed(".perfagent/endpoint_model.json"), None,
-              _valid_endpoint_model,
+              _run_artifact("endpoint_model.json"), _run_understand,
+              _valid_endpoint_model, uses_llm=True,
               describe="endpoint comprehension model"),
     PhaseSpec(Phase.WORKLOAD, "workload",
               _fixed("perfagent/measure/corpus.json"), None, _valid_corpus,

@@ -11,6 +11,39 @@ CONFIG_FILE = "perfagent.yml"
 
 _ENV_PREFIX = "PERFAGENT_"
 
+# Where each provider's key lives, and what it is called in an error message.
+# This table is the ONLY place a provider name maps to an environment
+# variable; nothing outside llm/ and here needs to know.
+PROVIDER_KEY_ENV: dict[str, str | None] = {
+    "cerebras": "CEREBRAS_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "ollama": None,          # a local server; no key
+}
+
+DEFAULT_PROVIDER = "cerebras"
+DEFAULT_MODEL = "gpt-oss-120b"
+
+
+class LLMSettings(BaseModel):
+    """The `llm:` block of perfagent.yml.
+
+    Every phase may override `model` — diagnosis and planning want a stronger
+    model than mechanical summarisation, and that is a configuration decision
+    rather than a code one.
+    """
+
+    provider: str = DEFAULT_PROVIDER
+    model: str = DEFAULT_MODEL
+    max_tokens: int = 4096
+    timeout_s: float = 120.0
+    cassette_dir: Path = Field(default=Path(".perfagent/cassettes"))
+    offline: bool = False
+    base_url: str | None = Field(
+        default=None,
+        description="Override the provider's endpoint. Ollama users on a "
+                    "non-default port need this; nobody else should.")
+
 
 class Settings(BaseModel):
     """Runtime configuration. Env wins over perfagent.yml, which wins over defaults."""
@@ -22,6 +55,7 @@ class Settings(BaseModel):
     cassette_dir: Path = Field(default=Path(".perfagent/cassettes"))
     max_usd_per_run: float = 5.0
     offline: bool = False
+    llm: LLMSettings = Field(default_factory=LLMSettings)
 
     @classmethod
     def load(cls, config_path: str | Path | None = None) -> "Settings":
@@ -47,5 +81,23 @@ class Settings(BaseModel):
             raw = os.environ.get(env_name)
             if raw is not None:
                 values[field] = raw
+
+        # The llm block is nested, so its env overrides merge INTO whatever
+        # the file supplied rather than replacing the whole block.
+        llm: dict[str, Any] = dict(values.get("llm") or {})
+        llm_env = {
+            "provider": _ENV_PREFIX + "LLM_PROVIDER",
+            "model": _ENV_PREFIX + "LLM_MODEL",
+            "max_tokens": _ENV_PREFIX + "LLM_MAX_TOKENS",
+            "timeout_s": _ENV_PREFIX + "LLM_TIMEOUT_S",
+            "cassette_dir": _ENV_PREFIX + "LLM_CASSETTE_DIR",
+            "offline": _ENV_PREFIX + "LLM_OFFLINE",
+            "base_url": _ENV_PREFIX + "LLM_BASE_URL",
+        }
+        for field, env_name in llm_env.items():
+            raw = os.environ.get(env_name)
+            if raw is not None:
+                llm[field] = raw
+        values["llm"] = llm
 
         return cls.model_validate(values)

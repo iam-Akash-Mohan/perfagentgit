@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Sequence
 
 import typer
 
 from .errors import ContractViolation, ToolError
 from .measure.baseline import baseline_command
+from .understand.cli import understand_command
 
 app = typer.Typer(
     name="perfagent",
@@ -13,13 +15,9 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-
-@app.command()
-def understand() -> None:
-    """Build the endpoint comprehension model."""
-    raise NotImplementedError("phase P04")
-
-
+# Commands are imported functions, not bodies defined here. `understand` and
+# `baseline` have moved; the rest follow in their own sessions.
+app.command(name="understand")(understand_command)
 app.command(name="baseline")(baseline_command)
 
 
@@ -155,7 +153,7 @@ def patch(
 # Both commands start BOTH arms themselves. Reusing an already-running app
 # would mean measuring a process whose JVM flags nobody recorded.
 
-def _arm_options(function):
+def _arm_options(function: Any) -> Any:
     return function
 
 
@@ -348,7 +346,8 @@ app.add_typer(oracle_app)
 
 
 def _render_verdict(
-    verdict, oracle, held_back_count: int, unmatched_paths=(), max_diffs: int = 20
+    verdict: Any, oracle: Any, held_back_count: int,
+    unmatched_paths: Sequence[str] = (), max_diffs: int = 20,
 ) -> str:
     """Render the verdict. Every number here comes off the verdict model."""
     # "nothing was checked" and "something differed" are different facts and
@@ -623,7 +622,7 @@ def run(
     """Run the whole pipeline in order, resumable."""
     from .orchestrator import run_pipeline
 
-    def show(event: dict) -> None:
+    def show(event: dict[str, Any]) -> None:
         kind = event["kind"]
         if kind == "run_start":
             label = "resumed" if event["resumed"] else "started"

@@ -89,3 +89,100 @@ def test_hypothesis_rejects_an_unknown_layer():
     with pytest.raises(ValidationError):
         Hypothesis(id="h", claim="c", mechanism="m", layer="gpu",
                    evidence=[], attributed_ms=1, prediction="p", confidence=0.5)
+
+
+# ───────────────────  S1: schema on the EndpointModel  ───────────────────
+
+
+def test_table_info_carries_existing_indexes():
+    """Session 3 must be able to tell a MISSING index from one that is already
+    there, and must never propose a duplicate. It can only do that if this
+    phase records what exists."""
+    from perfagent.contracts import IndexInfo, TableInfo
+
+    table = TableInfo(
+        table="invoice",
+        entity="Invoice",
+        columns_read=["customer_id", "amount"],
+        all_columns=["id bigint NOT NULL", "customer_id bigint NULL"],
+        existing_indexes=[IndexInfo(name="idx_invoice_customer_id",
+                                    columns=["customer_id"], unique=False,
+                                    cardinality=28691)],
+        approx_rows=1_196_424,
+    )
+    assert table.existing_indexes[0].columns == ["customer_id"]
+    assert table.existing_indexes[0].unique is False
+
+
+def test_index_columns_keep_their_order():
+    """Order matters for a composite index: (a, b) and (b, a) are different
+    indexes and only one of them answers a given query."""
+    from perfagent.contracts import IndexInfo
+
+    index = IndexInfo(name="idx", columns=["status", "due_date"], unique=False)
+    assert index.columns == ["status", "due_date"]
+
+
+def test_endpoint_model_defaults_tables_and_prompt_hash_empty():
+    m = EndpointModel(route="POST /x", entry=Citation(file="C.java", line=1),
+                      path=[Citation(file="C.java", line=1)])
+    assert m.tables == [] and m.prompt_hash is None
+
+
+def test_columns_read_is_what_makes_over_fetching_detectable():
+    """An entity with thirty columns where the endpoint reads three is a
+    projection opportunity, and nothing downstream can see it unless this
+    phase records it."""
+    from perfagent.contracts import TableInfo
+
+    table = TableInfo(table="customer", columns_read=["id", "name"],
+                      all_columns=[f"c{n} varchar(255)" for n in range(30)])
+    assert len(table.columns_read) < len(table.all_columns)
+
+
+def test_entry_path_and_sql_sources_are_derived_not_asked_for():
+    """Two fields describing the same fact are two fields that can disagree,
+    and the model does not get to decide which is right."""
+    m = EndpointModel.model_validate({
+        "route": "POST /x",
+        "call_chain": [{"method": "C.search", "file": "C.java", "line": 18,
+                        "does": "delegates"}],
+        "data_access": [{"trigger": "repo.find", "kind": "derived_query",
+                         "file": "R.java", "line": 9,
+                         "executes_per_row": False}],
+    })
+    assert m.entry == Citation(file="C.java", line=18, symbol="C.search")
+    assert [c.ref() for c in m.path] == ["C.java:18"]
+    assert m.sql_sources[0].kind == "derived query"
+
+
+def test_per_row_accesses_are_computed_never_counted_by_a_model():
+    m = EndpointModel.model_validate({
+        "route": "POST /x",
+        "call_chain": [{"method": "C.s", "file": "C.java", "line": 1,
+                        "does": "d"}],
+        "data_access": [
+            {"trigger": "a", "kind": "jpql_query", "file": "R.java", "line": 1,
+             "executes_per_row": False},
+            {"trigger": "b", "kind": "lazy_collection", "file": "R.java",
+             "line": 2, "executes_per_row": True},
+            {"trigger": "c", "kind": "lazy_association", "file": "R.java",
+             "line": 3, "executes_per_row": True},
+        ],
+    })
+    assert len(m.per_row_accesses()) == 2
+
+
+def test_data_access_must_declare_whether_it_runs_per_row():
+    """'Does this run once, or once per row?' is the question the whole phase
+    exists to answer, so it has no default."""
+    from perfagent.contracts import DataAccess
+
+    with pytest.raises(ValidationError):
+        DataAccess(trigger="t", kind="jpql_query", file="R.java", line=1)
+
+
+def test_a_hand_built_model_with_the_older_fields_still_validates():
+    m = EndpointModel(route="POST /x", entry=Citation(file="C.java", line=1),
+                      path=[Citation(file="C.java", line=1)])
+    assert m.call_chain == [] and m.entry.line == 1

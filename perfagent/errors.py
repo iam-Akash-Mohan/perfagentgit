@@ -20,6 +20,16 @@ class ToolError(PerfAgentError):
         return self.message
 
 
+class GuardrailError(ToolError):
+    """A CONTAINMENT check refused the call: a path escape, a denied write.
+
+    A subclass rather than a flag because the agent loop has to tell the two
+    apart in the trace. An ordinary ToolError is the model making a mistake it
+    can fix; this one is the model reaching for something it is not allowed to
+    have, and those need different colours in a post-mortem.
+    """
+
+
 class BudgetExhausted(PerfAgentError):
     """The run exceeded its token / dollar budget."""
 

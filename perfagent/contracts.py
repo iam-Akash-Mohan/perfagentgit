@@ -1,7 +1,7 @@
 from __future__ import annotations
 from enum import Enum
-from typing import Any, Literal, Protocol, runtime_checkable
-from pydantic import BaseModel, Field
+from typing import Any, Literal, Protocol, cast, runtime_checkable
+from pydantic import BaseModel, Field, model_validator
 
 
 # ─────────────────────────────  primitives  ─────────────────────────────
@@ -26,6 +26,78 @@ class ArtifactRef(BaseModel):
 
 
 # ─────────────────────────  P04 comprehension  ──────────────────────────
+
+class CallHop(BaseModel):
+    """One method on the execution path, with what it actually does.
+
+    Flat rather than wrapping a Citation because this is the shape the
+    diagnosis phase already reads off disk, and because `does` is not a
+    property of the pointer — it is the finding.
+    """
+    method: str                     # e.g. CustomerService.search
+    file: str
+    line: int
+    does: str
+
+    def citation(self) -> "Citation":
+        return Citation(file=self.file, line=self.line, symbol=self.method)
+
+
+DataAccessKind = Literal[
+    "jpql_query", "native_query", "derived_query",
+    "lazy_collection", "lazy_association", "criteria", "jdbc_template", "other",
+]
+
+# How a data access maps onto the older SqlSource vocabulary. Derived in code
+# so the model is never asked to fill in two overlapping fields.
+_SQL_SOURCE_KIND: dict[str, str] = {
+    "jpql_query": "@Query JPQL",
+    "native_query": "@Query native",
+    "derived_query": "derived query",
+    "lazy_collection": "lazy collection",
+    "lazy_association": "lazy collection",
+    "criteria": "criteria",
+    "jdbc_template": "jdbc template",
+    "other": "other",
+}
+
+
+class DataAccess(BaseModel):
+    """One way this endpoint can reach the database.
+
+    `executes_per_row` is the field the whole phase exists for: a query that
+    runs once per request and the identical query run once per result row are
+    the same SQL and a completely different bottleneck.
+    """
+    trigger: str                    # "repo.findByFilter", "lazy load of Customer.invoices"
+    kind: DataAccessKind
+    file: str
+    line: int
+    sql: str | None = None
+    tables: list[str] = []
+    executes_per_row: bool
+    note: str | None = None
+
+    def citation(self) -> "Citation":
+        return Citation(file=self.file, line=self.line, symbol=None)
+
+
+class IndexInfo(BaseModel):
+    name: str
+    columns: list[str]          # in index order — order matters for composites
+    unique: bool
+    cardinality: int | None = None
+
+
+class TableInfo(BaseModel):
+    table: str
+    entity: str | None = None
+    columns_read: list[str] = []      # columns this endpoint actually reads
+    all_columns: list[str] = []
+    existing_indexes: list[IndexInfo] = []
+    approx_rows: int | None = None
+    foreign_keys: list[dict[str, str]] = []
+
 
 class SqlSource(BaseModel):
     method: str
@@ -64,18 +136,66 @@ class ExternalCall(BaseModel):
 
 
 class EndpointModel(BaseModel):
+    """The entire output of the comprehension phase.
+
+    `call_chain` / `data_access` are what an agent submits. `entry`, `path`
+    and `sql_sources` are DERIVED from them in `_derive` below rather than
+    asked for separately: two fields describing the same fact are two fields
+    that can disagree, and the model does not get to decide which is right.
+    """
     route: str
     entry: Citation
     path: list[Citation]
+    call_chain: list[CallHop] = []
+    data_access: list[DataAccess] = []
     sql_sources: list[SqlSource] = []
     entities: list[EntityInfo] = []
     transactions: list[TransactionInfo] = []
     external_calls: list[ExternalCall] = []
+    tables: list[TableInfo] = []
     tests_covering: list[str] = []
     uncertainties: list[str] = Field(
         default_factory=list,
         description="What the agent was NOT sure about. An agent forced to "
                     "declare uncertainty is more useful than a confident one.")
+    prompt_hash: str | None = None      # which prompt version produced this
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive(cls, data: Any) -> Any:
+        """Fill entry / path / sql_sources from call_chain / data_access.
+
+        Only fills what is absent, so hand-built models that supply the older
+        fields directly keep working.
+        """
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+
+        chain = out.get("call_chain") or []
+        hops = [h if isinstance(h, CallHop) else CallHop.model_validate(h)
+                for h in chain]
+        if not out.get("entry") and hops:
+            out["entry"] = hops[0].citation()
+        if not out.get("path") and hops:
+            out["path"] = [h.citation() for h in hops]
+
+        access = out.get("data_access") or []
+        if not out.get("sql_sources") and access:
+            reads = [a if isinstance(a, DataAccess) else DataAccess.model_validate(a)
+                     for a in access]
+            out["sql_sources"] = [
+                SqlSource(method=a.trigger,
+                          kind=cast(Any, _SQL_SOURCE_KIND.get(a.kind, "other")),
+                          tables=list(a.tables),
+                          citation=a.citation())
+                for a in reads
+            ]
+        return out
+
+    def per_row_accesses(self) -> list[DataAccess]:
+        """Computed here, never counted by a model (invariant 5)."""
+        return [a for a in self.data_access if a.executes_per_row]
 
     def all_citations(self) -> list[Citation]:
         out: list[Citation] = [self.entry, *self.path]
@@ -408,6 +528,13 @@ class LLMResponse(BaseModel):
     usage: Usage
     latency_ms: float
     from_cassette: bool = False
+    raw_message: dict[str, Any] | None = Field(
+        default=None,
+        description="The provider-shaped assistant turn, verbatim. The loop "
+                    "echoes this back in the next request. This field is the "
+                    "single source of it — the client stores no such state.")
+    model: str | None = None
+
     
     def tool_uses(self) -> list[dict[str, Any]]:
         return [b for b in self.content if b.get("type") == "tool_use"]
@@ -421,11 +548,21 @@ class LLMResponse(BaseModel):
 class LLMClient(Protocol):
     """Deliberately stateless. There is no conversation memory here — the
     caller owns the message list. This is the central fact about LLMs."""
-    def complete(self, *, system: str | list[dict], messages: list[dict],
-                 tools: list[dict] | None = None,
-                 tool_choice: dict | None = None,
-                 max_tokens: int = 8192,
-                 thinking_budget: int | None = None) -> LLMResponse: ...
+    def complete(self, *, system: str | list[dict[str, Any]] | None = None,
+                 messages: list[dict[str, Any]],
+                 tools: list[dict[str, Any]] | None = None,
+                 tool_choice: dict[str, Any] | None = None,
+                 max_tokens: int | None = None) -> LLMResponse: ...
+
+    def tool_result_messages(
+        self, results: list["ToolCallResult"]
+    ) -> list[dict[str, Any]]:
+        """Provider-shaped messages carrying tool results back.
+
+        The wire shape differs per provider — OpenAI wants one message per
+        call, Anthropic wants one user message holding every tool_result — so
+        the client owns it and the loop stays provider-agnostic."""
+        ...
 
 
 class ToolResult(BaseModel):
@@ -436,10 +573,18 @@ class ToolResult(BaseModel):
     continuation: str | None = None
 
 
+class ToolCallResult(BaseModel):
+    """One dispatched tool call and what came back, before wire formatting."""
+    id: str
+    name: str
+    content: str
+    is_error: bool = False
+
+
 @runtime_checkable
 class StackPack(Protocol):
     def detect(self, repo: str) -> float: ...
-    def extract_routes(self, repo: str) -> list[dict]: ...
+    def extract_routes(self, repo: str) -> list[dict[str, Any]]: ...
     def build_cmd(self) -> list[str]: ...
     def test_cmd(self) -> list[str]: ...
     def run_cmd(self, port: int) -> list[str]: ...

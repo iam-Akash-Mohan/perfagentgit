@@ -1,0 +1,324 @@
+"""The LLM client. No network: every request is served by a fake `post`."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+
+from perfagent.contracts import ToolCallResult, Usage
+from perfagent.errors import PerfAgentError
+from perfagent.llm import make_client, resolve_key
+from perfagent.llm.anthropic import AnthropicClient
+from perfagent.llm.base import (CassetteMiss, LLMHTTPError, backoff_seconds,
+                                normalise_tools, retry_after_seconds)
+from perfagent.llm.openai_compat import OpenAICompatClient
+from perfagent.llm.pricing import usd_for
+
+TOOL = {"name": "read_file", "description": "read it",
+        "parameters": {"type": "object", "properties": {}}}
+
+OPENAI_OK = {
+    "model": "gpt-oss-120b",
+    "choices": [{"finish_reason": "tool_calls",
+                 "message": {"role": "assistant", "content": None,
+                             "tool_calls": [{"id": "c1", "type": "function",
+                                             "function": {"name": "read_file",
+                                                          "arguments": '{"path":"a.java"}'}}]}}],
+    "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+}
+
+ANTHROPIC_OK = {
+    "model": "claude-opus-4-5",
+    "stop_reason": "tool_use",
+    "content": [{"type": "text", "text": "looking"},
+                {"type": "tool_use", "id": "t1", "name": "read_file",
+                 "input": {"path": "a.java"}}],
+    "usage": {"input_tokens": 100, "output_tokens": 20,
+              "cache_read_input_tokens": 900, "cache_creation_input_tokens": 50},
+}
+
+
+class Recorder:
+    """A stand-in for httpx.post that replays a scripted list of responses."""
+
+    def __init__(self, *responses: httpx.Response) -> None:
+        self.responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, url: str, *, headers: dict, json: dict,
+                 timeout: float) -> httpx.Response:
+        self.calls.append({"url": url, "headers": headers, "body": json})
+        if not self.responses:
+            raise AssertionError("more requests than scripted responses")
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def ok(payload: dict) -> httpx.Response:
+    return httpx.Response(200, json=payload)
+
+
+def fail(status: int, body: str = "boom",
+         headers: dict | None = None) -> httpx.Response:
+    return httpx.Response(status, text=body, headers=headers or {})
+
+
+def client(post: Recorder, tmp_path: Path, **kwargs: Any) -> OpenAICompatClient:
+    return OpenAICompatClient(
+        provider="cerebras", model="gpt-oss-120b", api_key="k",
+        cassette_dir=tmp_path / "cassettes", http_post=post,
+        sleep=lambda _s: None, jitter=lambda: 0.0, **kwargs)
+
+
+# ─────────────────────────────  the factory  ─────────────────────────────
+
+
+def test_the_factory_switches_provider_without_a_code_change(monkeypatch) -> None:
+    monkeypatch.setenv("CEREBRAS_API_KEY", "c")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
+    assert isinstance(make_client("cerebras", "m"), OpenAICompatClient)
+    assert isinstance(make_client("anthropic", "m"), AnthropicClient)
+    assert make_client("ollama", "m").api_key is None
+
+
+def test_a_missing_key_names_the_variable_and_the_provider(monkeypatch) -> None:
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    with pytest.raises(PerfAgentError, match="GROQ_API_KEY"):
+        resolve_key("groq")
+
+
+def test_an_unknown_provider_is_refused(monkeypatch) -> None:
+    with pytest.raises(PerfAgentError, match="unknown LLM provider"):
+        make_client("openai", "gpt-4")
+
+
+def test_an_explicit_argument_beats_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("CEREBRAS_API_KEY", "c")
+    monkeypatch.setenv("PERFAGENT_LLM_MODEL", "from-env")
+    assert make_client("cerebras").model == "from-env"
+    assert make_client("cerebras", "explicit").model == "explicit"
+
+
+# ──────────────────────────  status handling  ────────────────────────────
+
+
+def test_a_non_200_is_never_parsed_as_a_completion(tmp_path: Path) -> None:
+    """The old client printed the body and then called r.json() anyway, so a
+    429 surfaced three frames away as KeyError('choices')."""
+    post = Recorder(*[fail(500, "upstream exploded")] * 5)
+    with pytest.raises(LLMHTTPError) as caught:
+        client(post, tmp_path).complete(messages=[{"role": "user", "content": "x"}])
+    assert caught.value.status == 500
+    assert "upstream exploded" in str(caught.value)
+
+
+def test_a_400_is_never_retried_and_says_what_the_api_said(tmp_path: Path) -> None:
+    post = Recorder(fail(400, '{"message":"tools[0].name is required"}'))
+    with pytest.raises(LLMHTTPError, match="tools\\[0\\].name is required"):
+        client(post, tmp_path).complete(messages=[{"role": "user", "content": "x"}])
+    assert len(post.calls) == 1
+
+
+def test_a_401_is_never_retried(tmp_path: Path) -> None:
+    post = Recorder(fail(401, "bad key"))
+    with pytest.raises(LLMHTTPError, match="401"):
+        client(post, tmp_path).complete(messages=[{"role": "user", "content": "x"}])
+    assert len(post.calls) == 1
+
+
+def test_a_429_is_retried_and_then_succeeds(tmp_path: Path) -> None:
+    post = Recorder(fail(429, "slow down"), ok(OPENAI_OK))
+    response = client(post, tmp_path).complete(
+        messages=[{"role": "user", "content": "x"}])
+    assert len(post.calls) == 2
+    assert response.stop_reason == "tool_use"
+
+
+def test_a_timeout_is_retried(tmp_path: Path) -> None:
+    post = Recorder(httpx.ConnectTimeout("timed out"), ok(OPENAI_OK))
+    response = client(post, tmp_path).complete(
+        messages=[{"role": "user", "content": "x"}])
+    assert len(post.calls) == 2
+    assert response.usage.input_tokens == 100
+
+
+def test_retry_after_is_honoured() -> None:
+    assert retry_after_seconds({"Retry-After": "12"}) == 12.0
+    assert retry_after_seconds({"retry-after": "not a number"}) is None
+    assert retry_after_seconds({}) is None
+    # Capped, so a hostile header cannot park the run for an hour.
+    assert retry_after_seconds({"Retry-After": "9999"}) == 60.0
+
+
+def test_backoff_is_exponential_and_capped() -> None:
+    values = [backoff_seconds(n, jitter=lambda: 1.0) for n in range(1, 9)]
+    assert values[0] == 1.0 and values[1] == 2.0 and values[2] == 4.0
+    assert max(values) == 60.0
+
+
+# ────────────────────────────  request shape  ────────────────────────────
+
+
+def test_system_is_a_message_for_openai_and_a_field_for_anthropic(
+    tmp_path: Path
+) -> None:
+    post = Recorder(ok(OPENAI_OK))
+    client(post, tmp_path).complete(system="be brief",
+                                    messages=[{"role": "user", "content": "x"}])
+    assert post.calls[0]["body"]["messages"][0] == {"role": "system",
+                                                    "content": "be brief"}
+
+    apost = Recorder(ok(ANTHROPIC_OK))
+    AnthropicClient(model="claude-opus-4-5", api_key="k",
+                    cassette_dir=tmp_path / "c2", http_post=apost).complete(
+        system="be brief", messages=[{"role": "user", "content": "x"}])
+    body = apost.calls[0]["body"]
+    assert "system" in body
+    assert not any(m["role"] == "system" for m in body["messages"])
+
+
+def test_empty_tools_is_omitted_not_sent_as_null(tmp_path: Path) -> None:
+    post = Recorder(ok(OPENAI_OK))
+    client(post, tmp_path).complete(messages=[{"role": "user", "content": "x"}])
+    assert "tools" not in post.calls[0]["body"]
+    assert "tool_choice" not in post.calls[0]["body"]
+
+
+def test_openai_shaped_tool_definitions_are_accepted(tmp_path: Path) -> None:
+    """Callers written against the pre-S1 client pass function-wrapped tools."""
+    wrapped = {"type": "function", "function": TOOL}
+    assert normalise_tools([wrapped]) == normalise_tools([TOOL])
+
+    post = Recorder(ok(OPENAI_OK))
+    client(post, tmp_path).complete(messages=[{"role": "user", "content": "x"}],
+                                    tools=[wrapped])
+    assert post.calls[0]["body"]["tools"][0]["function"]["name"] == "read_file"
+
+
+def test_anthropic_caches_the_last_system_block_and_the_last_tool(
+    tmp_path: Path
+) -> None:
+    post = Recorder(ok(ANTHROPIC_OK))
+    AnthropicClient(model="claude-opus-4-5", api_key="k",
+                    cassette_dir=tmp_path / "c", http_post=post).complete(
+        system="prompt", messages=[{"role": "user", "content": "x"}],
+        tools=[TOOL, {**TOOL, "name": "search_code"}])
+    body = post.calls[0]["body"]
+    assert body["system"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in body["tools"][0]
+    assert body["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+# ────────────────────────────  the response  ─────────────────────────────
+
+
+def test_the_response_carries_the_raw_message_and_the_client_stores_nothing(
+    tmp_path: Path
+) -> None:
+    """`complete` is a pure function of its arguments; the provider-shaped
+    assistant turn lives on the response, not on the client."""
+    post = Recorder(ok(OPENAI_OK))
+    instance = client(post, tmp_path)
+    response = instance.complete(messages=[{"role": "user", "content": "x"}])
+    assert response.raw_message["tool_calls"][0]["id"] == "c1"
+    assert not hasattr(instance, "last_raw_message")
+
+
+def test_tool_arguments_that_are_not_json_do_not_crash(tmp_path: Path) -> None:
+    broken = json.loads(json.dumps(OPENAI_OK))
+    broken["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] = "{oops"
+    post = Recorder(ok(broken))
+    response = client(post, tmp_path).complete(
+        messages=[{"role": "user", "content": "x"}])
+    assert "__malformed_arguments__" in response.tool_uses()[0]["input"]
+
+
+def test_tool_results_use_each_provider_s_wire_shape(tmp_path: Path) -> None:
+    results = [ToolCallResult(id="a", name="read_file", content="hi"),
+               ToolCallResult(id="b", name="read_file", content="no",
+                              is_error=True)]
+
+    openai = client(Recorder(), tmp_path).tool_result_messages(results)
+    assert len(openai) == 2
+    assert openai[0]["role"] == "tool" and openai[0]["tool_call_id"] == "a"
+    assert openai[1]["content"].startswith("ERROR:")
+
+    anthropic = AnthropicClient(model="m", api_key="k",
+                                cassette_dir=tmp_path / "c").tool_result_messages(results)
+    assert len(anthropic) == 1, "Anthropic takes all tool results in one message"
+    assert anthropic[0]["content"][1]["is_error"] is True
+
+
+# ──────────────────────────────  cost  ───────────────────────────────────
+
+
+def test_cache_tokens_are_priced_separately() -> None:
+    plain = usd_for("claude-opus-4-5", Usage(input_tokens=1_000_000))
+    cached = usd_for("claude-opus-4-5", Usage(cache_read_tokens=1_000_000))
+    assert plain == pytest.approx(5.0)
+    assert cached == pytest.approx(0.5)
+
+
+def test_an_unknown_model_prices_at_zero_and_warns(caplog) -> None:
+    with caplog.at_level("WARNING"):
+        assert usd_for("nobody-has-heard-of-this", Usage(input_tokens=10**6)) == 0.0
+    assert "no price is configured" in caplog.text
+
+
+def test_cost_is_accumulated_across_calls(tmp_path: Path) -> None:
+    post = Recorder(ok(OPENAI_OK), ok(OPENAI_OK))
+    instance = client(post, tmp_path)
+    instance.complete(messages=[{"role": "user", "content": "x"}])
+    instance.complete(messages=[{"role": "user", "content": "y"}])
+    assert instance.calls == 2
+    assert instance.total.input_tokens == 200
+    assert instance.total.usd == pytest.approx(2 * instance.price(
+        Usage(input_tokens=100, output_tokens=20)))
+
+
+# ────────────────────────────  cassettes  ────────────────────────────────
+
+
+def test_a_cassette_hit_makes_no_http_call(tmp_path: Path) -> None:
+    post = Recorder(ok(OPENAI_OK))
+    first = client(post, tmp_path)
+    first.complete(messages=[{"role": "user", "content": "x"}])
+    assert len(post.calls) == 1
+
+    replay = Recorder()          # any request now raises
+    second = client(replay, tmp_path)
+    response = second.complete(messages=[{"role": "user", "content": "x"}])
+    assert response.from_cassette is True
+    assert response.latency_ms == 0.0, "no time was spent; do not claim any"
+    assert replay.calls == []
+
+
+def test_a_changed_prompt_is_a_cassette_miss(tmp_path: Path) -> None:
+    post = Recorder(ok(OPENAI_OK), ok(OPENAI_OK))
+    instance = client(post, tmp_path)
+    instance.complete(system="v1", messages=[{"role": "user", "content": "x"}])
+    instance.complete(system="v2", messages=[{"role": "user", "content": "x"}])
+    assert len(post.calls) == 2
+
+
+def test_offline_names_the_missing_hash(tmp_path: Path) -> None:
+    instance = client(Recorder(), tmp_path, offline=True)
+    with pytest.raises(CassetteMiss) as caught:
+        instance.complete(messages=[{"role": "user", "content": "x"}])
+    assert "offline=True" in str(caught.value)
+    assert str(tmp_path / "cassettes") in str(caught.value)
+
+
+def test_offline_replays_a_recorded_call_with_no_network(tmp_path: Path) -> None:
+    recorded = client(Recorder(ok(OPENAI_OK)), tmp_path)
+    recorded.complete(messages=[{"role": "user", "content": "x"}])
+
+    offline = client(Recorder(), tmp_path, offline=True)
+    response = offline.complete(messages=[{"role": "user", "content": "x"}])
+    assert response.from_cassette and response.tool_uses()[0]["name"] == "read_file"
