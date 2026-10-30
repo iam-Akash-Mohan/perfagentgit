@@ -27,6 +27,7 @@ the ORM hypothesis would land on the 0.40 default.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Iterable
 
 from ..contracts import (DataAccess, EndpointModel, FixabilityAssessment,
@@ -57,6 +58,26 @@ _NO_INDEX_WORDS = (
 
 # A projection only pays when most of the row is read and thrown away.
 PROJECTION_RATIO = 0.5
+
+# How far a cited line may sit from the line a PerRowWork entry was recorded
+# at and still be the same finding. A method body, not a file: the per-row work
+# inside `enrich` is a handful of lines from its declaration, and a window the
+# size of a class would match anything in it.
+CITATION_LINE_WINDOW = 10
+
+# `src/main/java/com/ex/service/CustomerService.java:38`, or just the file name,
+# with the line optional.
+_FILE_REFERENCE = re.compile(
+    r"(?P<file>[\w./-]*[A-Za-z0-9_]+\.java)(?::(?P<line>\d+))?")
+
+# `CustomerService.enrich` — a method qualified by the class that owns it, which
+# is the class's file. Requires the lower-case method name so that `Customer.id`
+# in prose and `Page.content` do not become file references. `.java` is excluded
+# because `OrderService.java:400` is a FILE reference and must keep its line
+# number: read as a symbol it would become a line-less, file-level match and
+# the window check would never run.
+_SYMBOL_REFERENCE = re.compile(
+    r"\b(?P<owner>[A-Z][A-Za-z0-9]+)\.(?!java\b)(?P<member>[a-z][A-Za-z0-9_]*)\b")
 
 # How many distinctive words a hypothesis and a per-row work item must share
 # before the item is treated as what the hypothesis is about. One shared word
@@ -191,12 +212,81 @@ def covering_index(table: TableInfo, columns: list[str]) -> str | None:
     return None
 
 
+def cited_locations(hypothesis: Hypothesis) -> list[tuple[str, int | None]]:
+    """(source file stem, line) pairs the hypothesis points at.
+
+    Three spellings count as pointing at a file, because diagnosis writes all
+    three: a path (`src/main/java/.../CustomerService.java:38`), a bare file
+    name, and a qualified symbol (`CustomerService.enrich`). The last is the
+    one that matters in practice — the recorded hypotheses name methods, not
+    paths — and a method named in a file IS a reference to that file.
+
+    Matched against the RAW text: Java identifiers are case-sensitive, and the
+    lowercased haystack the keyword rules use would lose `CustomerService`.
+    """
+    raw = " ".join([hypothesis.claim, hypothesis.mechanism,
+                    hypothesis.prediction, *hypothesis.evidence])
+    found: list[tuple[str, int | None]] = []
+
+    for match in _FILE_REFERENCE.finditer(raw):
+        stem = match.group("file").rsplit("/", 1)[-1].removesuffix(".java")
+        line = match.group("line")
+        found.append((stem, int(line) if line else None))
+
+    for match in _SYMBOL_REFERENCE.finditer(raw):
+        found.append((match.group("owner"), None))
+
+    return found
+
+
+def _cited_work(hypothesis: Hypothesis,
+                candidates: list[PerRowWork]) -> PerRowWork | None:
+    """The per-row work item a citation points at, nearest line first."""
+    locations = cited_locations(hypothesis)
+    if not locations:
+        return None
+
+    best: tuple[int, PerRowWork] | None = None
+    for work in candidates:
+        stem = Path(work.file).stem
+        for cited_file, cited_line in locations:
+            if cited_file.lower() != stem.lower():
+                continue
+            if cited_line is None:
+                distance = CITATION_LINE_WINDOW      # file-level, not line-level
+            elif abs(cited_line - work.line) <= CITATION_LINE_WINDOW:
+                distance = abs(cited_line - work.line)
+            else:
+                continue
+            if best is None or distance < best[0]:
+                best = (distance, work)
+    return best[1] if best else None
+
+
 def matching_per_row_work(hypothesis: Hypothesis,
                           model: EndpointModel) -> PerRowWork | None:
-    """The unbounded per-row work item this hypothesis is about, if any."""
+    """The unbounded per-row work item this hypothesis is about, if any.
+
+    CITATIONS FIRST. A hypothesis that names `CustomerService.enrich` and a
+    per-row work item recorded at `CustomerService.java:38` are about the same
+    code, and that is a fact rather than a similarity score. Word overlap is
+    the fallback, and it is a weak one: on the recorded artifacts "DTO
+    construction & invoice aggregation" shares one significant word with
+    "iterates over each invoice of a customer to detect overdue invoices",
+    which is under the threshold — so the hypothesis fell through the whole
+    table to the default and then outranked a properly classified one.
+    """
+    candidates = model.unbounded_per_row_work()
+    if not candidates:
+        return None
+
+    cited = _cited_work(hypothesis, candidates)
+    if cited is not None:
+        return cited
+
     text = hypothesis_text(hypothesis)
     best: tuple[int, PerRowWork] | None = None
-    for work in model.unbounded_per_row_work():
+    for work in candidates:
         words = _significant(work.description, work.scales_with)
         hits = sum(1 for word in words if mentions(text, word))
         if hits >= MIN_WORK_OVERLAP and (best is None or hits > best[0]):
@@ -239,10 +329,11 @@ def assess_fixability(hypothesis: Hypothesis,
     fields = unbounded_fields(shape)
 
     def verdict(value: float, reason: str,
-                blocked_by: str | None = None) -> FixabilityAssessment:
+                blocked_by: str | None = None,
+                classified: bool = True) -> FixabilityAssessment:
         return FixabilityAssessment(
             hypothesis_id=hypothesis.id, fixability=value, reason=reason,
-            blocked_by=blocked_by,
+            blocked_by=blocked_by, classified=classified,
         )
 
     # 1 ─ the response body is the contract ───────────────────────────────
@@ -342,7 +433,14 @@ def assess_fixability(hypothesis: Hypothesis,
         )
 
     # 9 ─ unknown ─────────────────────────────────────────────────────────
-    return verdict(0.40, "unknown; neither favoured nor excluded")
+    # `classified=False` is the important half. 0.40 is a placeholder chosen so
+    # that an unrecognised hypothesis is neither favoured nor excluded, and it
+    # is NOT a finding: multiplied by a large attributed_ms it produced the
+    # biggest expected value in the run, so "we could not assess this" ranked
+    # above "this is batchable, here is the fix". Ranking reads the flag.
+    return verdict(0.40, "UNCLASSIFIED: no policy row matched this hypothesis, "
+                         "so 0.40 is a placeholder rather than an assessment",
+                   classified=False)
 
 
 # ────────────────────────────  expected value  ───────────────────────────
@@ -356,6 +454,12 @@ def rank_hypotheses(hypotheses: HypothesisSet,
     clean fix above a 1400 ms cause that is the API contract. Ties break on
     attributed milliseconds so a genuinely bigger cost still wins when the
     expected values are equal.
+
+    UNCLASSIFIED entries sort last, whatever their expected value. A
+    fallthrough means the policy table could not describe the hypothesis, and
+    0.40 x a large number is arithmetic on a placeholder — letting that outrank
+    a real 0.90 classification is how the phase recommended attacking something
+    nobody had assessed.
     """
     ranked: list[RankedHypothesis] = []
     for h in hypotheses.hypotheses:
@@ -368,6 +472,7 @@ def rank_hypotheses(hypotheses: HypothesisSet,
             fixability=assessment,
             expected_value_ms=round(h.attributed_ms * assessment.fixability, 3),
         ))
-    ranked.sort(key=lambda r: (r.expected_value_ms, r.attributed_ms),
+    ranked.sort(key=lambda r: (r.fixability.classified, r.expected_value_ms,
+                               r.attributed_ms),
                 reverse=True)
     return ranked

@@ -17,12 +17,22 @@ _ENV_PREFIX = "PERFAGENT_"
 PROVIDER_KEY_ENV: dict[str, str | None] = {
     "cerebras": "CEREBRAS_API_KEY",
     "groq": "GROQ_API_KEY",
+    "gemini": "GEMINI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "ollama": None,          # a local server; no key
 }
 
 DEFAULT_PROVIDER = "cerebras"
 DEFAULT_MODEL = "gpt-oss-120b"
+
+# A model id belongs to ONE provider. `DEFAULT_MODEL` is a Cerebras model, so
+# `--provider gemini` with no `--model` would otherwise send "gpt-oss-120b" to
+# Google and get a 404 that reads like a configuration bug. Only providers
+# whose default differs from the global one appear here; everything else keeps
+# the resolution order exactly as it was.
+PROVIDER_DEFAULT_MODEL: dict[str, str] = {
+    "gemini": "gemini-2.5-flash",
+}
 
 
 class LLMSettings(BaseModel):

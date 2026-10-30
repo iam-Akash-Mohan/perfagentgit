@@ -30,7 +30,7 @@ def understand_command(
         help='The endpoint, e.g. "POST /api/customers/search".'),
     provider: str | None = typer.Option(
         None, "--provider",
-        help="cerebras | groq | anthropic | ollama. Default: perfagent.yml."),
+        help="cerebras | groq | gemini | anthropic | ollama. Default: perfagent.yml."),
     model: str | None = typer.Option(
         None, "--model", help="Model id. Default: perfagent.yml."),
     max_usd: float | None = typer.Option(

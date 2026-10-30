@@ -13,7 +13,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from ..config import PROVIDER_KEY_ENV, Settings
+from ..config import (PROVIDER_DEFAULT_MODEL, PROVIDER_KEY_ENV,
+                      Settings)
 from ..errors import PerfAgentError
 from .anthropic import AnthropicClient
 from .base import (Cassette, CassetteMiss, HTTPLLMClient, LLMHTTPError,
@@ -27,7 +28,7 @@ __all__ = [
     "normalise_tools", "tool_names", "usd_for", "resolve_key",
 ]
 
-OPENAI_COMPAT = ("cerebras", "groq", "ollama")
+OPENAI_COMPAT = ("cerebras", "groq", "gemini", "ollama")
 
 # What the pre-S1 GroqClient defaulted to. Only the deprecated alias uses it.
 LEGACY_MODEL = "gpt-oss-120b"
@@ -53,6 +54,19 @@ def resolve_key(provider: str) -> str | None:
     return key
 
 
+def _default_model(provider: str, config: Any) -> str:
+    """The model to use when the caller named a provider but not a model.
+
+    `config.model` is only the right answer for the provider it was written
+    for. Asking for a different provider on the command line and silently
+    keeping the configured model sends one vendor's model id to another
+    vendor's API.
+    """
+    if provider != config.provider and provider in PROVIDER_DEFAULT_MODEL:
+        return PROVIDER_DEFAULT_MODEL[provider]
+    return str(config.model)
+
+
 def make_client(
     provider: str | None = None,
     model: str | None = None,
@@ -76,7 +90,7 @@ def make_client(
 
     chosen = (provider or config.provider).lower()
     common: dict[str, Any] = {
-        "model": model or config.model,
+        "model": model or _default_model(chosen, config),
         "max_tokens": max_tokens if max_tokens is not None else config.max_tokens,
         "timeout_s": timeout_s if timeout_s is not None else config.timeout_s,
         "cassette_dir": cassette_dir if cassette_dir is not None

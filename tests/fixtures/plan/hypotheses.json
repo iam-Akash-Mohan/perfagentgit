@@ -1,0 +1,145 @@
+{
+  "hypotheses": [
+    {
+      "id": "h1",
+      "claim": "JSON serialization dominates the non‑SQL latency",
+      "mechanism": "After the DTO list is built, Jackson (or the configured JSON mapper) writes each CustomerDto to a byte buffer; the time grows ≈7 ms per KB of output (measured from the sweep: 142 KB → 1092 ms, 418 KB → 3173 ms, 658 KB → 5309 ms, giving ~6.7‑7.0 ms/KB). This accounts for most of the 88 % non‑SQL time.",
+      "layer": "serialization",
+      "evidence": [
+        "page_size=1 → body 142 297 B, latency 1091.8 ms, non‑SQL ≈ 983 ms",
+        "page_size=5 → body 418 458 B, latency 3172.8 ms, non‑SQL ≈ 2798 ms",
+        "page_size=20 → body 657 650 B, latency 5309.1 ms, non‑SQL ≈ 4612 ms"
+      ],
+      "attributed_ms": 720.0,
+      "prediction": "If the response is sent as plain text or compressed JSON (reducing body size), the latency will drop proportionally, even with the same number of rows.",
+      "confidence": 0.85
+    },
+    {
+      "id": "h2",
+      "claim": "Per‑row application‑logic (DTO construction & invoice aggregation) adds a fixed cost per result row",
+      "mechanism": "CustomerService.enrich creates a CustomerDto and calls InvoiceService.getOutstanding, which runs a SUM query (already measured) and then performs Java calculations; the number of SQL statements per request rises with rows (4 → 12 → 42) while SQL time stays ~10 % of total, implying the remaining per‑row work (object allocation, loops) consumes ≈20 ms per row (≈200 ms for 10‑row request).",
+      "layer": "application_logic",
+      "evidence": [
+        "application SQL statements per request: 4 (1 row), 12 (5 rows), 42 (20 rows)",
+        "SQL time per request: 108 ms, 375 ms, 697 ms (≈10 % of latency)"
+      ],
+      "attributed_ms": 200.0,
+      "prediction": "If DTO construction is bypassed (e.g., returning only IDs), latency will decrease roughly by 20 ms per row regardless of body size.",
+      "confidence": 0.6
+    },
+    {
+      "id": "h3",
+      "claim": "ORM hydration of Customer entities and lazy collections adds modest overhead",
+      "mechanism": "Hibernate loads each Customer row (≈1.6 M rows sent) and, for every row, triggers a lazy collection fetch that issues another query (Customer.getInvoices). These entity materialisations are not reflected in the SQL timing because they are cheap, but they cause allocator and GC pressure, contributing ~5 % of latency.",
+      "layer": "orm_hydration",
+      "evidence": [
+        "rows examined / rows sent: 5 110 057 / 1 649 126 indicates many extra rows processed",
+        "two digests report ‘no index used’, suggesting full scans for lazy loads"
+      ],
+      "attributed_ms": 50.0,
+      "prediction": "Setting hibernate.default_batch_fetch_size > 0 or eager‑fetching invoices will reduce latency by ≈50 ms per request.",
+      "confidence": 0.5
+    }
+  ],
+  "probes_run": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "page_size": 1,
+        "name_filter": "a",
+        "iterations": 3
+      },
+      "discriminates_between": [
+        "h1",
+        "h2",
+        "h3"
+      ],
+      "result": "Latency and body size grow together; SQL time stays ~10 % – supports h1 > h2 > h3"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "page_size": 5,
+        "name_filter": "a",
+        "iterations": 3
+      },
+      "discriminates_between": [
+        "h1",
+        "h2"
+      ],
+      "result": "Latency increase roughly proportional to body bytes (≈7 ms/KB) more than to statement count alone – favors h1"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "page_size": 20,
+        "name_filter": "a",
+        "iterations": 3
+      },
+      "discriminates_between": [
+        "h1",
+        "h2"
+      ],
+      "result": "Same pattern persists at larger scale, confirming serialization cost dominates"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "page_size": 5,
+        "name_filter": "zzzz-no-such-customer",
+        "iterations": 3
+      },
+      "discriminates_between": [
+        "h1"
+      ],
+      "result": "Zero rows, tiny body (347 B) and latency 16.4 ms, showing fixed overhead is minimal"
+    }
+  ],
+  "ranked_ids": [
+    "h1",
+    "h2",
+    "h3"
+  ],
+  "measured_total_ms": 1031.356,
+  "probes_executed": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "page_size": 1,
+        "name_filter": "a",
+        "iterations": 3
+      },
+      "result": "probe: page_size=1 name_filter='a' iterations=3 (1 warmup discarded)\n  statuses                     : {'200': 3}\n  p50 latency                  : 1091.8 ms\n  p95 latency                  : 1108.5 ms\n  result rows in response      : 1\n  response body size (median)  : 142297 bytes\n  application SQL per request  : 4.0 statements\n  server-side SQL per request  : 108.2 ms (9.9 % of p50)\n  latency per result row       : 1091.8 ms\n  body bytes per result row    : 142297"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "page_size": 5,
+        "name_filter": "a",
+        "iterations": 3
+      },
+      "result": "probe: page_size=5 name_filter='a' iterations=3 (1 warmup discarded)\n  statuses                     : {'200': 3}\n  p50 latency                  : 3172.8 ms\n  p95 latency                  : 3448.4 ms\n  result rows in response      : 5\n  response body size (median)  : 418458 bytes\n  application SQL per request  : 12.0 statements\n  server-side SQL per request  : 375.3 ms (11.8 % of p50)\n  latency per result row       : 634.6 ms\n  body bytes per result row    : 83691"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "page_size": 20,
+        "name_filter": "a",
+        "iterations": 3
+      },
+      "result": "probe: page_size=20 name_filter='a' iterations=3 (1 warmup discarded)\n  statuses                     : {'200': 3}\n  p50 latency                  : 5309.1 ms\n  p95 latency                  : 5317.0 ms\n  result rows in response      : 20\n  response body size (median)  : 657650 bytes\n  application SQL per request  : 42.0 statements\n  server-side SQL per request  : 696.7 ms (13.1 % of p50)\n  latency per result row       : 265.5 ms\n  body bytes per result row    : 32882"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "page_size": 5,
+        "name_filter": "zzzz-no-such-customer",
+        "iterations": 3
+      },
+      "result": "probe: page_size=5 name_filter='zzzz-no-such-customer' iterations=3 (1 warmup discarded)\n  statuses                     : {'200': 3}\n  p50 latency                  : 16.4 ms\n  p95 latency                  : 21.3 ms\n  result rows in response      : 0\n  response body size (median)  : 347 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 12.0 ms (73.6 % of p50)"
+    }
+  ],
+  "baseline": ".perfagent/runs/p16-full/baseline.json",
+  "endpoint_model": ".perfagent/endpoint_model.json",
+  "submissions_rejected": 0
+}

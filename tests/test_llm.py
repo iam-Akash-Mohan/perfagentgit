@@ -322,3 +322,162 @@ def test_offline_replays_a_recorded_call_with_no_network(tmp_path: Path) -> None
     offline = client(Recorder(), tmp_path, offline=True)
     response = offline.complete(messages=[{"role": "user", "content": "x"}])
     assert response.from_cassette and response.tool_uses()[0]["name"] == "read_file"
+
+
+# ───────────────────────────────  gemini  ────────────────────────────────
+#
+# Google's OpenAI compatibility layer. These tests pin the two things that
+# could silently break the agent loop against it: the URL the request goes to,
+# and the shape `parse` is willing to read back. They are cassette-backed —
+# recorded once from a scripted response, then replayed with a client whose
+# `post` raises on any call — so "it works end to end" is demonstrated without
+# a key and without spending anything.
+
+# A Gemini-shaped tool-calling reply. Deliberately NOT identical to OPENAI_OK:
+# `content` is an empty string rather than null, and the tool call carries no
+# `id`, both of which this layer has been observed to do.
+GEMINI_OK = {
+    "model": "gemini-2.5-flash",
+    "choices": [{"finish_reason": "tool_calls",
+                 "message": {"role": "assistant", "content": "",
+                             "tool_calls": [{"type": "function",
+                                             "function": {"name": "read_file",
+                                                          "arguments": '{"path":"a.java"}'}}]}}],
+    "usage": {"prompt_tokens": 400, "completion_tokens": 60,
+              "total_tokens": 460},
+}
+
+GEMINI_DONE = {
+    "model": "gemini-2.5-flash",
+    "choices": [{"finish_reason": "stop",
+                 "message": {"role": "assistant",
+                             "content": "the file is a controller"}}],
+    "usage": {"prompt_tokens": 500, "completion_tokens": 10},
+}
+
+
+def gemini(post: Recorder, tmp_path: Path, **kwargs: Any) -> OpenAICompatClient:
+    return OpenAICompatClient(
+        provider="gemini", model="gemini-2.5-flash", api_key="k",
+        cassette_dir=tmp_path / "cassettes", http_post=post,
+        sleep=lambda _s: None, jitter=lambda: 0.0, **kwargs)
+
+
+def test_gemini_is_built_by_the_factory_with_googles_endpoint(monkeypatch) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    instance = make_client("gemini")
+    assert isinstance(instance, OpenAICompatClient)
+    assert instance.model == "gemini-2.5-flash"
+    assert instance.endpoint() == (
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
+    assert instance.headers()["Authorization"] == "Bearer g"
+
+
+def test_a_missing_gemini_key_names_the_variable(monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with pytest.raises(PerfAgentError, match="GEMINI_API_KEY"):
+        resolve_key("gemini")
+
+
+def test_switching_to_gemini_does_not_send_another_vendors_model(
+    monkeypatch
+) -> None:
+    """perfagent.yml names a Cerebras model; `--provider gemini` must not
+    forward it to Google."""
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("PERFAGENT_LLM_PROVIDER", "cerebras")
+    monkeypatch.setenv("PERFAGENT_LLM_MODEL", "gpt-oss-120b")
+    assert make_client("gemini").model == "gemini-2.5-flash"
+    assert make_client("gemini", "gemini-2.5-pro").model == "gemini-2.5-pro"
+    assert make_client("cerebras").model == "gpt-oss-120b"
+
+
+def test_gemini_tool_calling_round_trips(tmp_path: Path) -> None:
+    post = Recorder(ok(GEMINI_OK))
+    response = gemini(post, tmp_path).complete(
+        system="you trace endpoints",
+        messages=[{"role": "user", "content": "read OrderController"}],
+        tools=[TOOL])
+
+    sent = post.calls[0]
+    assert sent["url"].endswith("/v1beta/openai/chat/completions")
+    assert sent["body"]["model"] == "gemini-2.5-flash"
+    assert sent["body"]["max_tokens"] == 4096
+    assert sent["body"]["tools"][0]["function"]["name"] == "read_file"
+    # The system prompt is folded into messages; this layer has no system field.
+    assert sent["body"]["messages"][0] == {"role": "system",
+                                           "content": "you trace endpoints"}
+
+    call = response.tool_uses()[0]
+    assert response.stop_reason == "tool_use"
+    assert call["name"] == "read_file"
+    assert call["input"] == {"path": "a.java"}      # the JSON string is parsed
+    assert call["id"], "a tool call with no id must still be addressable"
+    assert response.text() == ""                    # content "" is not a text block
+    assert response.usage.input_tokens == 400
+    assert response.usage.usd == pytest.approx(
+        usd_for("gemini-2.5-flash", Usage(input_tokens=400, output_tokens=60)))
+
+
+def test_a_gemini_tool_call_without_an_id_is_still_correlated(
+    tmp_path: Path
+) -> None:
+    """The id is the correlation key for the result message. Google may not
+    send one, and a KeyError here would read as a dead phase."""
+    response = gemini(Recorder(ok(GEMINI_OK)), tmp_path).complete(
+        messages=[{"role": "user", "content": "x"}], tools=[TOOL])
+    call = response.tool_uses()[0]
+
+    results = [ToolCallResult(id=call["id"], name=call["name"], content="ok")]
+    wire = gemini(Recorder(), tmp_path).tool_result_messages(results)
+    assert wire[0]["tool_call_id"] == call["id"]
+    assert wire[0]["role"] == "tool"
+
+
+def test_gemini_replays_from_a_cassette_with_no_network(tmp_path: Path) -> None:
+    recorded = gemini(Recorder(ok(GEMINI_OK)), tmp_path)
+    recorded.complete(messages=[{"role": "user", "content": "x"}], tools=[TOOL])
+
+    offline = gemini(Recorder(), tmp_path, offline=True)   # any request raises
+    replayed = offline.complete(messages=[{"role": "user", "content": "x"}],
+                                tools=[TOOL])
+    assert replayed.from_cassette is True
+    assert replayed.tool_uses()[0]["name"] == "read_file"
+
+
+def test_the_agent_loop_drives_gemini_end_to_end(tmp_path: Path) -> None:
+    """A real `run_agent` conversation: tool call, tool result, final answer.
+
+    Cassette-backed in both turns, so this exercises the provider's own wire
+    shape — the tool_calls block it returns and the `role: tool` message the
+    client builds from it — without a key.
+    """
+    from perfagent.agent import LoopBudget, LoopStatus, run_agent
+
+    # Record both turns.
+    recording = gemini(Recorder(ok(GEMINI_OK), ok(GEMINI_DONE)), tmp_path)
+    seen: list[str] = []
+
+    def read_file(path: str) -> str:
+        seen.append(path)
+        return "class OrderController {}"
+
+    first = run_agent(
+        client=recording, task="read OrderController",
+        tools=[TOOL], handlers={"read_file": read_file},
+        budget=LoopBudget(max_steps=4))
+
+    assert first.status is LoopStatus.COMPLETED
+    assert seen == ["a.java"]
+    assert first.final_text == "the file is a controller"
+
+    # Replay the same conversation offline. Nothing may reach the network.
+    seen.clear()
+    replay = run_agent(
+        client=gemini(Recorder(), tmp_path, offline=True),
+        task="read OrderController", tools=[TOOL],
+        handlers={"read_file": read_file}, budget=LoopBudget(max_steps=4))
+
+    assert replay.status is LoopStatus.COMPLETED
+    assert seen == ["a.java"]
+    assert replay.usage.input_tokens == 900        # 400 + 500, both replayed

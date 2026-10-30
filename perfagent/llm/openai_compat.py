@@ -1,7 +1,52 @@
-"""Cerebras, Groq and Ollama. All three speak OpenAI's chat-completions shape.
+"""Cerebras, Groq, Gemini and Ollama — all speak OpenAI chat-completions.
 
-One class, three base URLs. The differences between these providers are
-configuration; a subclass per provider would be three copies of the same file.
+One class, four base URLs. The differences between these providers are
+configuration; a subclass per provider would be four copies of the same file.
+
+## Google's compatibility layer, against Cerebras as the reference
+
+Google serves an OpenAI-shaped endpoint at `/v1beta/openai/`. It is close, not
+identical, and these are the differences that reach this file. Everything
+below was read off Google's published compatibility documentation; the ones
+marked UNVERIFIED have not been exercised against a live key here, and the
+cassette test in `tests/test_llm.py` pins the shape we believe we will get.
+
+  * **The trailing slash is load-bearing.** The base URL ends in `/openai/`,
+    and `endpoint()` strips it before appending, so the request goes to
+    `.../v1beta/openai/chat/completions`.
+
+  * **Tool arguments are a JSON string**, as with every other provider here,
+    so `_arguments` applies unchanged. Gemini's NATIVE API returns an object
+    instead — if a future change talks to `v1beta/models/...` directly, that
+    assumption breaks.
+
+  * **`tool_calls[].id` is not guaranteed.** OpenAI and Cerebras always send
+    one; Google's layer has been observed omitting it. `parse` therefore
+    synthesises an id rather than raising `KeyError` three frames away from
+    anything that explains it. A synthesised id is echoed back in the
+    `tool_call_id` of the result message, which is the correlation key, so it
+    must be stable within one response — it is, being derived from position.
+
+  * **`max_tokens` is accepted** (as the alias for `max_completion_tokens`),
+    which is what `build_body` sends.
+
+  * **Thinking tokens count as output.** `gemini-2.5-flash` reasons before it
+    answers and bills that to `completion_tokens`, so a tight `max_tokens`
+    buys a reply with no content and no tool call. That is the same failure
+    this repo already hit on `gpt-oss-120b`; the loop reads `stop_reason ==
+    "max_tokens"` and says so rather than reporting a give-up.
+
+  * **UNVERIFIED: forced tool choice.** `forced_tool_choice` sends OpenAI's
+    named-function form. Google documents `"auto"`, `"none"` and `"required"`;
+    whether it honours a named function is not something this file can prove
+    without a key. If it does not, the terminal-tool nudge in `agent.py`
+    degrades from "call THIS tool" to an ordinary turn — the loop still
+    works, it just loses one lever.
+
+  * **UNVERIFIED: no prompt caching fields.** `usage` carries
+    `prompt_tokens` / `completion_tokens` and no cache counters, so
+    `cache_read_tokens` and `cache_write_tokens` stay zero and the dollar
+    figure is the uncached one.
 """
 
 from __future__ import annotations
@@ -25,6 +70,7 @@ STOP_MAP = {
 BASE_URLS = {
     "cerebras": "https://api.cerebras.ai/v1",
     "groq": "https://api.groq.com/openai/v1",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
     "ollama": "http://localhost:11434/v1",
 }
 
@@ -93,10 +139,14 @@ class OpenAICompatClient(HTTPLLMClient):
         if message.get("content"):
             content.append({"type": "text", "text": message["content"]})
 
-        for call in message.get("tool_calls") or []:
+        for position, call in enumerate(message.get("tool_calls") or []):
             content.append({
                 "type": "tool_use",
-                "id": call["id"],
+                # Not call["id"]: Google's layer may omit it, and a KeyError
+                # here would surface as a dead phase rather than as a provider
+                # quirk. Position is stable within one response, which is all
+                # the correlation key has to be.
+                "id": call.get("id") or f"{self.provider}_call_{position}",
                 "name": call["function"]["name"],
                 "input": _arguments(call["function"].get("arguments")),
             })

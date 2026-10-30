@@ -12,6 +12,7 @@ from __future__ import annotations
 from ..contracts import Plan, RankedHypothesis
 
 BLOCKED = "BLOCKED"
+UNCLASSIFIED = "NOT CLASSIFIED"
 
 
 def render_plan(plan: Plan) -> str:
@@ -56,12 +57,27 @@ def _ranking(plan: Plan) -> list[str]:
 def _one_hypothesis(position: int, entry: RankedHypothesis,
                     considered: list[str]) -> list[str]:
     mark = " ← planned" if entry.hypothesis_id in considered else ""
+    if not entry.fixability.classified:
+        mark = f"  [{UNCLASSIFIED}]{mark}"
     out = [f"  {position}. [{entry.hypothesis_id}] {entry.claim}{mark}",
-           f"     layer         {entry.layer}",
-           f"     attributed    {entry.attributed_ms:.1f} ms"
-           f"   ×  fixability {entry.fixability.fixability:.2f}"
-           f"   =  expected value {entry.expected_value_ms:.1f} ms",
-           f"     why           {entry.fixability.reason}"]
+           f"     layer         {entry.layer}"]
+
+    if entry.fixability.classified:
+        out.append(f"     attributed    {entry.attributed_ms:.1f} ms"
+                   f"   ×  fixability {entry.fixability.fixability:.2f}"
+                   f"   =  expected value {entry.expected_value_ms:.1f} ms")
+    else:
+        # Deliberately NOT the same line shape. An unassessed hypothesis
+        # printed as "0.40 × 200 ms = 80 ms" reads as a finding, and that is
+        # how one outranked a classified 0.90 with a known fix.
+        out.append(f"     attributed    {entry.attributed_ms:.1f} ms"
+                   f"   ×  placeholder {entry.fixability.fixability:.2f}"
+                   f"   →  {entry.expected_value_ms:.1f} ms NOTIONAL")
+        out.append(f"     {UNCLASSIFIED}  no policy row matched this "
+                   f"hypothesis, so it is ranked BELOW every classified one "
+                   f"regardless of that number")
+
+    out.append(f"     why           {entry.fixability.reason}")
     if entry.fixability.blocked_by:
         out.append(f"     {BLOCKED} BY    {entry.fixability.blocked_by}")
     out.append("")

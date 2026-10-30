@@ -1,0 +1,296 @@
+{
+  "route": "POST /api/customers/search",
+  "entry": {
+    "file": "src/main/java/com/ex/web/CustomerController.java",
+    "line": 18,
+    "symbol": "CustomerController.search"
+  },
+  "path": [
+    {
+      "file": "src/main/java/com/ex/web/CustomerController.java",
+      "line": 18,
+      "symbol": "CustomerController.search"
+    },
+    {
+      "file": "src/main/java/com/ex/service/CustomerService.java",
+      "line": 26,
+      "symbol": "CustomerService.search"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/CustomerRepository.java",
+      "line": 13,
+      "symbol": "CustomerRepository.findByFilter"
+    },
+    {
+      "file": "src/main/java/com/ex/service/CustomerService.java",
+      "line": 36,
+      "symbol": "CustomerService.enrich"
+    },
+    {
+      "file": "src/main/java/com/ex/service/InvoiceService.java",
+      "line": 15,
+      "symbol": "InvoiceService.getOutstanding"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 14,
+      "symbol": "InvoiceRepository.sumOpenAmountByCustomer"
+    }
+  ],
+  "call_chain": [
+    {
+      "method": "CustomerController.search",
+      "file": "src/main/java/com/ex/web/CustomerController.java",
+      "line": 18,
+      "does": "delegates to CustomerService.search"
+    },
+    {
+      "method": "CustomerService.search",
+      "file": "src/main/java/com/ex/service/CustomerService.java",
+      "line": 26,
+      "does": "executes repo.findByFilter and maps results with enrich"
+    },
+    {
+      "method": "CustomerRepository.findByFilter",
+      "file": "src/main/java/com/ex/repo/CustomerRepository.java",
+      "line": 13,
+      "does": "executes JPQL query to filter customers by name with pagination"
+    },
+    {
+      "method": "CustomerService.enrich",
+      "file": "src/main/java/com/ex/service/CustomerService.java",
+      "line": 36,
+      "does": "adds outstanding amount and tags to each CustomerDto"
+    },
+    {
+      "method": "InvoiceService.getOutstanding",
+      "file": "src/main/java/com/ex/service/InvoiceService.java",
+      "line": 15,
+      "does": "calls InvoiceRepository.sumOpenAmountByCustomer"
+    },
+    {
+      "method": "InvoiceRepository.sumOpenAmountByCustomer",
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 14,
+      "does": "executes JPQL query to sum open invoice amounts for a customer"
+    }
+  ],
+  "data_access": [
+    {
+      "trigger": "repo.findByFilter",
+      "kind": "jpql_query",
+      "file": "src/main/java/com/ex/repo/CustomerRepository.java",
+      "line": 12,
+      "sql": "select c from Customer c where lower(c.name) like lower(concat('%', :name, '%'))",
+      "tables": [
+        "customer"
+      ],
+      "executes_per_row": false,
+      "note": null
+    },
+    {
+      "trigger": "invoiceRepo.sumOpenAmountByCustomer",
+      "kind": "derived_query",
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 14,
+      "sql": "select coalesce(sum(i.amount), 0) from Invoice i where i.customer.id = :customerId and i.status = 'OPEN'",
+      "tables": [
+        "invoice"
+      ],
+      "executes_per_row": true,
+      "note": "called once per Customer in the page"
+    },
+    {
+      "trigger": "lazy load of Customer.invoices",
+      "kind": "lazy_collection",
+      "file": "src/main/java/com/ex/service/CustomerService.java",
+      "line": 39,
+      "sql": null,
+      "tables": [
+        "invoice"
+      ],
+      "executes_per_row": true,
+      "note": "accessing c.getInvoices() triggers a lazy collection load for each Customer"
+    }
+  ],
+  "sql_sources": [
+    {
+      "method": "repo.findByFilter",
+      "kind": "@Query JPQL",
+      "tables": [
+        "customer"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/repo/CustomerRepository.java",
+        "line": 12,
+        "symbol": null
+      }
+    },
+    {
+      "method": "invoiceRepo.sumOpenAmountByCustomer",
+      "kind": "derived query",
+      "tables": [
+        "invoice"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+        "line": 14,
+        "symbol": null
+      }
+    },
+    {
+      "method": "lazy load of Customer.invoices",
+      "kind": "lazy collection",
+      "tables": [
+        "invoice"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/service/CustomerService.java",
+        "line": 39,
+        "symbol": null
+      }
+    }
+  ],
+  "entities": [
+    {
+      "name": "Customer",
+      "table": "customer",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/Customer.java",
+        "line": 1,
+        "symbol": null
+      },
+      "relations": [
+        {
+          "field": "invoices",
+          "type": "OneToMany",
+          "fetch": "LAZY",
+          "target": "Invoice",
+          "batch_size": null,
+          "fetch_mode": null
+        }
+      ]
+    },
+    {
+      "name": "Invoice",
+      "table": "invoice",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/Invoice.java",
+        "line": 1,
+        "symbol": null
+      },
+      "relations": [
+        {
+          "field": "customer",
+          "type": "ManyToOne",
+          "fetch": "LAZY",
+          "target": "Customer",
+          "batch_size": null,
+          "fetch_mode": null
+        }
+      ]
+    }
+  ],
+  "transactions": [
+    {
+      "method": "CustomerService.search",
+      "propagation": "REQUIRED",
+      "read_only": true,
+      "citation": {
+        "file": "src/main/java/com/ex/service/CustomerService.java",
+        "line": 25,
+        "symbol": "@Transactional"
+      }
+    }
+  ],
+  "external_calls": [],
+  "tables": [
+    {
+      "table": "customer",
+      "entity": "Customer",
+      "columns_read": [
+        "id",
+        "name"
+      ],
+      "all_columns": [],
+      "existing_indexes": [],
+      "approx_rows": null,
+      "foreign_keys": []
+    },
+    {
+      "table": "invoice",
+      "entity": "Invoice",
+      "columns_read": [
+        "customer_id",
+        "amount",
+        "status",
+        "due_date"
+      ],
+      "all_columns": [],
+      "existing_indexes": [],
+      "approx_rows": null,
+      "foreign_keys": []
+    }
+  ],
+  "per_row_work": [
+    {
+      "description": "iterates over each invoice of a customer to detect overdue invoices and builds a list of tag strings",
+      "file": "src/main/java/com/ex/service/CustomerService.java",
+      "line": 38,
+      "kind": "collection_processing",
+      "scales_with": "invoices per customer",
+      "bounded": false,
+      "bound": null
+    },
+    {
+      "description": "creates a new CustomerDto object for each customer row",
+      "file": "src/main/java/com/ex/service/CustomerService.java",
+      "line": 44,
+      "kind": "object_creation",
+      "scales_with": "customers per page",
+      "bounded": true,
+      "bound": "page size (as defined by the request pageable)"
+    }
+  ],
+  "response_shape": {
+    "dto": "CustomerDto",
+    "fields_returned": [
+      "id",
+      "name",
+      "outstanding",
+      "tags"
+    ],
+    "computed_fields": [
+      "outstanding",
+      "tags"
+    ],
+    "unbounded_collections": [
+      "tags"
+    ],
+    "citation": {
+      "file": "src/main/java/com/ex/service/CustomerService.java",
+      "line": 44,
+      "symbol": "new CustomerDto"
+    }
+  },
+  "pagination": {
+    "mechanism": "offset",
+    "fires_count_query": true,
+    "max_page_size": null,
+    "citation": {
+      "file": "src/main/java/com/ex/repo/CustomerRepository.java",
+      "line": 12,
+      "symbol": "Page<Customer>"
+    }
+  },
+  "caching": [],
+  "hidden_query_triggers": [],
+  "tests_covering": [],
+  "uncertainties": [
+    "Exact SQL of InvoiceRepository.sumOpenAmountByCustomer is inferred from method name; actual query may be defined via @Query.",
+    "The precise fetch type of Customer.invoices depends on the entity mapping which was not inspected; assumed LAZY based on typical patterns.",
+    "Maximum page size is not defined in code; assuming it is uncapped unless validation elsewhere."
+  ],
+  "prompt_hash": "8bfbd2714e32df27",
+  "base_commit": "896bc2935091d8c78cdc1c2d58a8588a154e86dd+dirty"
+}

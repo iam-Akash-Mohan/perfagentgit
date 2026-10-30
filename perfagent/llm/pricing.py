@@ -43,6 +43,10 @@ PRICES: dict[str, Price] = {
     "qwen-3-235b-a22b-instruct-2507": Price(0.60, 1.20),
     "llama-4-scout-17b-16e-instruct": Price(0.65, 0.85),
     "gpt-oss-120b": Price(0.25, 0.69),
+    # ── Gemini (Google list prices, paid tier, text tokens) ──────────────
+    "gemini-2.5-flash": Price(0.30, 2.50),
+    "gemini-2.5-pro": Price(1.25, 10.00),
+    "gemini-2.0-flash": Price(0.10, 0.40),
     # ── Groq ─────────────────────────────────────────────────────────────
     "llama-3.3-70b-versatile": Price(0.59, 0.79),
     "moonshotai/kimi-k2-instruct": Price(1.00, 3.00),

@@ -21,12 +21,13 @@ import pytest
 
 from perfagent.agent import LoopBudget
 from perfagent.contracts import (CandidateFix, EndpointModel, Hypothesis,
-                                 HypothesisSet, LLMResponse, Plan, RiskTier,
-                                 Usage)
+                                 HypothesisSet, Layer, LLMResponse, Plan,
+                                 RiskTier, Usage)
 from perfagent.errors import ContractViolation, ToolError
 from perfagent.plan.agent import load_plan, plan
 from perfagent.plan.fixability import (assess_fixability, covering_index,
-                                       rank_hypotheses, uncovered_columns)
+                                       matching_per_row_work, rank_hypotheses,
+                                       uncovered_columns)
 from perfagent.plan.risk import (assess_risk, forbidden_reason,
                                  is_additive_index, parse_index,
                                  selection_problem)
@@ -955,3 +956,203 @@ def test_the_gate_reads_the_plan_artifact_and_refuses_to_invent_one(
     candidate = ship.selected_plan(tmp_path / "run")
     assert candidate.files_to_touch == [SERVICE]
     assert candidate.risk_tier is RiskTier.LOW
+
+
+# ─────────────────  the recorded artifacts, as a regression  ─────────────
+#
+# The real artifacts from two runs on mini-spring:
+#
+#   .perfagent/runs/01M1P0WPGTMTQWPP00EQR1GGC2/endpoint_model.json
+#   .perfagent/runs/p16-full/hypotheses.json
+#
+# `.perfagent/*` is gitignored, so verbatim copies live in tests/fixtures/plan/
+# as well: a regression test that silently skips when a file is missing is not
+# a regression test. The real file is preferred when it is present, so this
+# keeps testing the live artifact on the machine that produced it.
+#
+# What they caught: h2 ("Per-row application-logic (DTO construction & invoice
+# aggregation)") shares exactly ONE significant word with the per-row work item
+# it is about ("iterates over each invoice of a customer to detect overdue
+# invoices"), which is under the overlap threshold. It fell through every
+# policy row to the 0.40 default and then ranked FIRST at 200 x 0.40 = 80 ms,
+# above h3, which was correctly classified as batchable at 0.90.
+
+FIXTURES = Path(__file__).parent / "fixtures" / "plan"
+RECORDED = {
+    "endpoint_model.json":
+        Path(".perfagent/runs/01M1P0WPGTMTQWPP00EQR1GGC2/endpoint_model.json"),
+    "hypotheses.json": Path(".perfagent/runs/p16-full/hypotheses.json"),
+}
+
+
+def recorded_artifact(name: str) -> dict[str, Any]:
+    source = RECORDED[name]
+    if not source.exists():
+        source = FIXTURES / name
+    payload: dict[str, Any] = json.loads(source.read_text(encoding="utf-8"))
+    return payload
+
+
+def recorded_artifacts() -> tuple[HypothesisSet, EndpointModel]:
+    return (
+        HypothesisSet.model_validate(recorded_artifact("hypotheses.json")),
+        EndpointModel.model_validate(recorded_artifact("endpoint_model.json")),
+    )
+
+
+def test_the_vendored_copies_match_the_recorded_artifacts() -> None:
+    """If the real run is still on disk, the frozen copy must be that file."""
+    for name, source in RECORDED.items():
+        if source.exists():
+            assert json.loads(source.read_text()) == \
+                   json.loads((FIXTURES / name).read_text()), (
+                f"tests/fixtures/plan/{name} has drifted from {source}")
+
+
+def test_the_recorded_per_row_hypothesis_is_classified() -> None:
+    """It cites CustomerService.enrich; the work is at CustomerService.java:38."""
+    hypotheses, model = recorded_artifacts()
+    h2 = next(h for h in hypotheses.hypotheses
+              if h.layer is Layer.APPLICATION_LOGIC)
+    assert "DTO construction" in h2.claim      # the artifact is the one described
+
+    verdict = assess_fixability(h2, model)
+    assert verdict.classified is True
+    assert "UNCLASSIFIED" not in verdict.reason
+    # Row 5: the work it cites builds the `tags` collection, which is the
+    # contract — so this is blocked, not unknown.
+    assert verdict.fixability == 0.10
+    assert "tags" in (verdict.blocked_by or "")
+
+
+def test_the_batchable_hypothesis_outranks_the_per_row_one_on_the_artifacts() -> None:
+    hypotheses, model = recorded_artifacts()
+    ranked = rank_hypotheses(hypotheses, model)
+    order = [entry.hypothesis_id for entry in ranked]
+
+    batchable = next(e for e in ranked
+                     if e.fixability.fixability == 0.90)
+    per_row = next(e for e in ranked if e.layer == "application_logic")
+
+    assert order.index(batchable.hypothesis_id) < order.index(per_row.hypothesis_id)
+    assert every_entry_classified(ranked)
+
+
+def every_entry_classified(ranked: list[Any]) -> bool:
+    return all(entry.fixability.classified for entry in ranked)
+
+
+# ────────────────────────  citation matching  ────────────────────────────
+
+
+def test_a_cited_symbol_links_a_hypothesis_to_per_row_work() -> None:
+    """No shared vocabulary at all — the citation is the whole match."""
+    verdict = assess_fixability(
+        hypothesis(layer="application_logic",
+                   claim="per-row application logic costs 20 ms a row",
+                   mechanism="OrderService.enrich does the work",
+                   prediction="bypassing it would be faster",
+                   evidence=["20 ms per row"]),
+        endpoint_model(),
+    )
+    assert verdict.classified is True
+    assert verdict.fixability == 0.10
+
+
+def test_a_cited_file_and_line_links_to_the_nearest_work_item() -> None:
+    model = endpoint_model(per_row_work=[
+        {"description": "builds the audit trail", "file": SERVICE, "line": 40,
+         "kind": "other", "scales_with": "orders", "bounded": False},
+        {"description": "appends one tag per overdue line", "file": SERVICE,
+         "line": 11, "kind": "string_building", "scales_with": "lines",
+         "bounded": False},
+    ])
+    work = matching_per_row_work(
+        hypothesis(claim="the hot loop", mechanism=f"see {SERVICE}:12"), model)
+    assert work is not None and work.line == 11
+
+
+def test_a_citation_far_from_the_work_is_not_a_match() -> None:
+    model = endpoint_model(per_row_work=[
+        {"description": "builds the audit trail", "file": SERVICE, "line": 11,
+         "kind": "other", "scales_with": "orders", "bounded": False},
+    ])
+    assert matching_per_row_work(
+        hypothesis(claim="x", mechanism=f"see {SERVICE}:400"), model) is None
+
+
+def test_word_overlap_still_works_when_nothing_is_cited() -> None:
+    verdict = assess_fixability(
+        hypothesis(layer="application_logic",
+                   claim="per-row string building dominates",
+                   mechanism="it appends one overdue tag string per overdue "
+                             "line, scaling with lines per order"),
+        endpoint_model(),
+    )
+    assert verdict.classified is True and verdict.fixability == 0.10
+
+
+# ───────────────  a fallthrough never outranks a classification  ─────────
+
+
+def test_rule_nine_marks_itself_unclassified() -> None:
+    verdict = assess_fixability(
+        hypothesis(layer="other", claim="the JVM is warming up"),
+        endpoint_model(),
+    )
+    assert verdict.fixability == 0.40
+    assert verdict.classified is False
+    assert "UNCLASSIFIED" in verdict.reason
+
+
+def test_an_unclassified_hypothesis_ranks_below_every_classified_one() -> None:
+    """0.40 x a big number is arithmetic on a placeholder, not a finding."""
+    hypotheses = HypothesisSet(
+        measured_total_ms=2000.0, ranked_ids=["big", "small", "net"],
+        probes_run=[],
+        hypotheses=[
+            hypothesis(id="big", layer="other", attributed_ms=1500.0,
+                       claim="the JVM is warming up"),              # rule 9
+            hypothesis(id="small", layer="database_query",
+                       attributed_ms=50.0,
+                       claim="sumOpenAmountByOrder runs once per result row"),
+            hypothesis(id="net", layer="network", attributed_ms=10.0),
+        ],
+    )
+    ranked = rank_hypotheses(hypotheses, endpoint_model())
+
+    # 600 ms notional beats 45 ms on arithmetic alone, and must still lose.
+    notional = next(e for e in ranked if e.hypothesis_id == "big")
+    assert notional.expected_value_ms == 600.0        # 1500 x the 0.40 placeholder
+    assert [entry.hypothesis_id for entry in ranked] == ["small", "net", "big"]
+    assert ranked[-1].fixability.classified is False
+    assert all(entry.fixability.classified for entry in ranked[:-1])
+
+
+def test_an_unclassified_entry_renders_as_a_placeholder_not_a_finding() -> None:
+    from perfagent.render.plan import render_ranking
+
+    hypotheses = HypothesisSet(
+        measured_total_ms=2000.0, ranked_ids=["big", "net", "ser"],
+        probes_run=[],
+        hypotheses=[
+            hypothesis(id="big", layer="other", attributed_ms=1500.0,
+                       claim="the JVM is warming up"),
+            hypothesis(id="net", layer="network", attributed_ms=10.0),
+            hypothesis(id="ser", layer="serialization", attributed_ms=10.0,
+                       claim="jackson writes the body"),
+        ],
+    )
+    ranked = rank_hypotheses(hypotheses, endpoint_model())
+    rendered = render_ranking(Plan(endpoint="POST /x", measured_total_ms=2000.0,
+                                   ranked=ranked))
+
+    # The unclassified entry's own block, not the whole page.
+    block = rendered.split("[big]", 1)[1].split("\n\n", 1)[0]
+    assert "NOT CLASSIFIED" in block
+    assert "placeholder" in block and "NOTIONAL" in block
+    # Never in the shape an assessment uses — that is what made it look like one.
+    assert "×  fixability" not in block
+    assert "expected value" not in block
+    # The classified entries keep the ordinary shape.
+    assert "×  fixability" in rendered

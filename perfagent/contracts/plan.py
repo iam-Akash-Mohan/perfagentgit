@@ -69,6 +69,13 @@ class FixabilityAssessment(BaseModel):
     reason: str
     blocked_by: str | None = None      # set when fixability < BLOCKED_BELOW
     assessed_by: Literal["code"] = "code"   # never "model"
+    classified: bool = Field(
+        default=True,
+        description="False when NO policy row matched and the default was "
+                    "used. The default is a placeholder, not a finding: it "
+                    "means the table could not describe this hypothesis, and "
+                    "an unclassified entry must never outrank a classified "
+                    "one no matter how large its expected value.")
 
     @property
     def blocked(self) -> bool:

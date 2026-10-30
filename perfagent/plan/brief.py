@@ -41,11 +41,19 @@ def _ranking(ranked: list[RankedHypothesis], hypotheses: dict[str, Hypothesis],
     for position, entry in enumerate(ranked, start=1):
         hypothesis = hypotheses.get(entry.hypothesis_id)
         open_to_you = " <-- OPEN FOR CANDIDATES" if entry.hypothesis_id in considered else ""
-        out.append(f"  {position}. [{entry.hypothesis_id}] {entry.claim}{open_to_you}")
+        unclassified = "" if entry.fixability.classified else "  [NOT CLASSIFIED]"
+        out.append(f"  {position}. [{entry.hypothesis_id}] {entry.claim}"
+                   f"{unclassified}{open_to_you}")
         out.append(f"     layer           {entry.layer}")
         out.append(f"     attributed      {entry.attributed_ms:.1f} ms")
-        out.append(f"     fixability      {entry.fixability.fixability:.2f}"
-                   f"  ->  expected value {entry.expected_value_ms:.1f} ms")
+        if entry.fixability.classified:
+            out.append(f"     fixability      {entry.fixability.fixability:.2f}"
+                       f"  ->  expected value {entry.expected_value_ms:.1f} ms")
+        else:
+            out.append(f"     fixability      NOT CLASSIFIED — no policy row "
+                       f"matched, so {entry.fixability.fixability:.2f} is a "
+                       f"placeholder and this entry ranks below every "
+                       f"classified one")
         out.append(f"     why             {entry.fixability.reason}")
         if entry.fixability.blocked_by:
             out.append(f"     BLOCKED BY      {entry.fixability.blocked_by}")
