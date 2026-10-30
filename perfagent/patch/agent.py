@@ -17,6 +17,7 @@ from ..agent import run_agent
 from ..contracts import Patch
 from ..errors import ContractViolation
 from ..llm import GroqClient
+from ..measure.sql import MySQLTarget
 from .tools import (APPLY_PATCH_TOOL, BUILD_TOOL, MAX_ITERATIONS,
                     RUN_TESTS_TOOL, PatchTools, TestCounts, count_test_files,
                     parse_test_counts)
@@ -290,6 +291,28 @@ def load_hypotheses(run_dir: Path, hypotheses_path: Path | None = None) -> dict[
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _database_tools(run_dir: Path) -> list[Any]:
+    """The four database tools, bound to this run's tables.
+
+    The allowlist comes from the comprehension artifact, so the patch agent
+    can only touch tables the endpoint actually reads. No artifact, or no
+    reachable database, means no database tools — never a wider allowlist.
+    """
+    from ..tools.db import PATCH_TOOLS, optional_db_tools
+
+    model_path = Path(run_dir) / "endpoint_model.json"
+    if not model_path.exists():
+        return []
+    try:
+        payload = json.loads(model_path.read_text(encoding="utf-8"))
+        tables = [str(t.get("table")) for t in (payload.get("tables") or [])
+                  if t.get("table")]
+        target = MySQLTarget.from_env()
+    except Exception:  # noqa: BLE001 — a degraded surface, not a dead phase
+        return []
+    return optional_db_tools(target, tables, names=PATCH_TOOLS)
+
+
 def run_patch(
     run_dir: Path,
     *,
@@ -371,13 +394,23 @@ def run_patch(
         # run_agent keeps going after a terminal tool returns, and P01 raises on
         # any non-200 from the provider, so a rate limit one step after a good
         # emit would otherwise throw away a patch that already passed every check.
+        # The patch agent is the only phase with all four database tools: it
+        # is already writing code, so measuring an index and checking a
+        # rewrite returns the same rows are things it needs before it commits
+        # to either. `query_equivalent` especially — a rewrite that returns
+        # different rows is found here, one build cycle early, instead of by
+        # the oracle at the end of the run.
+        db_specs = _database_tools(directory)
         handlers = {
             "apply_patch": tools.apply_patch,
             "build": tools.build,
             "run_tests": tools.run_tests,
             "emit_patch": emit_patch,
+            **{spec.name: spec.handler for spec in db_specs},
         }
-        tool_set = [APPLY_PATCH_TOOL, BUILD_TOOL, RUN_TESTS_TOOL, EMIT_PATCH_TOOL]
+        tool_set = [APPLY_PATCH_TOOL, BUILD_TOOL, RUN_TESTS_TOOL,
+                    EMIT_PATCH_TOOL,
+                    *(spec.schema() for spec in db_specs)]
 
         loop_error: Exception | None = None
         task = build_task(hypotheses, green.path)

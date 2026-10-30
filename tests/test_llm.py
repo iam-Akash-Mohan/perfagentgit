@@ -365,6 +365,7 @@ def gemini(post: Recorder, tmp_path: Path, **kwargs: Any) -> OpenAICompatClient:
 
 def test_gemini_is_built_by_the_factory_with_googles_endpoint(monkeypatch) -> None:
     monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     instance = make_client("gemini")
     assert isinstance(instance, OpenAICompatClient)
     assert instance.model == "gemini-2.5-flash"
@@ -373,10 +374,24 @@ def test_gemini_is_built_by_the_factory_with_googles_endpoint(monkeypatch) -> No
     assert instance.headers()["Authorization"] == "Bearer g"
 
 
-def test_a_missing_gemini_key_names_the_variable(monkeypatch) -> None:
+def test_either_accepted_key_name_works_for_gemini(monkeypatch) -> None:
+    """Google's own tooling reads either name, so this must too."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    with pytest.raises(PerfAgentError, match="GEMINI_API_KEY"):
+    monkeypatch.setenv("GOOGLE_API_KEY", "from-google")
+    assert resolve_key("gemini") == "from-google"
+
+    monkeypatch.setenv("GEMINI_API_KEY", "from-gemini")
+    assert resolve_key("gemini") == "from-gemini", "the first name wins"
+
+
+def test_a_missing_gemini_key_names_every_variable_it_tried(monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    with pytest.raises(PerfAgentError) as caught:
         resolve_key("gemini")
+    # A user holding the other name has to be able to see that it would work.
+    assert "GEMINI_API_KEY" in str(caught.value)
+    assert "GOOGLE_API_KEY" in str(caught.value)
 
 
 def test_switching_to_gemini_does_not_send_another_vendors_model(

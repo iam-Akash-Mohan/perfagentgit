@@ -23,6 +23,7 @@ from ..ids import content_hash
 from ..prompts import load_prompt
 from ..tools import SourceRoot, ToolRegistry
 from ..tools.routes import route_tools
+from ..tools.db import PLAN_TOOLS, optional_db_tools
 from ..tools.schema import database_target, schema_tools
 from ..tools.source import source_tools
 from ..trace import EventType, Trace
@@ -41,8 +42,8 @@ DEFAULT_STACK = "Spring Boot / Maven / JPA-Hibernate / MySQL"
 TOP_N = 2
 
 PROMPT_ORDER: tuple[str, ...] = (
-    "find_route", "read_file", "get_schema", "search_code", "list_dir",
-    "submit_plan",
+    "find_route", "read_file", "get_schema", "list_indexes", "index_benefit",
+    "explain", "search_code", "list_dir", "submit_plan",
 )
 
 
@@ -58,6 +59,7 @@ def build_registry(
     mysql: Any = None,
     measured_tables: dict[str, TableInfo] | None = None,
     prompt_hash: str | None = None,
+    on_tool_error: Any = None,
 ) -> ToolRegistry:
     """The tools this phase offers: the read surface, plus one terminal call.
 
@@ -68,6 +70,11 @@ def build_registry(
         *route_tools(root),
         *source_tools(root),
         *(schema_tools(mysql, measured_tables) if mysql is not None else []),
+        # A proposed index is MEASURED here, before it is selected — which is
+        # the difference between "this should help" and "this examined 571
+        # rows instead of 2,645". No write tool: planning cannot change code.
+        *optional_db_tools(mysql, [t.table for t in model.tables],
+                           names=PLAN_TOOLS, on_error=on_tool_error),
         *submit_plan_tools(root=root, model=model, ranked=ranked,
                            considered=considered, sink=sink, endpoint=endpoint,
                            measured_total_ms=measured_total_ms,
@@ -145,6 +152,8 @@ def plan(
         root, sink, model=model, ranked=ranked, considered=considered,
         endpoint=endpoint, measured_total_ms=hypotheses.measured_total_ms,
         mysql=mysql, measured_tables=measured, prompt_hash=prompt_hash,
+        on_tool_error=lambda note: trace.emit(EventType.NOTE, phase=PHASE,
+                                              note=note),
     )
 
     outcome = run_agent(

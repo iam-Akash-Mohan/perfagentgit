@@ -66,6 +66,18 @@ Read the code before you plan it. `find_route` locates the controller,
 database actually has. A candidate whose `files_to_touch` names a file you
 never opened is a guess.
 
+Measure the database, do not reason about it:
+
+- `list_indexes` gives the indexes on a table with their columns IN ORDER.
+  Column order decides what an index can serve — (a, b) helps a filter on a,
+  or on a and b, and never one on b alone.
+- `explain` runs EXPLAIN ANALYZE and reports actual rows and actual time.
+- `index_benefit` builds a candidate index, re-measures the statement, and
+  drops it again. Use it before proposing `add_index`: "rows examined 2,645 →
+  571, 6.4x faster, 1.6 s to build" is a measurement, and "this should help"
+  is not. If it tells you an index already covers those columns, stop — that
+  one is refused anyway.
+
 When you are ready, call `submit_plan`. That call is your entire output — do
 not write a prose report. If it rejects you, fix exactly what the error names
 and submit again.

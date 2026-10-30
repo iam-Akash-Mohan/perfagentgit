@@ -41,17 +41,23 @@ def resolve_key(provider: str) -> str | None:
             f"unknown LLM provider {provider!r}. "
             f"Known providers: {', '.join(sorted(PROVIDER_KEY_ENV))}."
         )
-    env_name = PROVIDER_KEY_ENV[provider]
-    if env_name is None:          # ollama runs locally and needs no key
+    env_names = PROVIDER_KEY_ENV[provider]
+    if env_names is None:         # ollama runs locally and needs no key
         return None
-    key = os.environ.get(env_name)
-    if not key:
-        raise PerfAgentError(
-            f"the {provider} provider needs {env_name}, which is not set. "
-            f"Export it, put it in .env, or choose another provider with "
-            f"--provider (one of {', '.join(sorted(PROVIDER_KEY_ENV))})."
-        )
-    return key
+    for env_name in env_names:
+        key = os.environ.get(env_name)
+        if key:
+            return key
+
+    # Name EVERY variable that would have worked. A user with GOOGLE_API_KEY
+    # set and an error that says only GEMINI_API_KEY has been told the truth
+    # and still cannot act on it.
+    accepted = " or ".join(env_names)
+    raise PerfAgentError(
+        f"the {provider} provider needs {accepted}, and none of them is set. "
+        f"Export one, put it in .env, or choose another provider with "
+        f"--provider (one of {', '.join(sorted(PROVIDER_KEY_ENV))})."
+    )
 
 
 def _default_model(provider: str, config: Any) -> str:

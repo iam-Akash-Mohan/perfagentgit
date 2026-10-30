@@ -14,11 +14,17 @@ _ENV_PREFIX = "PERFAGENT_"
 # Where each provider's key lives, and what it is called in an error message.
 # This table is the ONLY place a provider name maps to an environment
 # variable; nothing outside llm/ and here needs to know.
-PROVIDER_KEY_ENV: dict[str, str | None] = {
-    "cerebras": "CEREBRAS_API_KEY",
-    "groq": "GROQ_API_KEY",
-    "gemini": "GEMINI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
+#
+# A TUPLE, tried in order, because a provider can have more than one accepted
+# spelling and the user does not get to be wrong about it. Google's own
+# tooling reads GEMINI_API_KEY or GOOGLE_API_KEY, so refusing the second
+# because this table named the first would be our bug, not theirs. Every name
+# in the tuple is listed when none of them is set.
+PROVIDER_KEY_ENV: dict[str, tuple[str, ...] | None] = {
+    "cerebras": ("CEREBRAS_API_KEY",),
+    "groq": ("GROQ_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "anthropic": ("ANTHROPIC_API_KEY",),
     "ollama": None,          # a local server; no key
 }
 

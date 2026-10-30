@@ -10,6 +10,7 @@ from ..contracts import HypothesisSet, Layer
 from ..errors import ContractViolation, ToolError
 from ..llm import GroqClient
 from ..measure.sql import MySQLTarget
+from ..tools.db import DIAGNOSE_TOOLS, optional_db_tools
 from .evidence import (
     load_baseline,
     load_endpoint_model,
@@ -294,15 +295,26 @@ def run_diagnosis(
     # tool returns, and P01 raises KeyError('choices') on any non-200 from the
     # provider, so a rate limit one step after a successful emit would
     # otherwise throw away work that already passed every check.
+    # Diagnosis reads the database; it does not try fixes on it. `explain` and
+    # `list_indexes` explain what IS — `index_benefit` creates an index, and a
+    # phase whose job is to describe the problem has no business doing that.
+    # The subset is named in code (DIAGNOSE_TOOLS), not left to a prompt.
+    notes: list[str] = []
+    db_specs = optional_db_tools(
+        target, [str(t.get("table")) for t in endpoint_model.get("tables") or []],
+        names=DIAGNOSE_TOOLS, on_error=notes.append)
+
     loop_error: Exception | None = None
     try:
         run_agent(
             client=llm,
             task=build_task(baseline, endpoint_model),
-            tools=[RUN_PROBE_TOOL, EMIT_HYPOTHESES_TOOL],
+            tools=[RUN_PROBE_TOOL, EMIT_HYPOTHESES_TOOL,
+                   *(spec.schema() for spec in db_specs)],
             handlers={
                 "run_probe": make_run_probe(base_url, target, log=probe_log),
                 "emit_hypotheses": emit_hypotheses,
+                **{spec.name: spec.handler for spec in db_specs},
             },
             max_steps=max_steps,
         )
@@ -329,6 +341,9 @@ def run_diagnosis(
     document["baseline"] = str(directory / "baseline.json")
     document["endpoint_model"] = str(endpoint_model_path)
     document["submissions_rejected"] = len(rejections)
+    document["database_tools"] = [spec.name for spec in db_specs]
+    if notes:
+        document["database_tool_notes"] = notes
     if loop_error is not None:
         # Recorded, not hidden: the diagnosis is valid, but the run did not end
         # cleanly and the reader should know why.
