@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import time
+import warnings
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Callable, Iterable
@@ -142,6 +143,13 @@ def run_agent(
     `max_steps` is deprecated; it is accepted so that callers written against
     the pre-S1 signature keep working, and folded into a `LoopBudget`.
     """
+    if max_steps is not None:
+        warnings.warn(
+            "run_agent(max_steps=...) is deprecated; pass "
+            "budget=LoopBudget(max_steps=..., max_usd=..., max_wall_s=...). "
+            "A step count is only one of three ways a loop can overrun.",
+            DeprecationWarning, stacklevel=2,
+        )
     if budget is None:
         budget = LoopBudget(max_steps=max_steps if max_steps is not None
                             else DEFAULT_MAX_STEPS)

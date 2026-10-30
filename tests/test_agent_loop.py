@@ -227,10 +227,14 @@ def test_a_wall_clock_ceiling_stops_the_loop() -> None:
     assert outcome.status is LoopStatus.BUDGET_EXHAUSTED
 
 
-def test_the_deprecated_max_steps_argument_still_works() -> None:
-    client = Scripted(*[call("read_file") for _ in range(10)])
-    outcome = run_agent(client=client, task="go", tools=TOOLS,
-                        handlers={"read_file": lambda **k: "x"}, max_steps=2)
+def test_the_deprecated_max_steps_argument_still_works_but_warns() -> None:
+    """Kept so pre-S1 callers keep running; warned so it does not survive
+    indefinitely by accident."""
+    client = Scripted(*[call("read_file", {"path": f"F{n}.java"})
+                        for n in range(10)])
+    with pytest.deprecated_call(match="max_steps"):
+        outcome = run_agent(client=client, task="go", tools=TOOLS,
+                            handlers={"read_file": lambda **k: "x"}, max_steps=2)
     assert outcome.steps == 2
 
 

@@ -68,6 +68,17 @@ def labelled_citations(model: EndpointModel) -> list[tuple[str, Citation]]:
                     transaction.citation))
     for i, call in enumerate(model.external_calls):
         out.append((f"external_calls[{i}] ({call.method})", call.citation))
+    for i, work in enumerate(model.per_row_work):
+        out.append((f"per_row_work[{i}] ({work.kind})", work.citation()))
+    for i, cache in enumerate(model.caching):
+        out.append((f"caching[{i}] ({cache.on})", cache.citation))
+    for i, trigger in enumerate(model.hidden_query_triggers):
+        out.append((f"hidden_query_triggers[{i}] ({trigger.on})",
+                    trigger.citation))
+    if model.response_shape is not None and model.response_shape.citation:
+        out.append(("response_shape", model.response_shape.citation))
+    if model.pagination is not None and model.pagination.citation:
+        out.append(("pagination", model.pagination.citation))
     if not model.call_chain:
         out.append(("entry", model.entry))
         out.extend((f"path[{i}]", c) for i, c in enumerate(model.path))
@@ -178,6 +189,74 @@ def _nearby_files(root: SourceRoot, wanted: str) -> str | None:
     if not close:
         return None
     return ", ".join(by_name[name] for name in close)
+
+
+def validate_claims(model: EndpointModel) -> list[str]:
+    """Semantic rules that no citation check can catch. These REJECT.
+
+    Only one rule so far, and it earns its place: `bounded=True` with no
+    `bound` is not a claim, it is a shrug. "Something limits this, I decline to
+    say what" is exactly the sentence a later phase would read as permission to
+    ignore the work.
+    """
+    problems: list[str] = []
+    for i, work in enumerate(model.per_row_work):
+        if work.bounded and not (work.bound or "").strip():
+            problems.append(
+                f"  per_row_work[{i}] ({work.description[:60]}) says "
+                f"bounded=true but gives no `bound`. Name the limit — a page "
+                f"size, a hard cap, a fixed-size collection — or set "
+                f"bounded=false."
+            )
+    return problems
+
+
+def completeness_warnings(model: EndpointModel) -> list[str]:
+    """Suspicions worth recording. These NEVER reject.
+
+    This is a HEURISTIC, so it must not fail a submission: a loop that makes a
+    query per row almost always does other work per row too, but "almost
+    always" is not "always", and an agent that is right about an unusual
+    endpoint must not be blocked by a rule of thumb. The suspicion is written
+    into `uncertainties`, where a human reading the artifact will see it.
+    """
+    warnings: list[str] = []
+
+    shape = model.response_shape
+    if shape is not None and shape.fields_returned:
+        stray = [name for name in shape.unbounded_collections
+                 if name not in shape.fields_returned]
+        if stray:
+            warnings.append(
+                f"AUTOMATED CHECK: response_shape.unbounded_collections names "
+                f"{', '.join(repr(s) for s in stray)}, which do not appear in "
+                f"fields_returned. A later phase matches these against the "
+                f"response body, so a description or a renamed field will not "
+                f"match anything."
+            )
+
+    unmeasured = [t.table for t in model.tables
+                  if not t.all_columns and t.approx_rows is None]
+    if unmeasured:
+        warnings.append(
+            f"AUTOMATED CHECK: {', '.join(unmeasured)} carry no measured "
+            f"facts, so get_schema was never called for them. Their column "
+            f"types, row counts and EXISTING INDEXES are unknown — not "
+            f"absent. A later phase must not read an empty index list here as "
+            f"'no index exists'."
+        )
+
+    per_row_queries = model.per_row_accesses()
+    if per_row_queries and not model.per_row_work:
+        triggers = ", ".join(a.trigger for a in per_row_queries[:3])
+        warnings.append(
+            f"AUTOMATED CHECK: {len(per_row_queries)} data access(es) run per "
+            f"result row ({triggers}) but per_row_work is empty. A loop that "
+            f"queries per row almost always does other work per row too, so "
+            f"this may be an incomplete map rather than an endpoint with no "
+            f"per-row work."
+        )
+    return warnings
 
 
 def render_problems(problems: list[CitationProblem]) -> str:

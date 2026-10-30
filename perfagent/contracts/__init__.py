@@ -1,209 +1,48 @@
+"""Every artifact this product produces, as a Pydantic model.
+
+The comprehension shapes live in `comprehension.py` and the two pointers they
+are built from in `primitives.py`; both are re-exported here, so
+`from perfagent.contracts import X` keeps working for every X.
+"""
+
 from __future__ import annotations
+
 from enum import Enum
-from typing import Any, Literal, Protocol, cast, runtime_checkable
-from pydantic import BaseModel, Field, model_validator
+from typing import Any, Literal, Protocol, runtime_checkable
 
+from pydantic import BaseModel, Field
 
-# ─────────────────────────────  primitives  ─────────────────────────────
+from .comprehension import (CacheInfo, CallHop, DataAccess, DataAccessKind,
+                            EndpointModel, EntityInfo, EntityRelation,
+                            ExternalCall, HiddenQueryTrigger, IndexInfo,
+                            PaginationInfo, PerRowWork, ResponseShape,
+                            SqlSource, TableInfo, TransactionInfo)
+from .plan import (APPROACHES, BLOCKED_BELOW, Approach, CandidateFix,
+                   FixabilityAssessment, Plan, RankedHypothesis, Rejection,
+                   RiskTier)
+from .primitives import ArtifactRef, Citation
 
-class Citation(BaseModel):
-    """A pointer into source. Every claim an agent makes carries one of these,
-    and every one is validated against the filesystem before acceptance."""
-    file: str
-    line: int
-    symbol: str | None = None
-
-    def ref(self) -> str:
-        return f"{self.file}:{self.line}"
-
-
-class ArtifactRef(BaseModel):
-    """Reference to a stored artifact. The evidence ledger works by requiring
-    these on every quantitative claim."""
-    kind: str
-    hash: str
-    path: str
-
-
-# ─────────────────────────  P04 comprehension  ──────────────────────────
-
-class CallHop(BaseModel):
-    """One method on the execution path, with what it actually does.
-
-    Flat rather than wrapping a Citation because this is the shape the
-    diagnosis phase already reads off disk, and because `does` is not a
-    property of the pointer — it is the finding.
-    """
-    method: str                     # e.g. CustomerService.search
-    file: str
-    line: int
-    does: str
-
-    def citation(self) -> "Citation":
-        return Citation(file=self.file, line=self.line, symbol=self.method)
-
-
-DataAccessKind = Literal[
-    "jpql_query", "native_query", "derived_query",
-    "lazy_collection", "lazy_association", "criteria", "jdbc_template", "other",
+__all__ = [
+    # primitives
+    "Citation", "ArtifactRef",
+    # comprehension
+    "CacheInfo", "CallHop", "DataAccess", "DataAccessKind", "EndpointModel",
+    "EntityInfo", "EntityRelation", "ExternalCall", "HiddenQueryTrigger",
+    "IndexInfo", "PaginationInfo", "PerRowWork", "ResponseShape", "SqlSource",
+    "TableInfo", "TransactionInfo",
+    # plan
+    "APPROACHES", "BLOCKED_BELOW", "Approach", "CandidateFix",
+    "FixabilityAssessment", "Plan", "RankedHypothesis", "Rejection",
+    # everything defined below
+    "RequestSpec", "RequestCorpus", "RecordedResponse", "TolerancePolicy",
+    "BehaviourOracle", "FieldDiff", "EquivalenceVerdict", "LatencyStats",
+    "SqlDigestStat", "ProfileFrame", "QueryPlan", "RedFlagKind", "RedFlag",
+    "EvidenceBundle", "BaselineReport", "Probe", "Layer", "Hypothesis",
+    "HypothesisSet", "RiskTier", "CandidatePlan", "Patch", "PerfReport",
+    "GateName", "GateResult", "GateDecision", "TerminalState", "Phase",
+    "RunState", "Usage", "LLMResponse", "LLMClient", "ToolResult",
+    "ToolCallResult", "StackPack",
 ]
-
-# How a data access maps onto the older SqlSource vocabulary. Derived in code
-# so the model is never asked to fill in two overlapping fields.
-_SQL_SOURCE_KIND: dict[str, str] = {
-    "jpql_query": "@Query JPQL",
-    "native_query": "@Query native",
-    "derived_query": "derived query",
-    "lazy_collection": "lazy collection",
-    "lazy_association": "lazy collection",
-    "criteria": "criteria",
-    "jdbc_template": "jdbc template",
-    "other": "other",
-}
-
-
-class DataAccess(BaseModel):
-    """One way this endpoint can reach the database.
-
-    `executes_per_row` is the field the whole phase exists for: a query that
-    runs once per request and the identical query run once per result row are
-    the same SQL and a completely different bottleneck.
-    """
-    trigger: str                    # "repo.findByFilter", "lazy load of Customer.invoices"
-    kind: DataAccessKind
-    file: str
-    line: int
-    sql: str | None = None
-    tables: list[str] = []
-    executes_per_row: bool
-    note: str | None = None
-
-    def citation(self) -> "Citation":
-        return Citation(file=self.file, line=self.line, symbol=None)
-
-
-class IndexInfo(BaseModel):
-    name: str
-    columns: list[str]          # in index order — order matters for composites
-    unique: bool
-    cardinality: int | None = None
-
-
-class TableInfo(BaseModel):
-    table: str
-    entity: str | None = None
-    columns_read: list[str] = []      # columns this endpoint actually reads
-    all_columns: list[str] = []
-    existing_indexes: list[IndexInfo] = []
-    approx_rows: int | None = None
-    foreign_keys: list[dict[str, str]] = []
-
-
-class SqlSource(BaseModel):
-    method: str
-    kind: Literal["@Query JPQL", "@Query native", "derived query",
-                  "lazy collection", "criteria", "jdbc template", "other"]
-    tables: list[str] = []
-    citation: Citation
-
-
-class EntityRelation(BaseModel):
-    field: str
-    type: Literal["OneToMany", "ManyToOne", "OneToOne", "ManyToMany"]
-    fetch: Literal["LAZY", "EAGER"]
-    target: str
-
-
-class EntityInfo(BaseModel):
-    name: str
-    table: str
-    citation: Citation
-    relations: list[EntityRelation] = []
-
-
-class TransactionInfo(BaseModel):
-    method: str
-    propagation: str
-    read_only: bool = False
-    citation: Citation
-
-
-class ExternalCall(BaseModel):
-    method: str
-    target: str
-    kind: Literal["http", "grpc", "queue", "other"]
-    citation: Citation
-
-
-class EndpointModel(BaseModel):
-    """The entire output of the comprehension phase.
-
-    `call_chain` / `data_access` are what an agent submits. `entry`, `path`
-    and `sql_sources` are DERIVED from them in `_derive` below rather than
-    asked for separately: two fields describing the same fact are two fields
-    that can disagree, and the model does not get to decide which is right.
-    """
-    route: str
-    entry: Citation
-    path: list[Citation]
-    call_chain: list[CallHop] = []
-    data_access: list[DataAccess] = []
-    sql_sources: list[SqlSource] = []
-    entities: list[EntityInfo] = []
-    transactions: list[TransactionInfo] = []
-    external_calls: list[ExternalCall] = []
-    tables: list[TableInfo] = []
-    tests_covering: list[str] = []
-    uncertainties: list[str] = Field(
-        default_factory=list,
-        description="What the agent was NOT sure about. An agent forced to "
-                    "declare uncertainty is more useful than a confident one.")
-    prompt_hash: str | None = None      # which prompt version produced this
-
-    @model_validator(mode="before")
-    @classmethod
-    def _derive(cls, data: Any) -> Any:
-        """Fill entry / path / sql_sources from call_chain / data_access.
-
-        Only fills what is absent, so hand-built models that supply the older
-        fields directly keep working.
-        """
-        if not isinstance(data, dict):
-            return data
-        out = dict(data)
-
-        chain = out.get("call_chain") or []
-        hops = [h if isinstance(h, CallHop) else CallHop.model_validate(h)
-                for h in chain]
-        if not out.get("entry") and hops:
-            out["entry"] = hops[0].citation()
-        if not out.get("path") and hops:
-            out["path"] = [h.citation() for h in hops]
-
-        access = out.get("data_access") or []
-        if not out.get("sql_sources") and access:
-            reads = [a if isinstance(a, DataAccess) else DataAccess.model_validate(a)
-                     for a in access]
-            out["sql_sources"] = [
-                SqlSource(method=a.trigger,
-                          kind=cast(Any, _SQL_SOURCE_KIND.get(a.kind, "other")),
-                          tables=list(a.tables),
-                          citation=a.citation())
-                for a in reads
-            ]
-        return out
-
-    def per_row_accesses(self) -> list[DataAccess]:
-        """Computed here, never counted by a model (invariant 5)."""
-        return [a for a in self.data_access if a.executes_per_row]
-
-    def all_citations(self) -> list[Citation]:
-        out: list[Citation] = [self.entry, *self.path]
-        out.extend(s.citation for s in self.sql_sources)
-        out.extend(e.citation for e in self.entities)
-        out.extend(t.citation for t in self.transactions)
-        out.extend(c.citation for c in self.external_calls)
-        return out
 
 
 # ────────────────────────────  P06 workload  ─────────────────────────────
@@ -404,13 +243,9 @@ class HypothesisSet(BaseModel):
 
 
 # ──────────────────────────  P11 plan & risk  ────────────────────────────
-
-class RiskTier(int, Enum):
-    LOW = 1          # index, @EntityGraph, readOnly tx, view narrowing
-    MEDIUM = 2       # query rewrite, batching, push predicate to SQL, projection
-    HIGH = 3         # flow restructuring, tx boundaries, caching — flag-gated
-    FORBIDDEN = 4    # schema beyond additive index, API contract, auth
-
+# `RiskTier`, `CandidateFix`, `FixabilityAssessment` and `Plan` live in
+# `plan.py` and are re-exported above. `CandidatePlan` below is the older
+# shape the gate reads; a selected `CandidateFix` converts into one.
 
 class CandidatePlan(BaseModel):
     id: str

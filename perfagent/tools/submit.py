@@ -12,6 +12,7 @@ never prose someone has to parse.
 
 from __future__ import annotations
 
+import subprocess
 from typing import Any, Callable
 
 from pydantic import ValidationError
@@ -19,6 +20,14 @@ from pydantic import ValidationError
 from ..contracts import EndpointModel, TableInfo
 from ..errors import ToolError
 from . import SourceRoot, ToolSpec
+
+CITATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"file": {"type": "string"},
+                   "line": {"type": "integer"},
+                   "symbol": {"type": "string"}},
+    "required": ["file", "line"],
+}
 
 CALL_HOP_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -70,13 +79,7 @@ ENTITY_SCHEMA: dict[str, Any] = {
     "properties": {
         "name": {"type": "string"},
         "table": {"type": "string"},
-        "citation": {
-            "type": "object",
-            "properties": {"file": {"type": "string"},
-                           "line": {"type": "integer"},
-                           "symbol": {"type": "string"}},
-            "required": ["file", "line"],
-        },
+        "citation": CITATION_SCHEMA,
         "relations": {
             "type": "array",
             "items": {
@@ -104,13 +107,7 @@ TRANSACTION_SCHEMA: dict[str, Any] = {
                         "description": "e.g. REQUIRED. Use REQUIRED if the "
                                        "annotation does not say."},
         "read_only": {"type": "boolean"},
-        "citation": {
-            "type": "object",
-            "properties": {"file": {"type": "string"},
-                           "line": {"type": "integer"},
-                           "symbol": {"type": "string"}},
-            "required": ["file", "line"],
-        },
+        "citation": CITATION_SCHEMA,
     },
     "required": ["method", "propagation", "citation"],
 }
@@ -131,6 +128,129 @@ TABLE_SCHEMA: dict[str, Any] = {
     "required": ["table"],
 }
 
+PER_ROW_WORK_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "description": {
+            "type": "string",
+            "description": "What the work is, concretely. e.g. \"appends one "
+                           "'overdue' string per overdue invoice\".",
+        },
+        "file": {"type": "string"},
+        "line": {"type": "integer"},
+        "kind": {"type": "string",
+                 "enum": ["string_building", "collection_processing",
+                          "object_creation", "computation", "serialization",
+                          "external_call", "other"]},
+        "scales_with": {
+            "type": "string",
+            "description": "What drives the count, in the domain's own words: "
+                           "'invoices per customer', 'page size', 'line items "
+                           "per order'.",
+        },
+        "bounded": {
+            "type": "boolean",
+            "description": "TRUE only if something LIMITS how much work this "
+                           "does — a page size, a hard cap, a fixed-size "
+                           "collection. FALSE if it scales with the data and "
+                           "nothing caps it. Unbounded per-row work is "
+                           "frequently the single largest cost in an endpoint "
+                           "and never shows up in the SQL logs.",
+        },
+        "bound": {
+            "type": "string",
+            "description": "REQUIRED when bounded is true: name the limit, e.g. "
+                           "'page size, max 100'. Claiming a limit without "
+                           "naming it is rejected.",
+        },
+    },
+    "required": ["description", "file", "line", "kind", "scales_with", "bounded"],
+}
+
+RESPONSE_SHAPE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "dto": {"type": "string", "description": "The returned type, e.g. CustomerDto."},
+        "fields_returned": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Field names only, one per element.",
+        },
+        "computed_fields": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Fields produced by real work rather than by "
+                           "returning a stored value.",
+        },
+        "unbounded_collections": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Returned collections whose SIZE scales with the "
+                           "data. This is the important one: if a returned "
+                           "collection grows with the data, its size is part "
+                           "of the API contract and cannot be trimmed without "
+                           "changing behaviour. Give the FIELD NAME ONLY, "
+                           "exactly as it appears in fields_returned — 'tags', "
+                           "not 'tags (list of strings)'. A later phase matches "
+                           "these against the response body and a description "
+                           "will not match anything.",
+        },
+        "citation": CITATION_SCHEMA,
+    },
+    "required": [],
+}
+
+PAGINATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "mechanism": {"type": "string",
+                      "enum": ["offset", "keyset", "none", "unbounded"]},
+        "fires_count_query": {
+            "type": "boolean",
+            "description": "TRUE if a separate COUNT query runs, as it does "
+                           "for any Spring Data method returning Page<T>.",
+        },
+        "max_page_size": {
+            "type": "integer",
+            "description": "The cap, if there is one. OMIT the field entirely "
+                           "when the page size is uncapped — an uncapped page "
+                           "size on an endpoint with unbounded per-row work is "
+                           "a compounding problem.",
+        },
+        "citation": CITATION_SCHEMA,
+    },
+    "required": ["mechanism"],
+}
+
+CACHE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string",
+                 "enum": ["spring_cacheable", "hibernate_second_level",
+                          "query_cache", "manual", "other"]},
+        "on": {"type": "string", "description": "The method or entity cached."},
+        "cache_name": {"type": "string"},
+        "citation": CITATION_SCHEMA,
+    },
+    "required": ["kind", "on", "citation"],
+}
+
+HIDDEN_QUERY_TRIGGER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string",
+                 "enum": ["formula", "post_load", "pre_persist",
+                          "entity_listener", "hibernate_filter", "audit",
+                          "other"]},
+        "on": {"type": "string", "description": "The entity or field."},
+        "detail": {"type": "string"},
+        "citation": CITATION_SCHEMA,
+    },
+    "required": ["kind", "on", "detail", "citation"],
+}
+
+REQUIRED_FIELDS: tuple[str, ...] = (
+    "route", "call_chain", "data_access", "per_row_work", "response_shape",
+    "uncertainties",
+)
+
 SUBMIT_PARAMETERS: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -147,6 +267,33 @@ SUBMIT_PARAMETERS: dict[str, Any] = {
                            "including lazy collection loads and anything "
                            "inside a loop — not only explicit repository "
                            "queries.",
+        },
+        "per_row_work": {
+            "type": "array", "items": PER_ROW_WORK_SCHEMA,
+            "description": "REQUIRED. Work that runs once per RESULT ROW and "
+                           "is NOT a database access: building strings, "
+                           "iterating collections, creating objects, repeated "
+                           "computation. A query per row is one kind of "
+                           "per-row cost and often not the expensive one. If "
+                           "this endpoint genuinely has none, submit an empty "
+                           "array — that is a finding, not an omission.",
+        },
+        "response_shape": {
+            **RESPONSE_SHAPE_SCHEMA,
+            "description": "REQUIRED. What the endpoint returns, and which "
+                           "returned collections are unbounded in size.",
+        },
+        "pagination": {
+            **PAGINATION_SCHEMA,
+            "description": "How the endpoint pages, if it pages.",
+        },
+        "caching": {"type": "array", "items": CACHE_SCHEMA,
+                    "description": "Caches on the path. Usually empty."},
+        "hidden_query_triggers": {
+            "type": "array", "items": HIDDEN_QUERY_TRIGGER_SCHEMA,
+            "description": "SQL that fires from somewhere other than the call "
+                           "site: @Formula, @PostLoad, entity listeners, "
+                           "Hibernate filters. Usually empty.",
         },
         "entities": {"type": "array", "items": ENTITY_SCHEMA},
         "transactions": {"type": "array", "items": TRANSACTION_SCHEMA},
@@ -167,8 +314,51 @@ SUBMIT_PARAMETERS: dict[str, Any] = {
                            "confident guess.",
         },
     },
-    "required": ["route", "call_chain", "data_access", "uncertainties"],
+    # per_row_work and response_shape are REQUIRED so that "none found" is a
+    # statement the model had to make rather than a field it left out.
+    "required": list(REQUIRED_FIELDS),
 }
+
+REQUIRED_FIELD_HELP = (
+    "`per_row_work` and `response_shape` are required even when there is "
+    "nothing to report: submit `per_row_work: []` to state that this endpoint "
+    "does no per-row work outside its queries. An empty array is a finding; a "
+    "missing field is a blind spot."
+)
+
+
+def git_head(root: SourceRoot) -> str | None:
+    """The target repo's commit at analysis time, or None if it is not a repo.
+
+    A dirty worktree is reported as `<sha>+dirty` rather than refused, matching
+    what the oracle records: refusing would block legitimate work, and
+    returning the clean sha would claim provenance the artifact does not have.
+
+    argv list, never `shell=True`. Invariant 1 governs the AGENT's tool
+    surface — this runs in the handler, with no argument the model can reach —
+    but harness code has no excuse for shelling out either.
+
+    Duplicated from `oracle/record.py::base_commit` on purpose: importing the
+    oracle module into the agent's tool layer would put frozen-recording code
+    one import away from a tool schema, and this is twelve lines. A later
+    session should hoist one `provenance.py` and have both use it.
+    """
+    if not (root.path / ".git").exists():
+        return None
+    try:
+        def git(*args: str) -> str:
+            done = subprocess.run(["git", "-C", str(root.path), *args],
+                                  capture_output=True, text=True, timeout=30)
+            if done.returncode != 0:
+                raise OSError(done.stderr.strip())
+            return done.stdout.strip()
+
+        sha = git("rev-parse", "HEAD")
+        dirty = bool(git("status", "--porcelain"))
+    except (OSError, subprocess.SubprocessError):
+        # Provenance is worth having, not worth failing a phase over.
+        return None
+    return f"{sha}+dirty" if dirty else sha
 
 
 def _explain(error: ValidationError) -> str:
@@ -199,7 +389,26 @@ def make_submit_endpoint_analysis(
     def submit_endpoint_analysis(**payload: Any) -> str:
         # Imported here rather than at module scope: validate.py lives in the
         # understand package, which imports this module's siblings.
-        from ..understand.validate import render_problems, validate_citations
+        from ..understand.validate import (completeness_warnings,
+                                           render_problems, validate_citations,
+                                           validate_claims)
+
+        # base_commit is provenance, and provenance the model supplies is a
+        # claim rather than a fact. Drop whatever arrived and stamp it below.
+        claimed_commit = payload.pop("base_commit", None)
+
+        # `required` in the JSON schema is a request, not a guarantee — some
+        # providers enforce it, some do not. These two fields have defaults on
+        # the Pydantic model, so an omission would validate silently as "none
+        # found". Enforce in code, not in a schema the provider may ignore.
+        omitted = [name for name in REQUIRED_FIELDS if name not in payload]
+        if omitted:
+            raise ToolError(
+                f"the submission omitted {', '.join(omitted)}. "
+                + REQUIRED_FIELD_HELP,
+                suggestion="Add the missing field(s) and call "
+                           "submit_endpoint_analysis again.",
+            )
 
         try:
             model = EndpointModel.model_validate(payload)
@@ -212,23 +421,46 @@ def make_submit_endpoint_analysis(
             ) from exc
 
         problems = validate_citations(model, root)
-        if problems:
-            raise ToolError(render_problems(problems))
+        claims = validate_claims(model)
+        if problems or claims:
+            raise ToolError(_reject(problems, claims, render_problems))
 
         model.tables = _merge_tables(model.tables, measured_tables or {})
         model.prompt_hash = prompt_hash
+        model.base_commit = git_head(root)
+
+        # A heuristic, never a rejection — it goes where a human will read it.
+        model.uncertainties = list(model.uncertainties) + completeness_warnings(model)
         sink["model"] = model
 
         per_row = len(model.per_row_accesses())
+        unbounded = len(model.unbounded_per_row_work())
+        note = ""
+        if claimed_commit is not None:
+            note = (" (the base_commit you sent was discarded; it is read from "
+                    "git, not from the submission)")
         return (
             f"accepted: {len(model.call_chain)} call-chain hops, "
             f"{len(model.data_access)} data accesses ({per_row} of them "
-            f"per-row), {len(model.tables)} table(s), "
+            f"per-row), {len(model.per_row_work)} non-query per-row work "
+            f"item(s) ({unbounded} UNBOUNDED), {len(model.tables)} table(s), "
             f"{len(model.uncertainties)} uncertainty(ies). Every citation "
-            f"resolved. You are done — stop now."
+            f"resolved. You are done — stop now.{note}"
         )
 
     return submit_endpoint_analysis
+
+
+def _reject(problems: list[Any], claims: list[str],
+            render: Callable[[Any], str]) -> str:
+    """One message carrying every objection, so one retry can fix them all."""
+    parts: list[str] = []
+    if problems:
+        parts.append(render(problems))
+    if claims:
+        parts.append(f"{len(claims)} claim(s) do not hold up:\n"
+                     + "\n".join(claims))
+    return "\n\n".join(parts)
 
 
 def _merge_tables(claimed: list[TableInfo],

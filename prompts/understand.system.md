@@ -5,18 +5,13 @@ codebase, and report what you found as structured data.
 
 1. find_route — start here. Give it the method and path; it returns the exact
    controller method, with class-level and method-level mappings already composed.
-2. get_callees / get_callers — follow the path. These give exact call edges.
-   Prefer them over searching. (Not yet available; use search_code until they are.)
-3. find_symbol — resolve a type to its declaration. Use it when an interface has
-   multiple implementations; it reports annotations like @Primary.
-   (Not yet available; use search_code until it is.)
-4. read_file — read actual logic. Use it when you need to see what a method *does*,
+2. read_file — read actual logic. Use it when you need to see what a method *does*,
    not just that it exists: loops, conditionals, field access, string building.
-5. get_schema — tables, columns and EXISTING INDEXES for every table on the path.
+3. get_schema — tables, columns and EXISTING INDEXES for every table on the path.
    Call it for every table you touch. Knowing which indexes already exist matters
    as much as knowing which are missing.
-6. search_code — fallback, for text the index cannot model: string literals, SQL in
-   comments, configuration values.
+4. search_code — for text no index can model: string literals, SQL in comments,
+   configuration values, and finding a class when you do not know its path.
 
 ## What counts as database access
 
@@ -33,6 +28,48 @@ Implicit queries are not out of scope — they are frequently the whole problem.
 For each one, decide: does it execute ONCE per request, or ONCE PER RESULT ROW?
 Say which. If you cannot tell from the code, put it in uncertainties rather than
 guessing.
+
+## Per-row work that is not a database access
+
+A query that runs per row is one kind of per-row cost. It is often not the
+expensive one.
+
+Look for work inside any loop, stream, or .map over a result set:
+
+- building strings, especially one per element of a collection
+- iterating a collection to filter, sum or transform it
+- creating objects per element
+- computation repeated per row that could be done once
+- anything appended to a list that is then returned in the response
+
+For each one, answer the question that matters: **is the amount of work
+bounded?**
+
+- BOUNDED means something limits it — a page size, a hard cap, a fixed-size
+  collection. Name the limit.
+- UNBOUNDED means it scales with data and nothing caps it. A loop over
+  `customer.getInvoices()` is unbounded: a customer with 30,000 invoices does
+  30,000 iterations, and real data is skewed.
+
+Unbounded per-row work is frequently the single largest cost in an endpoint,
+and it is invisible in the SQL logs. Report it even when you are unsure of its
+cost — say so in uncertainties instead of leaving it out.
+
+## What the endpoint returns
+
+Record the response DTO, the fields it returns, which getters do real work
+rather than just returning a field, and — most importantly — which returned
+collections are UNBOUNDED in size.
+
+This matters because a later phase must know whether the response can be made
+smaller. If a returned collection grows with the data, its size is part of the
+API contract and cannot be trimmed without changing behaviour.
+
+## Pagination
+
+State the mechanism: offset-based, keyset, or none. Say whether a separate
+count query fires, and whether the page size is capped. An uncapped page size
+on an endpoint with unbounded per-row work is a compounding problem.
 
 ## Citations
 
@@ -53,3 +90,6 @@ Trace only this endpoint. Do not explore:
 Call submit_endpoint_analysis. That call is your entire output — do not write a prose
 summary. If your submission is rejected, fix exactly what the error names and submit
 again.
+
+`per_row_work` and `response_shape` are required. If an endpoint genuinely has
+no per-row work, submit an empty array — that is a finding, not an omission.

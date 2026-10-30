@@ -228,3 +228,26 @@ def schema_tools(target: MySQLTarget,
         parameters=GET_SCHEMA_PARAMETERS,
         handler=make_get_schema(target, cache),
     )]
+
+
+def database_target(trace: Any = None, *, phase: str = "agent") -> MySQLTarget | None:
+    """The MySQL target from the environment, or None if one cannot be built.
+
+    Constructed, not connected. An UNREACHABLE database has to fail inside
+    `get_schema`, with a message the model can read and work around, rather
+    than at registry-build time where it would abort a phase that can still do
+    most of its job from source alone. `from_env` validates, so a garbled
+    PERFAGENT_MYSQL_PORT raises here — which is why this swallows and notes it.
+    """
+    try:
+        return MySQLTarget.from_env()
+    except Exception as exc:  # noqa: BLE001 — no database is degraded, not dead
+        if trace is not None:
+            from ..trace import EventType
+
+            trace.emit(
+                EventType.NOTE, phase=phase,
+                note=f"no database target could be built ({type(exc).__name__}: "
+                     f"{exc}); running without get_schema.",
+            )
+        return None

@@ -37,8 +37,8 @@ MODEL = EndpointModel.model_validate({
 
 def test_the_per_row_count_is_called_out():
     out = render_endpoint_model(MODEL)
-    assert "2 total, 1 PER RESULT ROW" in out
-    assert "[PER ROW ]" in out and "[per req ]" in out
+    assert "2 total, 1 per result row" in out
+    assert "per row " in out and "1×/request" in out
 
 
 def test_existing_indexes_are_shown_with_their_cardinality():
@@ -50,12 +50,11 @@ def test_existing_indexes_are_shown_with_their_cardinality():
 def test_a_table_with_no_indexes_says_none_rather_than_nothing():
     model = MODEL.model_copy(deep=True)
     model.tables[0].existing_indexes = []
-    assert "existing indexes: NONE" in render_endpoint_model(model)
+    assert "NO INDEXES" in render_endpoint_model(model)
 
 
 def test_over_fetching_is_visible():
-    assert "columns read by this endpoint: amount, status (of 5 columns)" \
-        in render_endpoint_model(MODEL)
+    assert "reads 2 of 5 columns" in render_endpoint_model(MODEL)
 
 
 def test_no_declared_uncertainty_is_itself_reported():
@@ -65,7 +64,7 @@ def test_no_declared_uncertainty_is_itself_reported():
 
 
 def test_the_prompt_version_is_printed():
-    assert "prompt version: deadbeefdeadbeef" in render_endpoint_model(MODEL)
+    assert "prompt version    deadbeefdeadbeef" in render_endpoint_model(MODEL)
 
 
 # ────────────────────────────  transcript  ───────────────────────────────

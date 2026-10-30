@@ -4,13 +4,17 @@ The phase ORDER is a module constant. No model is asked what to do next, no
 model can skip a phase, and there is no branch in this file that a model's
 output can steer — invariant 6 applied to control flow rather than to verdicts.
 
-Two transitions carry guards that exist because a prompt asking nicely is not a
-guarantee:
+Three transitions carry guards that exist because a prompt asking nicely is not
+a guarantee:
 
   * IMPLEMENT cannot be reached without a recorded, hash-verified oracle. A
     patch written before behaviour was frozen has nothing to be checked
     against, and recording the oracle afterwards would record the patch's own
     behaviour as the baseline.
+  * IMPLEMENT also cannot be reached without a PLAN. Without one the patch
+    agent takes the hypothesis with the largest attributed milliseconds, which
+    on the endpoint this was built against is the response body itself — three
+    runs, three oracle rejections, zero PRs.
   * MEASURE cannot be reached without a PASSING verification for the patch
     currently in the green tree. A performance number for a patch that changed
     behaviour is worse than no number.
@@ -330,6 +334,58 @@ def _run_diagnose(ctx: Context) -> PhaseOutcome:
     )
 
 
+def _run_plan(ctx: Context) -> PhaseOutcome:
+    """Rank the diagnosis by expected value, then plan candidate fixes.
+
+    The ranking is code and happens whether or not the agent produces
+    anything, so a run that ends here still records WHY each hypothesis was
+    or was not worth attacking.
+    """
+    from .agent import LoopBudget
+    from .plan.agent import load_inputs, plan
+
+    if ctx.repo is None:
+        raise ContractViolation(
+            "the plan phase needs a target repository. Pass --repo or set "
+            "PERFAGENT_TARGET_REPO."
+        )
+
+    hypotheses, model = load_inputs(ctx.run_dir)
+    result = plan(
+        repo=ctx.repo,
+        endpoint=ctx.endpoint or model.route,
+        hypotheses=hypotheses,
+        model=model,
+        client=_metered_llm(ctx, "plan"),
+        trace=ctx.trace,
+        budget=LoopBudget(
+            max_steps=ctx.options.get("plan_max_steps", 24),
+            max_usd=ctx.budget.max_usd,
+            max_wall_s=ctx.budget.remaining_s() if ctx.budget.max_wall_s else None,
+        ),
+        run_dir=ctx.run_dir,
+    )
+
+    artifact = ctx.run_dir / "plan.json"
+    selected = result.selected()
+    if selected is None:
+        return PhaseOutcome(
+            artifact=artifact, terminal=TerminalState.BOTTLENECK_NOT_FIXABLE,
+            summary=f"{len(result.candidates)} candidate(s), none selectable",
+            detail={"reason": result.selection_reason},
+        )
+    return PhaseOutcome(
+        artifact=artifact,
+        summary=f"selected {selected.id} ({selected.approach}, "
+                f"T{selected.risk_tier.value}) targeting "
+                f"{selected.targets_hypothesis}",
+        detail={"selected": selected.id, "approach": selected.approach,
+                "risk_tier": selected.risk_tier.value,
+                "expected_value_ms": selected.expected_value_ms,
+                "candidates": len(result.candidates)},
+    )
+
+
 def _run_patch(ctx: Context) -> PhaseOutcome:
     """Write the patch on a green worktree belonging to THIS run.
 
@@ -582,6 +638,35 @@ def _valid_endpoint_model(ctx: Context, path: Path) -> str | None:
     return None
 
 
+def _valid_plan(ctx: Context, path: Path) -> str | None:
+    """A plan artifact must carry a SELECTED candidate for THIS endpoint.
+
+    Same lesson as `_valid_endpoint_model`: a file that parses is not evidence.
+    A plan with no selection means the phase ran and found nothing shippable,
+    and skipping into `patch` on the strength of it would hand the patch agent
+    an empty allowlist.
+    """
+    problem = _valid_json(ctx, path)
+    if problem:
+        return problem
+    from .plan.agent import load_plan
+
+    try:
+        plan = load_plan(path)
+    except Exception as exc:  # noqa: BLE001 — a bad artifact is a reason, not a crash
+        return f"{path} is not a plan artifact: {type(exc).__name__}: {exc}"
+
+    if plan.selected() is None:
+        return (f"{path} records no selected candidate "
+                f"({plan.selection_reason or 'no reason given'}).")
+    if ctx.endpoint:
+        found, wanted = _normalise_route(plan.endpoint), _normalise_route(ctx.endpoint)
+        if found != wanted:
+            return (f"{path} plans {plan.endpoint!r}, but this run is about "
+                    f"{ctx.endpoint!r}.")
+    return None
+
+
 def _valid_corpus(ctx: Context, path: Path) -> str | None:
     from .measure.corpus import load_corpus
 
@@ -621,6 +706,9 @@ PIPELINE: tuple[PhaseSpec, ...] = (
     PhaseSpec(Phase.DIAGNOSE, "diagnose",
               _run_artifact("hypotheses.json"), _run_diagnose, _valid_json,
               uses_llm=True, describe="ranked bottleneck hypotheses"),
+    PhaseSpec(Phase.PLAN, "plan",
+              _run_artifact("plan.json"), _run_plan, _valid_plan,
+              uses_llm=True, describe="ranked candidate fixes"),
     PhaseSpec(Phase.IMPLEMENT, "patch",
               _run_artifact("patch.json"), _run_patch, _valid_patch,
               uses_llm=True, describe="the code change"),
@@ -652,6 +740,12 @@ def _preconditions(spec: PhaseSpec, ctx: Context, state: RunState) -> str | None
     read artifacts rather than trusting `state.completed_phases`, and there is
     no argument that turns them off.
     """
+    if spec.phase is Phase.PLAN:
+        if not (ctx.run_dir / "hypotheses.json").exists():
+            return ("cannot enter the plan phase without a diagnosis: "
+                    f"{ctx.run_dir / 'hypotheses.json'} is missing. A plan "
+                    "ranks measured hypotheses; there is nothing to rank.")
+
     if spec.phase is Phase.IMPLEMENT:
         from .oracle.record import ORACLE_PATH, load_oracle
 
@@ -667,6 +761,15 @@ def _preconditions(spec: PhaseSpec, ctx: Context, state: RunState) -> str | None
         if not (ctx.run_dir / "hypotheses.json").exists():
             return ("cannot enter the patch phase without a diagnosis: "
                     f"{ctx.run_dir / 'hypotheses.json'} is missing.")
+        # The patch agent implements a NAMED CANDIDATE from a plan. Without
+        # one it falls back to the top hypothesis by attributed ms, which is
+        # how three runs in a row attacked a bottleneck the oracle could never
+        # accept. No argument to this function turns the check off.
+        if not (ctx.run_dir / "plan.json").exists():
+            return ("cannot enter the patch phase without a plan: "
+                    f"{ctx.run_dir / 'plan.json'} is missing. Run "
+                    "`perfagent plan` — ranking by raw milliseconds picks the "
+                    "biggest bottleneck, not the fixable one.")
 
     if spec.phase is Phase.MEASURE:
         from .measure.arms import existing_worktree
@@ -884,7 +987,7 @@ def _failure_state(spec: PhaseSpec) -> TerminalState:
         return TerminalState.ENVIRONMENT_INFEASIBLE
     if spec.phase is Phase.VERIFY:
         return TerminalState.BEHAVIOUR_NOT_PRESERVED
-    if spec.phase is Phase.IMPLEMENT:
+    if spec.phase in (Phase.PLAN, Phase.IMPLEMENT):
         return TerminalState.BOTTLENECK_NOT_FIXABLE
     return TerminalState.INTERNAL_ERROR
 

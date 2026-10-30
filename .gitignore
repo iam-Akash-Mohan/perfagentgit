@@ -12,3 +12,6 @@ scratch.py
 # is exactly the failure P13 exists to prevent.
 !.perfagent/tolerance.json
 .env
+
+# Transcripts of Claude sessions. Working notes, not source.
+Claude outputs/

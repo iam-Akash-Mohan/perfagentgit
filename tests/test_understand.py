@@ -49,6 +49,17 @@ def payload(**overrides: Any) -> dict[str, Any]:
         ],
         "tables": [{"table": "orders", "entity": "Order",
                     "columns_read": ["id", "name"]}],
+        # per_row_work and response_shape became required in S1b: "none found"
+        # has to be a statement rather than an omission.
+        "per_row_work": [
+            {"description": "counts the line items of each order",
+             "file": SERVICE, "line": 11, "kind": "collection_processing",
+             "scales_with": "line items per order", "bounded": False},
+        ],
+        "response_shape": {"dto": "OrderDto",
+                           "fields_returned": ["id", "lineCount"],
+                           "computed_fields": ["lineCount"],
+                           "unbounded_collections": []},
         "uncertainties": ["how many rows a page holds by default"],
     }
     base.update(overrides)
@@ -143,6 +154,7 @@ def test_submit_accepts_a_valid_analysis(root: SourceRoot) -> None:
     message = handler(**payload())
     assert "accepted" in message
     assert "1 of them per-row" in message.replace("(", "").replace(")", "")
+    assert "1 non-query per-row work item" in message
     assert sink["model"].prompt_hash == "abc123"
 
 

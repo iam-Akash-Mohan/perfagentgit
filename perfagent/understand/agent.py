@@ -29,6 +29,17 @@ ARTIFACT = "endpoint_model.json"
 DEFAULT_STACK = "Spring Boot / Maven / JPA-Hibernate / MySQL"
 
 
+# The order the system prompt presents the tools in. The order a model reads
+# tool definitions in is part of the prompt whether you intended it or not, so
+# the registry is sorted to match rather than assembled in whatever order the
+# factories happen to be called. `list_dir` is not in the prompt at all and
+# lands after the tools that are.
+PROMPT_ORDER: tuple[str, ...] = (
+    "find_route", "read_file", "get_schema", "search_code", "list_dir",
+    "submit_endpoint_analysis",
+)
+
+
 def build_registry(
     root: SourceRoot,
     sink: dict[str, Any],
@@ -39,18 +50,21 @@ def build_registry(
 ) -> ToolRegistry:
     """The tools this phase offers, bound to one repository.
 
-    Ordered as the system prompt describes them, because the order a model
-    reads tool definitions in is part of the prompt whether you intended it or
-    not.
+    Ordered to match `PROMPT_ORDER`, which is the order the system prompt
+    presents them in. The previous version claimed that and did not do it —
+    `search_code` arrived before `get_schema` — and a docstring making a claim
+    the code does not keep is worse than no docstring.
     """
-    registry = ToolRegistry()
-    registry.extend(route_tools(root))
-    registry.extend(source_tools(root))
-    if mysql is not None:
-        registry.extend(schema_tools(mysql, measured_tables))
-    registry.extend(submit_tools(root, sink, measured_tables=measured_tables,
-                                 prompt_hash=prompt_hash))
-    return registry
+    specs = [
+        *route_tools(root),
+        *source_tools(root),
+        *(schema_tools(mysql, measured_tables) if mysql is not None else []),
+        *submit_tools(root, sink, measured_tables=measured_tables,
+                      prompt_hash=prompt_hash),
+    ]
+    rank = {name: i for i, name in enumerate(PROMPT_ORDER)}
+    specs.sort(key=lambda spec: rank.get(spec.name, len(rank)))
+    return ToolRegistry().extend(specs)
 
 
 def understand(
@@ -76,11 +90,7 @@ def understand(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     if mysql is None:
-        from ..measure.sql import MySQLTarget
-        # Constructed, not connected: an unreachable database must fail inside
-        # get_schema with a message the model can read, not here where it
-        # would abort a phase that can still do most of its job.
-        mysql = MySQLTarget.from_env()
+        mysql = _database_target(trace)
 
     system = load_prompt("understand.system", directory=prompts_directory,
                          trace=trace, phase=PHASE)
@@ -138,6 +148,33 @@ def understand(
                summary=f"{model.route}: {len(model.call_chain)} hops, "
                        f"{len(model.data_access)} data accesses")
     return model
+
+
+def _database_target(trace: Trace) -> Any:
+    """The MySQL target, or None if one cannot even be described.
+
+    Constructed, not connected: an UNREACHABLE database has to fail inside
+    `get_schema`, with a message the model can read and work around, not here
+    where it would abort a phase that can still do 90% of its job from source
+    alone.
+
+    `from_env()` reads environment variables and validates them, so a garbled
+    `PERFAGENT_MYSQL_PORT` raises right here — which is exactly the failure at
+    the door this comment used to claim was impossible. Swallow it, note it in
+    the trace, and run without the tool.
+    """
+    try:
+        from ..measure.sql import MySQLTarget
+
+        return MySQLTarget.from_env()
+    except Exception as exc:  # noqa: BLE001 — no database is a degraded run, not a dead one
+        trace.emit(
+            EventType.NOTE, phase=PHASE,
+            note=f"no database target could be built ({type(exc).__name__}: "
+                 f"{exc}); running without get_schema. `tables` will carry no "
+                 f"measured facts.",
+        )
+        return None
 
 
 def write_model(model: EndpointModel, run_dir: Path) -> Path:

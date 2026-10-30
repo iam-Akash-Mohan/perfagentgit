@@ -20,7 +20,7 @@ from typing import Any
 
 from .artifacts import ArtifactStore
 from .contracts import (ArtifactRef, CandidatePlan, EquivalenceVerdict,
-                        GateDecision, Hypothesis, Patch, PerfReport, RiskTier,
+                        GateDecision, Hypothesis, Patch, PerfReport,
                         TerminalState)
 from .errors import ContractViolation, ToolError
 from .gate.rules import evaluate_gates, render_gate_table, terminal_state_for
@@ -74,31 +74,47 @@ def load_evidence(run_dir: Path) -> dict[str, Any]:
     return {"payloads": payloads, "refs": refs, "run_dir": directory}
 
 
-def plan_from_patch(patch_document: dict[str, Any]) -> CandidatePlan:
-    """Reconstruct the plan the patch was written against.
+def selected_plan(run_dir: Path) -> CandidatePlan:
+    """The candidate the plan phase SELECTED, as the shape the gates read.
 
-    P11 is not built, so there is no `plan.json`. Everything a `CandidatePlan`
-    needs is present in what the patch agent emitted, EXCEPT `risk_tier` —
-    which P11 is supposed to assign from a fixed table. It is set to MEDIUM
-    here because a query or serialization rewrite is what that tier describes,
-    and the value is not read by any gate: NO_FORBIDDEN_CHANGE inspects the
-    diff rather than trusting a tier. Flagged rather than quietly invented.
+    This replaces `plan_from_patch`, which rebuilt a plan out of the patch's
+    own self-description because the plan phase did not exist. That hack could
+    only ever agree with the patch — it was derived from it — so
+    DIFF_MINIMALITY was checking the diff against a file list copied out of the
+    diff. The allowlist now comes from a decision made BEFORE the patch was
+    written, which is the only way that gate means anything.
+
+    `risk_tier` and `requires_flag` come across unchanged; both were assigned
+    by code in the plan phase, never by a model.
     """
-    emitted = patch_document.get("emitted")
-    if not emitted:
+    from .plan.agent import load_plan
+
+    path = Path(run_dir) / "plan.json"
+    if not path.exists():
         raise ContractViolation(
-            "patch.json has no `emitted` block, so the run was ABANDONED and "
-            "there is no patch to gate. Re-run `perfagent patch`."
+            f"no plan at {path}. The gate needs the plan the patch was written "
+            f"against — run `perfagent plan`. It does not reconstruct one from "
+            f"the patch, because a plan derived from the patch cannot "
+            f"contradict it."
+        )
+    plan = load_plan(path)
+    candidate = plan.selected()
+    if candidate is None:
+        raise ContractViolation(
+            f"{path} records no selected candidate "
+            f"({plan.selection_reason or 'no reason given'}), so there was "
+            f"nothing for the patch phase to implement."
         )
     return CandidatePlan(
-        id=patch_document["patch"]["plan_id"],
-        targets_hypothesis=patch_document["targets_hypothesis"],
-        description=emitted["summary"],
-        mechanism_changed=emitted["mechanism_changed"],
-        predicted_effect=emitted["expected_effect"],
-        files_to_touch=list(emitted["files_touched"]),
-        risk_tier=RiskTier.MEDIUM,
-        what_could_break=list(emitted["risks"]),
+        id=candidate.id,
+        targets_hypothesis=candidate.targets_hypothesis,
+        description=candidate.description,
+        mechanism_changed=candidate.mechanism_changed,
+        predicted_effect=candidate.predicted_effect,
+        files_to_touch=list(candidate.files_to_touch),
+        risk_tier=candidate.risk_tier,
+        what_could_break=list(candidate.what_could_break),
+        requires_flag=candidate.requires_flag,
     )
 
 
@@ -113,13 +129,14 @@ def top_hypothesis(hypotheses_document: dict[str, Any]) -> Hypothesis:
 
 def run_gate(run_dir: Path) -> dict[str, Any]:
     """Load the artifacts, evaluate the six gates, pick the terminal state."""
-    evidence = load_evidence(run_dir)
+    directory = Path(run_dir)
+    evidence = load_evidence(directory)
     payloads = evidence["payloads"]
 
     verdict = EquivalenceVerdict.model_validate(payloads["verification"]["verdict"])
     perf = PerfReport.model_validate(payloads["perf_report"]["report"])
     patch = Patch.model_validate(payloads["patch"]["patch"])
-    plan = plan_from_patch(payloads["patch"])
+    plan = selected_plan(directory)
 
     decision = evaluate_gates(
         verdict, perf, patch, plan,

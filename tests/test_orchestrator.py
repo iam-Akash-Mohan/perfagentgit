@@ -95,14 +95,16 @@ def _assert_under_run_dir(path: Path, run_dir: Path) -> None:
 def test_the_phase_order_is_a_constant_and_matches_the_pipeline() -> None:
     assert [s.name for s in PIPELINE] == [
         "understand", "workload", "oracle", "baseline", "diagnose",
-        "patch", "verify", "measure", "gate", "ship",
+        "plan", "patch", "verify", "measure", "gate", "ship",
     ]
-    # Phase enum values, in ascending order, with PLAN (P6) absent because P11
-    # is not built.
+    # Phase enum values, in ascending order. PLAN sits between DIAGNOSE and
+    # IMPLEMENT: ranking by fixability has to happen before anything is
+    # written, or the patch agent attacks the biggest number rather than the
+    # fixable one.
     assert [s.phase for s in PIPELINE] == [
         Phase.COMPREHEND, Phase.WORKLOAD, Phase.ORACLE, Phase.BASELINE,
-        Phase.DIAGNOSE, Phase.IMPLEMENT, Phase.VERIFY, Phase.MEASURE,
-        Phase.GATE, Phase.SHIP,
+        Phase.DIAGNOSE, Phase.PLAN, Phase.IMPLEMENT, Phase.VERIFY,
+        Phase.MEASURE, Phase.GATE, Phase.SHIP,
     ]
 
 

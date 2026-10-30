@@ -2,8 +2,10 @@
 
 Takes one HTTP endpoint and a Spring Boot repository, and produces a validated
 `EndpointModel`: the execution path, every database access with a per-request /
-per-result-row classification, the tables on that path with the indexes that
-already exist on them, and whatever the agent could not determine.
+per-result-row classification, **the per-row work that is not a database
+access**, what the endpoint returns and which parts of it are unbounded, how it
+pages, the tables on that path with the indexes that already exist on them, and
+whatever the agent could not determine.
 
 It is the first phase of the pipeline and the only useful thing here that
 stands on its own — an endpoint map is worth showing a team with no
@@ -77,6 +79,28 @@ The database connection is the same one `measure/sql.py` uses:
 `--verbose` renders the conversation live from those same trace events, so
 what you watch and what you read back cannot disagree.
 
+## The fields, and what each is for
+
+| field | what it is for |
+|---|---|
+| `call_chain` | The methods executed, in order. Order of execution, not nesting depth — the artifact does not record depth and the renderer does not pretend it does. |
+| `data_access` | Every way this endpoint reaches the database, each marked per-request or per-result-row. |
+| `per_row_work` | **The one that matters.** Work that runs once per result row and is NOT a database access: string building, collection iteration, object creation, repeated computation. Each item says what it `scales_with` and whether it is `bounded`. On the endpoint this product was built against, an unbounded loop building one string per invoice was 93% of the latency and appeared in no other field. |
+| `response_shape` | The DTO, its fields, which are computed, and which returned collections are **unbounded**. A collection whose size grows with the data is part of the API contract and cannot be trimmed without changing behaviour — a later phase needs to know that before it writes a patch, not after four build iterations. |
+| `pagination` | Mechanism (offset / keyset / none / unbounded), whether a count query fires, whether the page size is capped. An uncapped page size on top of unbounded per-row work is a compounding problem. |
+| `tables` | Columns, approximate row counts, foreign keys and the indexes that already exist. Filled from the database, never from the model. |
+| `caching`, `hidden_query_triggers` | Usually empty. Recorded anyway: an empty list is honest, a missing field is a blind spot. |
+| `entities[].relations[].batch_size` / `.fetch_mode` | `@BatchSize` and `@Fetch` as **facts**. Whether an already-batched relation still needs work is diagnosis's call, so there is no `already_optimized` flag. |
+| `base_commit` | The target repo's git sha at analysis time, with `+dirty` when the worktree is not clean. Filled by code from `git rev-parse HEAD`; a model-supplied sha is discarded and the model is told so. Without it there is no way to tell a stale artifact from a current one. |
+| `prompt_hash` | Which prompt version produced this. |
+| `uncertainties` | What the agent could not determine — plus any `AUTOMATED CHECK` lines the handler added. |
+
+`per_row_work` and `response_shape` are **required**. An endpoint with genuinely
+no per-row work submits an empty array, so that "none found" is a statement the
+model had to make rather than a field it left out. The requirement is enforced
+in the handler, not only in the JSON schema, because `required` in a tool schema
+is a request that some providers honour and some ignore.
+
 ## What is checked, and by what
 
 | claim | checked by |
@@ -86,7 +110,11 @@ what you watch and what you read back cannot disagree.
 | every line is inside its file | `understand/validate.py` |
 | every symbol is within 2 lines of the cited line | `understand/validate.py` |
 | how many accesses run per row | `EndpointModel.per_row_accesses()`, in Python |
+| how much per-row work is unbounded | `EndpointModel.unbounded_per_row_work()`, in Python |
+| `bounded=true` names its `bound` | `validate_claims()` — a rejection |
+| per-row queries with empty `per_row_work` | `completeness_warnings()` — a note in `uncertainties`, never a rejection |
 | column types, row counts, index cardinalities | `information_schema`, never the model |
+| the base commit | `git rev-parse HEAD`, never the model |
 
 A rejection lists **every** problem at once, with what was found on the cited
 line and the nearest line that really does contain the symbol, so one retry
@@ -143,7 +171,19 @@ The phase can still complete without it; `tables` will simply carry no
 measured facts. Start the database (`docker compose up -d mysql` in the target
 repo) and re-run.
 
-A fourth, rarer one: a reasoning model can spend its entire output token budget
+If no target can even be *described* — a garbled `PERFAGENT_MYSQL_PORT`, say —
+the tool is not registered at all, a note goes into the trace, and the phase
+runs without it. The phase does 90% of its job from source alone and must not
+die at the door.
+
+**A fourth: `per_row_work` comes back empty on an endpoint that clearly has
+some.** The handler does not reject it — the check is a heuristic and an agent
+right about an unusual endpoint must not be blocked by a rule of thumb — but it
+appends an `AUTOMATED CHECK` line to `uncertainties` and the renderer prints
+"treat that as suspect". If it happens repeatedly, the prompt needs work, not
+the code.
+
+A fifth, rarer one: a reasoning model can spend its entire output token budget
 thinking and return nothing. That is a truncated reply, not a finished one; the
 loop says so and re-asks, and gives up with an error naming `llm.max_tokens`
 after three in a row.
