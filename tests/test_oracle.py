@@ -953,3 +953,202 @@ def test_passed_cannot_be_set_by_anything_but_this_module() -> None:
             external_calls_matched=True, held_back_passed=True, oracle_hash="x",
             decided_by="model",
         )
+
+
+# ──────────────────  bookkeeping tables, excluded and reported  ──────────
+
+
+def test_classify_tables_excludes_only_exact_sealed_names() -> None:
+    app, excluded = rec.classify_tables(
+        ["customer", "invoice", "flyway_schema_history"])
+    assert app == ["customer", "invoice"]
+    assert excluded == ["flyway_schema_history"]
+
+
+def test_classify_tables_recognises_every_sealed_name() -> None:
+    app, excluded = rec.classify_tables(sorted(rec.BOOKKEEPING_TABLES))
+    assert app == []
+    assert excluded == sorted(rec.BOOKKEEPING_TABLES)
+
+
+def test_a_table_with_no_bookkeeping_name_is_an_application_table() -> None:
+    app, excluded = rec.classify_tables(["customer", "audit_log"])
+    assert sorted(app) == ["audit_log", "customer"]
+    assert excluded == []
+
+
+def test_a_case_near_miss_is_an_error_not_a_guess() -> None:
+    """Neither silently excluded (that IS the pattern-matching loophole this
+    exists to prevent) nor silently hashed as application data (which would
+    hide a real migration tool's bookkeeping under a different OS's table-name
+    casing). Told, not guessed, either way."""
+    with pytest.raises(ContractViolation, match="do not match exactly"):
+        rec.classify_tables(["customer", "FLYWAY_SCHEMA_HISTORY"])
+    with pytest.raises(ContractViolation, match="do not match exactly"):
+        rec.classify_tables(["databasechangelog"])
+
+
+def test_the_sealed_list_is_names_only_no_pattern() -> None:
+    """A table that merely CONTAINS a bookkeeping name is an application
+    table. If this ever starts matching substrings, the exclusion has become
+    exactly the loophole it was built not to be."""
+    app, excluded = rec.classify_tables(["my_flyway_schema_history_archive"])
+    assert app == ["my_flyway_schema_history_archive"]
+    assert excluded == []
+
+
+class _FakeCursor:
+    """Answers information_schema lookups, including an injected bookkeeping
+    table, without a real database."""
+
+    def __init__(self, tables: list[str]) -> None:
+        self.tables = tables
+
+    def execute(self, sql: str, params=()) -> None:
+        self._sql = sql
+
+    def fetchall(self):
+        if "TABLE_NAME" in self._sql and "COLUMNS" not in self._sql:
+            return [(t,) for t in self.tables]
+        if "COLUMNS" in self._sql:
+            return [("id", "bigint")]
+        return []
+
+    def fetchone(self):
+        return (1, 10, 10)          # count, sum_crc32, xor_crc32
+
+    def close(self) -> None:
+        pass
+
+
+def test_db_table_snapshot_excludes_bookkeeping_from_the_hashed_state(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The proof for bullet 1: the table that broke F4 never reaches the hash."""
+    from contextlib import contextmanager
+
+    cursor = _FakeCursor(["customer", "invoice", "flyway_schema_history"])
+
+    @contextmanager
+    def fake_connect(target):
+        yield type("Conn", (), {"cursor": lambda self: cursor})()
+
+    monkeypatch.setattr(rec, "connect", fake_connect)
+    from perfagent.measure.sql import MySQLTarget
+
+    snapshot, excluded = rec.db_table_snapshot(MySQLTarget())
+    assert excluded == ["flyway_schema_history"]
+    assert set(snapshot) == {"customer", "invoice"}
+    assert "flyway_schema_history" not in snapshot
+
+
+# ──────────────────  the oracle hash is a behaviour fingerprint  ─────────
+
+
+def test_two_recordings_differing_only_in_an_ignored_field_hash_identically(
+    tmp_path: Path, git_repo: Path
+) -> None:
+    """Exactly the mini-spring finding: two back-to-back recordings of
+    UNMODIFIED code produced different oracle hashes because $.timestamp on
+    the 400 response differs between them — a field the policy already
+    ignores. 'The oracle hash changed' must mean behaviour changed."""
+    policy = TolerancePolicy(
+        ignore_paths=["$.timestamp"],
+        rationale={"$.timestamp": "server clock, not behaviour"},
+    )
+    corpus = make_corpus(1, 0)
+
+    ticks = iter(range(100))
+
+    def handler(body):
+        return {"timestamp": f"2026-01-01T00:00:{next(ticks):02d}Z", "status": 400}
+
+    first = rec.record_oracle(
+        "http://app", corpus, policy=policy, repo_path=git_repo,
+        capture_db=False, path=tmp_path / "a.json", client=json_handler(handler))
+    second = rec.record_oracle(
+        "http://app", corpus, policy=policy, repo_path=git_repo,
+        capture_db=False, path=tmp_path / "b.json", client=json_handler(handler))
+
+    assert (first["recorded"][0]["body"]["timestamp"]
+            != second["recorded"][0]["body"]["timestamp"])
+    assert first["hash"] == second["hash"]
+
+
+def test_a_difference_the_policy_does_not_ignore_still_changes_the_hash(
+    tmp_path: Path, git_repo: Path
+) -> None:
+    """The fingerprint is of BEHAVIOUR, not a rubber stamp: a field the policy
+    does not tolerate still has to move the hash."""
+    corpus = make_corpus(1, 0)
+    first = rec.record_oracle(
+        "http://app", corpus, policy=EMPTY_POLICY, repo_path=git_repo,
+        capture_db=False, path=tmp_path / "a.json",
+        client=json_handler(lambda body: {"total": 7}))
+    second = rec.record_oracle(
+        "http://app", corpus, policy=EMPTY_POLICY, repo_path=git_repo,
+        capture_db=False, path=tmp_path / "b.json",
+        client=json_handler(lambda body: {"total": 8}))
+    assert first["hash"] != second["hash"]
+
+
+def test_raw_bodies_still_live_on_disk_for_diagnosis(
+    tmp_path: Path, git_repo: Path
+) -> None:
+    """The canonical form is what gets HASHED; the raw, uncanonicalised body
+    is still what gets WRITTEN, so a human can read what the server actually
+    said."""
+    policy = TolerancePolicy(ignore_paths=["$.timestamp"],
+                             rationale={"$.timestamp": "server clock"})
+    out = tmp_path / "oracle.json"
+    rec.record_oracle(
+        "http://app", make_corpus(1, 0), policy=policy, repo_path=git_repo,
+        capture_db=False, path=out,
+        client=json_handler(lambda body: {"timestamp": "2026-01-01T00:00:00Z",
+                                          "status": 400}))
+    on_disk = json.loads(out.read_text())
+    assert on_disk["recorded"][0]["body"]["timestamp"] == "2026-01-01T00:00:00Z"
+
+
+def test_tampering_with_a_field_the_policy_does_not_ignore_is_still_caught(
+    tmp_path: Path, git_repo: Path
+) -> None:
+    """The canonical-hash scheme must not weaken tamper-detection for
+    anything that actually matters — only for what the policy already
+    excused."""
+    out = tmp_path / "oracle.json"
+    rec.record_oracle(
+        "http://app", make_corpus(1, 0), policy=EMPTY_POLICY,
+        repo_path=git_repo, capture_db=False, path=out,
+        client=json_handler(lambda body: {"total": 7}))
+    assert rec.load_oracle(out).hash
+
+    payload = json.loads(out.read_text())
+    payload["recorded"][0]["body"]["total"] = 999
+    out.write_text(json.dumps(payload))
+
+    with pytest.raises(ContractViolation, match="has been modified"):
+        rec.load_oracle(out)
+
+
+def test_comparable_recording_reduces_to_exactly_what_compare_checks() -> None:
+    response = RecordedResponse(
+        request_id="r1", status=200, body={"timestamp": "now", "total": 7},
+        headers_of_interest={"content-type": "application/json"},
+        db_state_hash="abc", external_calls_made=[])
+    policy = TolerancePolicy(ignore_paths=["$.timestamp"],
+                             rationale={"$.timestamp": "x"})
+    reduced = rec.comparable_recording(response, policy)
+    assert reduced["body"] == {"total": 7}
+    assert reduced["db_state_hash"] == "abc"
+    assert reduced["status"] == 200
+
+
+def test_excluded_tables_are_sealed_into_the_hash() -> None:
+    """A later run claiming to exclude MORE tables than were actually found at
+    record time must not silently inherit a passing hash."""
+    base = dict(corpus_hash="c", recorded=[], policy=EMPTY_POLICY,
+               base_commit="a" * 40)
+    narrow = rec.oracle_hash(excluded_tables=[], **base)
+    wide = rec.oracle_hash(excluded_tables=["flyway_schema_history"], **base)
+    assert narrow != wide

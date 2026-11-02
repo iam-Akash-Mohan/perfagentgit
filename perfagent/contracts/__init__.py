@@ -89,6 +89,13 @@ class BehaviourOracle(BaseModel):
     recorded: list[RecordedResponse]
     policy: TolerancePolicy
     base_commit: str
+    excluded_tables: list[str] = Field(
+        default_factory=list,
+        description="Schema-management bookkeeping tables (Flyway, Liquibase, "
+                    "...) found in the schema at record time and left out of "
+                    "every db-state comparison. Sealed in here, exactly like "
+                    "the policy, so a later run cannot silently exclude more "
+                    "than this one did. Empty when capture_db was off.")
     hash: str                              # content hash of everything above
 
 

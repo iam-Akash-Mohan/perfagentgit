@@ -419,3 +419,121 @@ def test_the_endpoint_reaches_the_prompt(fixture_repo: Path,
     run(client, fixture_repo, tmp_path, endpoint="GET /api/orders/{id}")
     assert "GET /api/orders/{id}" in seen[0]
     assert str(fixture_repo.resolve()) in seen[0]
+
+
+# ─────────────────  pagination: offset with no total ordering  ───────────
+
+
+def _model(**overrides: Any) -> EndpointModel:
+    return EndpointModel.model_validate(payload(**overrides))
+
+
+def test_offset_pagination_with_no_order_by_at_all_is_flagged() -> None:
+    from perfagent.understand.validate import completeness_warnings
+
+    model = _model(
+        data_access=[{"trigger": "repo.findByFilter", "kind": "jpql_query",
+                     "file": SERVICE, "line": 6, "tables": ["orders"],
+                     "executes_per_row": False,
+                     "sql": "select o from Order o where o.name like :name"}],
+        pagination={"mechanism": "offset"},
+    )
+    warnings = completeness_warnings(model)
+    assert any("has an ORDER BY" in w and "PRE-EXISTING CORRECTNESS RISK" in w
+              for w in warnings)
+
+
+def test_an_order_by_on_a_unique_column_clears_it() -> None:
+    from perfagent.understand.validate import completeness_warnings
+
+    model = _model(
+        data_access=[{"trigger": "repo.findByFilter", "kind": "jpql_query",
+                     "file": SERVICE, "line": 6, "tables": ["orders"],
+                     "executes_per_row": False,
+                     "sql": "select o from Order o where o.name like :name "
+                            "order by o.id"}],
+        tables=[{"table": "orders", "entity": "Order",
+                "columns_read": ["id", "name"],
+                "existing_indexes": [{"name": "PRIMARY", "columns": ["id"],
+                                     "unique": True}]}],
+        pagination={"mechanism": "offset"},
+    )
+    warnings = completeness_warnings(model)
+    assert not any("CORRECTNESS RISK" in w for w in warnings)
+
+
+def test_an_order_by_on_a_non_unique_column_is_not_a_total_order() -> None:
+    """Ties on a non-unique sort column are the same hazard as no ORDER BY at
+    all: the planner is free to break them differently between two calls."""
+    from perfagent.understand.validate import completeness_warnings
+
+    model = _model(
+        data_access=[{"trigger": "repo.findByFilter", "kind": "jpql_query",
+                     "file": SERVICE, "line": 6, "tables": ["orders"],
+                     "executes_per_row": False,
+                     "sql": "select o from Order o where o.name like :name "
+                            "order by o.name"}],
+        tables=[{"table": "orders", "entity": "Order",
+                "columns_read": ["id", "name"],
+                "existing_indexes": [{"name": "PRIMARY", "columns": ["id"],
+                                     "unique": True}]}],
+        pagination={"mechanism": "offset"},
+    )
+    warnings = completeness_warnings(model)
+    assert any("no column that any UNIQUE index" in w for w in warnings)
+
+
+def test_a_per_row_query_is_not_mistaken_for_the_paginated_one() -> None:
+    """A lazy collection load inside enrich() has no business being judged for
+    pagination ordering — it is not what produced the page."""
+    from perfagent.understand.validate import completeness_warnings
+
+    model = _model(
+        data_access=[
+            {"trigger": "repo.findByFilter", "kind": "jpql_query",
+             "file": SERVICE, "line": 6, "tables": ["orders"],
+             "executes_per_row": False,
+             "sql": "select o from Order o where o.name like :name"},
+            {"trigger": "lazy load of Order.lines", "kind": "lazy_collection",
+             "file": SERVICE, "line": 11, "tables": ["order_line"],
+             "executes_per_row": True,
+             "sql": "select l from OrderLine l order by l.id"},
+        ],
+        pagination={"mechanism": "offset"},
+    )
+    warnings = completeness_warnings(model)
+    # The per-row query's ORDER BY must not count toward the page query's.
+    assert any("has an ORDER BY" in w for w in warnings)
+
+
+@pytest.mark.parametrize("mechanism", ["keyset", "none", "unbounded"])
+def test_non_offset_pagination_is_never_flagged(mechanism: str) -> None:
+    from perfagent.understand.validate import completeness_warnings
+
+    model = _model(
+        data_access=[{"trigger": "repo.findByFilter", "kind": "jpql_query",
+                     "file": SERVICE, "line": 6, "tables": ["orders"],
+                     "executes_per_row": False,
+                     "sql": "select o from Order o where o.name like :name"}],
+        pagination={"mechanism": mechanism},
+    )
+    assert not any("CORRECTNESS RISK" in w for w in completeness_warnings(model))
+
+
+def test_no_pagination_declared_is_never_flagged() -> None:
+    from perfagent.understand.validate import completeness_warnings
+
+    model = _model(pagination=None)
+    assert not any("CORRECTNESS RISK" in w for w in completeness_warnings(model))
+
+
+def test_it_fires_on_the_real_mini_spring_map() -> None:
+    """The actual finding from the F4 investigation, read off a real recorded
+    artifact: no ORDER BY anywhere, which is exactly what findByFilter's JPQL
+    looks like on disk."""
+    from perfagent.understand.validate import completeness_warnings
+
+    fixture = Path(__file__).parent / "fixtures" / "plan" / "endpoint_model.json"
+    model = EndpointModel.model_validate(json.loads(fixture.read_text()))
+    warnings = completeness_warnings(model)
+    assert any("has an ORDER BY" in w for w in warnings)

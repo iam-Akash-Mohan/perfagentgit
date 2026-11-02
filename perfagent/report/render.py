@@ -221,6 +221,13 @@ _HEADER = """# Performance report: {endpoint}
 
 {narrative}
 
+### Pre-existing risks
+
+Found while tracing the endpoint, independent of this patch — properties of
+the application today, on unmodified code:
+
+{pre_existing_risks}
+
 ### Why not the bigger number
 
 Causes are ranked by `attributed_ms x fixability` — the measured cost times the
@@ -286,6 +293,9 @@ Lines added: {lines_added}. Lines removed: {lines_removed}.
 
 Requests compared: {compared}. Identical: {identical}. Differing paths:
 {diff_count}. Held-back requests: {held_back_count}.
+
+Tables excluded from the database-state comparison as schema-management
+bookkeeping, not application data: {excluded_tables}.
 
 ## Provenance
 

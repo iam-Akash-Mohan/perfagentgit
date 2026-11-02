@@ -593,3 +593,24 @@ def test_strip_removes_percent_signs_cleanly() -> None:
     version left a stray '%' behind."""
     assert "%" not in strip_measurements("it was 40% faster")
     assert "%" not in strip_measurements("it was 40 % faster")
+
+
+# ───────────────  PR body: pre-existing risks and excluded tables  ───────
+
+
+def test_pre_existing_rows_renders_every_uncertainty() -> None:
+    from perfagent.ship import _pre_existing_rows
+
+    rendered = _pre_existing_rows([
+        "AUTOMATED CHECK: pagination is offset-based and no ORDER BY was found.",
+        "unsure whether page size defaults to 50 or 20",
+    ])
+    assert rendered.count("\n- ") == 1          # two bullets, one join
+    assert rendered.startswith("- AUTOMATED CHECK")
+    assert "unsure whether page size" in rendered
+
+
+def test_pre_existing_rows_says_so_when_there_are_none() -> None:
+    from perfagent.ship import _pre_existing_rows
+
+    assert _pre_existing_rows([]) == "- (none recorded)"

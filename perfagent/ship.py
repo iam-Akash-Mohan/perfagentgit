@@ -58,6 +58,13 @@ def load_evidence(run_dir: Path) -> dict[str, Any]:
         # The plan is evidence too: "why not the bigger number" is the part
         # of this report that makes it reviewable, and it is quoted from here.
         "plan": _read(directory / "plan.json", "plan"),
+        # The comprehension map carries pre-existing risks the understand
+        # phase noticed while tracing the endpoint — a missing ORDER BY on an
+        # offset-paginated query, for one — which have nothing to do with this
+        # patch and everything to do with whether a reviewer should trust the
+        # endpoint. Found looking for a bottleneck; still worth reporting.
+        "endpoint_model": _read(directory / "endpoint_model.json",
+                                "comprehension model"),
     }
 
     store = ArtifactStore(directory)
@@ -279,7 +286,34 @@ def build_ledger(gated: dict[str, Any]) -> tuple[EvidenceLedger, dict[str, Backe
     ledger.record("mechanism_note", report_body.get("mechanism_note", ""),
                   refs["perf_report"])
 
+    # ── pre-existing risks: found while diagnosing, not caused by the patch ──
+    model_ref = refs["endpoint_model"]
+    uncertainties = payloads["endpoint_model"].get("uncertainties") or []
+    ledger.record("pre_existing_risks", _pre_existing_rows(uncertainties),
+                  model_ref)
+
+    # ── bookkeeping tables excluded from the behaviour comparison ───────
+    excluded = payloads["verification"].get("excluded_tables") or []
+    ledger.record(
+        "excluded_tables",
+        ", ".join(f"`{t}`" for t in excluded) if excluded else "none",
+        refs["verification"],
+    )
+
     return ledger, {}
+
+
+def _pre_existing_rows(uncertainties: list[str]) -> str:
+    """What the comprehension phase was unsure about, or flagged outright.
+
+    Everything here came from `completeness_warnings()` or the model's own
+    stated uncertainty — never invented for the report. A correctness hazard
+    found while diagnosing performance (a missing ORDER BY, for one) belongs
+    here: it is a property of the endpoint today, not of this patch.
+    """
+    if not uncertainties:
+        return "- (none recorded)"
+    return "\n".join(f"- {item}" for item in uncertainties)
 
 
 def _selected_candidate(plan_payload: dict[str, Any]) -> dict[str, Any]:

@@ -122,6 +122,10 @@ def run_verification(
         "unmatched_policy_paths": unmatched_policy_paths(
             [r.body for r in oracle.recorded], oracle.policy
         ),
+        # Reported, not silent — an exclusion nobody can see is indistinguishable
+        # from a bug. Sealed inside the oracle at record time; carried here
+        # verbatim so the CLI, the trace and the PR body can all quote it.
+        "excluded_tables": oracle.excluded_tables,
         "verified_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -228,6 +232,10 @@ def render_verdict(
                f"{'matched' if verdict.db_state_matched else 'DIFFERS'}")
     out.append(f"  external calls : "
                f"{'matched' if verdict.external_calls_matched else 'DIFFER'}")
+    excluded = document.get("excluded_tables") or []
+    out.append(f"  excluded       : "
+               f"{', '.join(excluded) if excluded else '(none)'} "
+               f"(schema-management bookkeeping, sealed in at record time)")
     if document.get("unmatched_policy_paths"):
         out.append("  WARNING: tolerance paths matching nothing: "
                    + ", ".join(document["unmatched_policy_paths"]))

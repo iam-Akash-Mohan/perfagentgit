@@ -11,11 +11,12 @@ retry should be able to fix everything at once.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from ..contracts import Citation, EndpointModel
+from ..contracts import Citation, EndpointModel, TableInfo
 from ..tools import SourceRoot
 
 # Java puts annotations above a method and wraps long signatures across lines,
@@ -211,6 +212,91 @@ def validate_claims(model: EndpointModel) -> list[str]:
     return problems
 
 
+# `order by customer_id, status desc` -> ["customer_id", "status"]. Matched
+# against SQL text the model ALREADY declared in `data_access[].sql` — nothing
+# here is asked of the model; it is read off what it already submitted.
+_ORDER_BY = re.compile(r"\border\s+by\s+(.+)$", re.I | re.S)
+_ASC_DESC = re.compile(r"\s+(asc|desc)$", re.I)
+
+
+def _order_by_columns(sql: str) -> list[str]:
+    match = _ORDER_BY.search(sql or "")
+    if match is None:
+        return []
+    columns = []
+    for piece in match.group(1).split(","):
+        piece = _ASC_DESC.sub("", piece.strip()).strip()
+        piece = piece.split(".")[-1]          # "c.id" -> "id"
+        piece = piece.strip("`\"; ")
+        if piece:
+            columns.append(piece)
+    return columns
+
+
+def _unique_columns(tables: list[TableInfo]) -> set[str]:
+    return {
+        column.lower()
+        for table in tables
+        for index in table.existing_indexes
+        if index.unique
+        for column in index.columns
+    }
+
+
+def _pagination_ordering_warning(model: EndpointModel) -> str | None:
+    """Offset pagination with no total ordering is a LATENT CORRECTNESS BUG,
+    not a performance concern — found while looking for one.
+
+    MySQL makes no row-order guarantee for a query with no `ORDER BY`, and an
+    `ORDER BY` on a column with no uniqueness guarantee does not fix that: ties
+    on that column can still be ordered differently between two requests. Page
+    2 can then repeat or skip a row the planner reordered. This was proven on
+    mini-spring's `findByFilter` — no `ORDER BY` at all, offset pagination over
+    a `LIKE` filter — though two back-to-back recordings of unmodified code
+    did not happen to disagree on row order in that trial; the hazard is
+    structural, not something this check claims to have witnessed firing.
+
+    Read entirely off what the model already declared (`data_access[].sql`,
+    `tables[].existing_indexes`); nothing here asks it to count or judge.
+    """
+    page = model.pagination
+    if page is None or page.mechanism != "offset":
+        return None
+
+    # Only queries that run once per REQUEST can be "the" paginated query; one
+    # that runs once per row is enriching a row already selected, not
+    # selecting the page.
+    candidate_sql = [a.sql for a in model.data_access
+                     if a.sql and not a.executes_per_row]
+    order_columns: list[str] = []
+    for sql in candidate_sql:
+        order_columns.extend(_order_by_columns(sql))
+
+    if not order_columns:
+        return (
+            "AUTOMATED CHECK: pagination is offset-based "
+            "(pagination.mechanism='offset') and none of the declared "
+            "per-request queries has an ORDER BY. MySQL makes no row-order "
+            "guarantee without one, so page N can repeat or skip rows the "
+            "planner returned in a different order on a later call. This is a "
+            "PRE-EXISTING CORRECTNESS RISK in the target application — found "
+            "while diagnosing performance, not introduced by any patch."
+        )
+
+    if not (_unique_columns(model.tables) & {c.lower() for c in order_columns}):
+        return (
+            f"AUTOMATED CHECK: pagination is offset-based and the declared "
+            f"ORDER BY ({', '.join(order_columns)}) names no column that any "
+            f"UNIQUE index on the tables involved covers. Ties on "
+            f"{', '.join(order_columns)} can still be ordered inconsistently "
+            f"between two requests, which has the same effect as no ordering "
+            f"at all: page N can repeat or skip a row. This is a PRE-EXISTING "
+            f"CORRECTNESS RISK in the target application, independent of any "
+            f"patch."
+        )
+    return None
+
+
 def completeness_warnings(model: EndpointModel) -> list[str]:
     """Suspicions worth recording. These NEVER reject.
 
@@ -256,6 +342,11 @@ def completeness_warnings(model: EndpointModel) -> list[str]:
             f"this may be an incomplete map rather than an endpoint with no "
             f"per-row work."
         )
+
+    ordering = _pagination_ordering_warning(model)
+    if ordering is not None:
+        warnings.append(ordering)
+
     return warnings
 
 

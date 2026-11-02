@@ -385,6 +385,9 @@ def _render_verdict(
         f"  external calls : "
         f"{'matched' if verdict.external_calls_matched else 'DIFFER'}"
         f" (no journal recorded until P19)",
+        f"  excluded       : "
+        f"{', '.join(oracle.excluded_tables) if oracle.excluded_tables else '(none)'}"
+        f" (schema-management bookkeeping, sealed in at record time)",
     ]
     if unmatched_paths:
         lines.append(
@@ -454,6 +457,13 @@ def oracle_record(
     typer.echo(f"  corpus hash : {bundle['corpus_hash']}")
     typer.echo(f"  base commit : {bundle['base_commit']}")
     typer.echo(f"  oracle hash : {bundle['hash']}")
+    excluded = bundle.get("excluded_tables") or []
+    if excluded:
+        typer.echo(
+            f"  excluded    : {', '.join(excluded)} (schema-management "
+            f"bookkeeping, not application state — sealed into this bundle, "
+            f"never compared)"
+        )
     if "+dirty" in bundle["base_commit"]:
         typer.secho(
             "  WARNING: the target repo has uncommitted changes, so the "
@@ -504,9 +514,10 @@ def oracle_check(
         # recording started. Every per-request hash is cumulative, so a drifted
         # starting state fails the whole check for a reason that is not the patch.
         if not no_db:
+            live_snapshot, live_excluded = db_table_snapshot(MySQLTarget.from_env())
             drift = db_state_drift(
                 recorded_initial_db_state(oracle_path),
-                db_table_snapshot(MySQLTarget.from_env()),
+                live_snapshot,
             )
             if drift:
                 raise ContractViolation(
@@ -514,6 +525,14 @@ def oracle_check(
                     f"against: {'; '.join(drift)}. Re-seed to the recorded "
                     "dataset before checking; comparing bodies computed from "
                     "different data proves nothing."
+                )
+            if set(live_excluded) != set(oracle.excluded_tables):
+                typer.secho(
+                    f"  NOTE: this database excludes {sorted(live_excluded) or '(none)'} "
+                    f"as schema-management bookkeeping; the oracle recorded "
+                    f"excluding {sorted(oracle.excluded_tables) or '(none)'}. "
+                    "A comparison is still run, but this is worth a look.",
+                    fg=typer.colors.YELLOW,
                 )
 
         live = replay_live(

@@ -864,14 +864,41 @@ def test_the_phase_can_read_the_live_schema_when_a_target_exists(
 # ───────────────────────────  wiring and guards  ─────────────────────────
 
 
-def test_the_patch_phase_is_refused_without_a_plan(tmp_path: Path) -> None:
-    """Acceptance 5. The guard reads the artifact, not the run state."""
+def test_the_patch_phase_is_refused_without_a_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Acceptance 5. The guard reads the artifact, not the run state.
+
+    This is a test of the PLAN guard specifically, so the oracle guard ahead
+    of it must pass — with a minimal, hermetic oracle this test controls,
+    never the real `.perfagent/oracle.json` on whatever machine runs the
+    suite. Depending on that file's state is exactly the kind of coupling
+    that made this test collateral damage when the oracle's hash scheme
+    changed under it.
+    """
     from perfagent import orchestrator as orch
-    from perfagent.contracts import Phase, RunState
+    from perfagent.contracts import BehaviourOracle, Phase, RunState, TolerancePolicy
+    from perfagent.oracle import record as oracle_record
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "hypotheses.json").write_text("{}")
+
+    oracle_path = tmp_path / "oracle.json"
+    fields = {
+        "corpus_hash": "c", "recorded": [],
+        "policy": TolerancePolicy().model_dump(mode="json"),
+        "base_commit": "a" * 40, "excluded_tables": [],
+    }
+    computed = oracle_record.oracle_hash(
+        corpus_hash="c", recorded=[], policy=TolerancePolicy(),
+        base_commit="a" * 40, excluded_tables=[])
+    oracle_record.write_oracle(
+        BehaviourOracle.model_validate({**fields, "hash": computed}),
+        {}, path=oracle_path,
+    )
+    monkeypatch.setattr(oracle_record, "ORACLE_PATH", oracle_path)
+
     ctx = orch.Context(run_id="r1", run_dir=run_dir, repo=tmp_path,
                        endpoint="POST /x", budget=orch.Budget(),
                        trace=Trace(run_dir, "r1"))

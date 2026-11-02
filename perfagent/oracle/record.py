@@ -33,7 +33,7 @@ from ..contracts import (BehaviourOracle, RecordedResponse, RequestCorpus,
 from ..errors import ContractViolation, ToolError
 from ..ids import content_hash
 from ..measure.sql import MySQLTarget, connect
-from .canonicalise import load_policy
+from .canonicalise import canonicalise, load_policy
 
 ORACLE_PATH = Path(".perfagent/oracle.json")
 DEFAULT_TIMEOUT_S = 120.0
@@ -60,6 +60,26 @@ HEADERS_OF_INTEREST = (
 _BINARY_TYPES = frozenset(
     {"blob", "tinyblob", "mediumblob", "longblob", "binary", "varbinary", "bit"}
 )
+
+# Schema-management bookkeeping, EXACT NAMES ONLY. Never a pattern, never "the
+# tables the patch touched", never a constructor argument — there is no path
+# from a tool call to this set. The only additive index migration this product
+# writes is applied by Flyway, which inserts a row into its own history table
+# the instant it runs; db_table_snapshot used to fold that row into the same
+# hash as the application's data, so the harness's own permitted schema change
+# fired `$db_state` on every single comparison, independent of whether the
+# patch did anything wrong. Proved: the identical index applied via raw SQL
+# (bypassing Flyway, touching none of these tables) produced zero diffs: with
+# the real tool, 12 of 12.
+#
+# A new entry here is a deliberate, reviewed source change — exactly as
+# deliberate as widening the tolerance policy, and for the same reason.
+BOOKKEEPING_TABLES: frozenset[str] = frozenset({
+    "flyway_schema_history",      # Flyway
+    "schema_version",             # Flyway's pre-4.0 table name
+    "DATABASECHANGELOG",          # Liquibase
+    "DATABASECHANGELOGLOCK",      # Liquibase
+})
 
 
 # ──────────────────────────────  provenance  ─────────────────────────────
@@ -118,7 +138,47 @@ def _row_expression(column: str, data_type: str) -> str:
     return f"IFNULL({rendered}, CHAR(0))"
 
 
-def db_table_snapshot(target: MySQLTarget) -> dict[str, Any]:
+def classify_tables(tables: list[str]) -> tuple[list[str], list[str]]:
+    """(application tables, excluded bookkeeping tables) — or raise.
+
+    Matching is EXACT, never case-folded, never a substring — a pattern is
+    exactly the loophole a patch could grow into. A table whose name is a
+    case-insensitive near-miss of a sealed name (a different
+    `lower_case_table_names` setting, a different tool version) is NEITHER
+    excluded nor silently hashed as application data: it is reported as an
+    error, because guessing which way to treat it is how this bug got in in
+    the first place. Add the exact spelling to BOOKKEEPING_TABLES, deliberately,
+    if it really is a migration tool's table.
+    """
+    bookkeeping_lower = {name.lower() for name in BOOKKEEPING_TABLES}
+    application: list[str] = []
+    excluded: list[str] = []
+    near_misses: list[str] = []
+
+    for table in tables:
+        if table in BOOKKEEPING_TABLES:
+            excluded.append(table)
+        elif table.lower() in bookkeeping_lower:
+            near_misses.append(table)
+        else:
+            application.append(table)
+
+    if near_misses:
+        raise ContractViolation(
+            f"table(s) {', '.join(sorted(near_misses))} resemble known "
+            f"schema-management bookkeeping "
+            f"({', '.join(sorted(BOOKKEEPING_TABLES))}) but do not match "
+            f"exactly. This module excludes ONLY exact names, never a pattern "
+            f"and never a case-insensitive guess. If this really is a "
+            f"migration tool's bookkeeping table, add its exact spelling to "
+            f"BOOKKEEPING_TABLES in perfagent/oracle/record.py — a "
+            f"deliberate, reviewed change, the same way a tolerance is. If it "
+            f"is an application table that happens to collide, rename it."
+        )
+    return application, sorted(excluded)
+
+
+def db_table_snapshot(target: MySQLTarget) -> tuple[dict[str, Any], list[str]]:
     """Per-table row count and two order-insensitive row checksums.
 
     The point is to catch a patch that writes something it should not. A search
@@ -133,6 +193,14 @@ def db_table_snapshot(target: MySQLTarget) -> dict[str, Any]:
 
     The column list is recorded alongside, so a schema change is visible rather
     than silently changing what the checksum means.
+
+    Schema-management bookkeeping tables (BOOKKEEPING_TABLES) are excluded:
+    they record that a MIGRATION TOOL ran, not that the APPLICATION's data
+    changed, and the one schema change this product is allowed to make — an
+    additive index via Flyway — writes a row there every time it runs. Folding
+    that into the same hash as `customer`/`invoice` made the harness's own
+    permitted change look like a behaviour regression on every comparison.
+    Returns (snapshot of application tables, excluded table names found).
     """
     from mysql.connector import Error as MySQLError
 
@@ -149,7 +217,8 @@ def db_table_snapshot(target: MySQLTarget) -> dict[str, Any]:
                 """,
                 (target.database,),
             )
-            tables = [str(row[0]) for row in cursor.fetchall()]
+            all_tables = [str(row[0]) for row in cursor.fetchall()]
+            tables, excluded = classify_tables(all_tables)
 
             for table in tables:
                 if "`" in table:
@@ -195,7 +264,7 @@ def db_table_snapshot(target: MySQLTarget) -> dict[str, Any]:
         finally:
             cursor.close()
 
-    return snapshot
+    return snapshot, excluded
 
 
 def db_state_hash(snapshot: dict[str, Any]) -> str:
@@ -281,7 +350,9 @@ def _capture(
                     "partial oracle is not recorded.",
                 ) from exc
 
-            table_state = db_table_snapshot(target) if target is not None else None
+            table_state = None
+            if target is not None:
+                table_state, _ = db_table_snapshot(target)
             if table_state is not None:
                 detail[spec.id] = table_state
 
@@ -308,13 +379,69 @@ def _capture(
 
 
 def bundle_hash(oracle_fields: dict[str, Any]) -> str:
-    """Content hash of everything in the bundle except the hash itself.
+    """Content hash of a RAW fields dict. Generic byte-hash, not what
+    `BehaviourOracle.hash` is computed from — see `oracle_hash` below.
 
-    Both the writer and the reader go through this one function, so a bundle can
-    never be written with a hash that its own reader would reject.
+    Kept for callers that build a bundle by hand (tests do, to get a
+    self-consistent hash for a `BehaviourOracle` fixture that nothing ever
+    re-derives). `compare()` never re-validates `oracle.hash`, only prints it,
+    so a fixture hashed this way is legitimate there.
     """
     payload = {k: v for k, v in oracle_fields.items() if k != "hash"}
     return content_hash(payload)
+
+
+def comparable_recording(response: RecordedResponse,
+                         policy: TolerancePolicy) -> dict[str, Any]:
+    """One response, reduced to exactly what `compare()` looks at.
+
+    Status, the allowlisted headers, the body AFTER the frozen policy is
+    applied, the db-state hash, and the external-call journal — the same five
+    things `compare()` in oracle/compare.py checks. `oracle_hash` hashes THIS,
+    not the raw recording, which is the whole fix: two recordings whose only
+    difference is a field the policy already ignores reduce to the same dict
+    here and therefore hash identically.
+    """
+    return {
+        "request_id": response.request_id,
+        "status": response.status,
+        "headers_of_interest": response.headers_of_interest,
+        "body": canonicalise(response.body, policy),
+        "db_state_hash": response.db_state_hash,
+        "external_calls_made": response.external_calls_made,
+    }
+
+
+def oracle_hash(*, corpus_hash: str, recorded: list[RecordedResponse],
+                policy: TolerancePolicy, base_commit: str,
+                excluded_tables: list[str]) -> str:
+    """The oracle's identity: a fingerprint of BEHAVIOUR, not of bytes.
+
+    Two recordings of unmodified code must hash identically unless something
+    `compare()` would actually catch differs between them. They did not,
+    before this: `$.timestamp` on a 400 response — a field the policy already
+    ignores — produced two different oracle hashes from two recordings of the
+    same unmodified code, so "the oracle hash changed" told you nothing about
+    whether behaviour had. Hashing `comparable_recording()`'s reduction instead
+    of the raw body fixes that, because the reduction is exactly what two
+    recordings are compared through.
+
+    The raw, uncanonicalised bodies still live in `recorded` on disk — this
+    hash governs identity and tamper-detection, not what a human can read back.
+    Tampering with anything that MATTERS is still caught: `load_oracle`
+    recomputes this same function from whatever `recorded` currently holds, so
+    an edit to a real field changes the canonical form and therefore the hash,
+    even though an edit to an ignored field does not — which is correct, since
+    the policy already said that field carries no behaviour.
+    """
+    canonical = [comparable_recording(r, policy) for r in recorded]
+    return content_hash({
+        "corpus_hash": corpus_hash,
+        "recorded": canonical,
+        "policy": policy.model_dump(mode="json"),
+        "base_commit": base_commit,
+        "excluded_tables": sorted(excluded_tables),
+    })
 
 
 def dbstate_path(oracle_path: str | Path = ORACLE_PATH) -> Path:
@@ -341,7 +468,11 @@ def load_oracle(path: str | Path = ORACLE_PATH) -> BehaviourOracle:
         raise ContractViolation(f"{oracle_path} is not valid JSON: {exc}") from exc
 
     oracle = BehaviourOracle.model_validate(payload)
-    recomputed = bundle_hash(oracle.model_dump(mode="json"))
+    recomputed = oracle_hash(
+        corpus_hash=oracle.corpus_hash, recorded=oracle.recorded,
+        policy=oracle.policy, base_commit=oracle.base_commit,
+        excluded_tables=oracle.excluded_tables,
+    )
     if recomputed != oracle.hash:
         raise ContractViolation(
             f"{oracle_path} states hash {oracle.hash} but its content hashes to "
@@ -433,8 +564,13 @@ def record_oracle(
     # pre-flight against this and refuses to run on a database that is not in
     # the state the oracle was recorded against — otherwise every cumulative
     # per-request hash diverges for reasons that have nothing to do with the
-    # patch, and the oracle fails on itself.
-    initial = db_table_snapshot(target) if target is not None else None
+    # patch, and the oracle fails on itself. `excluded_tables` is read HERE,
+    # once, rather than re-derived per request: the set of bookkeeping tables
+    # present is a property of the schema, not of any one request.
+    initial: dict[str, Any] | None = None
+    excluded_tables: list[str] = []
+    if target is not None:
+        initial, excluded_tables = db_table_snapshot(target)
 
     recorded, detail = _capture(
         base_url,
@@ -444,13 +580,21 @@ def record_oracle(
         client=client,
     )
 
+    resolved_base_commit = base_commit(repo_path)
     fields: dict[str, Any] = {
         "corpus_hash": corpus.hash,
         "recorded": [r.model_dump(mode="json") for r in recorded],
         "policy": resolved_policy.model_dump(mode="json"),
-        "base_commit": base_commit(repo_path),
+        "base_commit": resolved_base_commit,
+        # SEALED into the bundle, like the policy: a later run cannot exclude
+        # more than THIS record saw, because the hash below covers this list.
+        "excluded_tables": excluded_tables,
     }
-    oracle = BehaviourOracle.model_validate({**fields, "hash": bundle_hash(fields)})
+    computed_hash = oracle_hash(
+        corpus_hash=corpus.hash, recorded=recorded, policy=resolved_policy,
+        base_commit=resolved_base_commit, excluded_tables=excluded_tables,
+    )
+    oracle = BehaviourOracle.model_validate({**fields, "hash": computed_hash})
 
     write_oracle(
         oracle,
