@@ -221,6 +221,15 @@ _HEADER = """# Performance report: {endpoint}
 
 {narrative}
 
+### Why not the bigger number
+
+Causes are ranked by `attributed_ms x fixability` — the measured cost times the
+probability that a fix exists which does not change behaviour. Fixability is
+computed by code from a fixed policy table, never by a model. This is the
+ranking that produced the fix below, and the reason each alternative lost:
+
+{ranked_alternatives}
+
 ## What was tried
 
 {patch_summary}
@@ -228,6 +237,17 @@ _HEADER = """# Performance report: {endpoint}
 **Stated mechanism:** {mechanism_changed}
 
 **Predicted effect:** {expected_effect}
+
+**Approach:** `{approach}` (risk tier {risk_tier}, chosen over
+{candidates_considered} candidate(s) in the plan)
+
+### Candidates not selected
+
+{rejected_candidates}
+
+### Schema change
+
+{index_evidence}
 
 ## Before and after
 
@@ -243,6 +263,12 @@ Paired samples per arm: {pair_count}. Measurement was interleaved
 (blue, green, blue, green) across the benchmark set.
 
 Wilcoxon signed-rank p: {paired_p}. Mann-Whitney U p: {unpaired_p}.
+
+## Did the predicted mechanism actually move?
+
+{mechanism_verdict}
+
+{mechanism_note}
 
 ## Gates
 

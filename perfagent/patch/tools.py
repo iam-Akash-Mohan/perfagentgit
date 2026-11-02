@@ -21,10 +21,16 @@ from typing import Any
 
 from .worktree import GreenWorktree, build_env
 
-# Writes are confined to this prefix. CLAUDE.md invariant 1 asks for an
-# allowlist, not a denylist: a denylist protects the paths you thought of.
+# Writes are confined to this prefix when no plan names specific files. The
+# per-candidate allowlist below is narrower and is what a real run uses;
+# CLAUDE.md invariant 1 asks for an allowlist, not a denylist, because a
+# denylist protects the paths you thought of.
 WRITE_ALLOWLIST = ("src/main/java",)
 TEST_TREE = "src/test"
+
+# The one place a NEW file may appear, and only through `add_migration`, which
+# parses the SQL before writing it. `apply_patch` cannot create a file at all.
+MIGRATION_DIR = "src/main/resources/db/migration"
 
 MAX_BUILD_LINES = 40
 MAX_ITERATIONS = 8
@@ -85,9 +91,26 @@ def count_test_files(green: Path) -> int:
 
 
 def parse_test_counts(output: str, green: Path) -> TestCounts:
-    """Sum surefire's per-class lines. Arithmetic in Python, per invariant 5."""
+    """Surefire's counts. Arithmetic in Python, per invariant 5.
+
+    Surefire prints the same numbers twice: once per test class, with a
+    `Time elapsed` on the line, and once as a summary without it. Summing
+    every match double-counts — which was invisible while `mvn test` ran zero
+    tests in this repo, and became a false "tests executed dropped from 2 to
+    1" guardrail violation the moment it ran one. The summary wins when there
+    is one; otherwise the per-class lines are summed.
+    """
     counts = TestCounts(files=count_test_files(green))
-    for run, failures, errors, skipped in _SUREFIRE.findall(output):
+    per_class: list[tuple[str, ...]] = []
+    summary: list[tuple[str, ...]] = []
+    for line in output.splitlines():
+        match = _SUREFIRE.search(line)
+        if match is None:
+            continue
+        (per_class if "Time elapsed" in line or " -- in " in line
+         else summary).append(match.groups())
+
+    for run, failures, errors, skipped in (summary or per_class):
         counts.executed += int(run)
         counts.failures += int(failures)
         counts.errors += int(errors)
@@ -109,12 +132,24 @@ class PatchTools:
     java_home: str | None = None
     max_iterations: int = MAX_ITERATIONS
 
+    # The plan's `files_to_touch`. Empty means "no plan named files", and the
+    # prefix rule above applies instead — which is what the pre-F3 tests use.
+    allowed_files: tuple[str, ...] = ()
+    # Tables the endpoint actually reads; an index migration may touch no other.
+    allowed_tables: tuple[str, ...] = ()
+    # Returns a rendered delta, or a note saying why there is none.
+    benchmark: Any = None
+
     iterations: int = 0
     log: list[dict[str, Any]] = field(default_factory=list)
     refusals: list[str] = field(default_factory=list)
     guardrail_violations: list[str] = field(default_factory=list)
 
     edits_since_verify: int = 0
+    last_benchmark: str = ""
+    benchmark_regressed: bool = False
+    migrations_written: list[str] = field(default_factory=list)
+    standards_violations: list[str] = field(default_factory=list)
     last_build_ok: bool = False
     last_tests_ok: bool = False
     last_error: str = ""
@@ -211,6 +246,13 @@ class PatchTools:
             )
 
         posix = relative.as_posix()
+        if posix.startswith(MIGRATION_DIR):
+            return (
+                f"REFUSED: {posix} is a database migration. apply_patch cannot "
+                f"write one — call add_migration instead, which parses the SQL "
+                f"and refuses anything that is not a single CREATE INDEX, then "
+                f"numbers the file for you."
+            )
         if posix.startswith(TEST_TREE):
             # Invariant 3, in code. A prompt asking nicely is not a guardrail.
             return (
@@ -220,6 +262,24 @@ class PatchTools:
                 f"WHAT TO DO NEXT: make the production code satisfy the existing "
                 f"test. Edit only files under {', '.join(WRITE_ALLOWLIST)}/."
             )
+        if self.allowed_files:
+            # The PLAN decided which files this fix touches, before any code
+            # was written. A patch that wanders outside it is not the patch
+            # that was reviewed, and DIFF_MINIMALITY would fail it later
+            # anyway — failing here costs one tool call instead of a run.
+            if posix not in self.allowed_files:
+                return (
+                    f"REFUSED: {posix} is not in this plan's files_to_touch. "
+                    f"Nothing was written.\n"
+                    f"You may edit exactly these files: "
+                    f"{', '.join(self.allowed_files)}.\n"
+                    f"WHAT TO DO NEXT: make the change inside those files. If "
+                    f"the fix genuinely cannot be written without another "
+                    f"file, this is the wrong candidate — say so in your next "
+                    f"message rather than editing around the plan."
+                )
+            return None
+
         if not posix.startswith(WRITE_ALLOWLIST):
             return (
                 f"REFUSED: {posix} is outside the write allowlist. Nothing was "
@@ -293,8 +353,9 @@ class PatchTools:
             self.last_error = ""
             result = (
                 f"TESTS OK — {counts.render()}. "
-                f"Baseline before your patch: {self.baseline.render()}. "
-                f"You may now call emit_patch."
+                f"Baseline before your patch: {self.baseline.render()}."
+                + self._measure_delta()
+                + "\nYou may now call emit_patch."
             )
         else:
             self.last_tests_ok = False
@@ -305,6 +366,99 @@ class PatchTools:
             )
 
         self._record("run_tests", {"counts": counts.render()}, result, ok=self.last_tests_ok)
+        return result
+
+    def _measure_delta(self) -> str:
+        """The agent's own before/after, measured here and handed over.
+
+        Runs only after build AND tests have passed, which is the first moment
+        the tree is worth booting. A patch that is three times slower should be
+        reconsidered by the agent that wrote it, not discovered two phases
+        later by a gate.
+        """
+        if self.benchmark is None:
+            return ""
+        try:
+            outcome = self.benchmark()
+        except Exception as exc:  # noqa: BLE001 — a heuristic never fails a phase
+            return f"\n(the in-loop benchmark could not run: {exc})"
+        rendered = outcome if isinstance(outcome, str) else outcome.render()
+        self.last_benchmark = rendered
+        if not isinstance(outcome, str) and outcome.regressed:
+            self.benchmark_regressed = True
+        self._record("benchmark", {}, rendered, ok=True)
+        return "\n" + rendered
+
+    # ────────────────────────────  add_migration  ────────────────────────
+
+    def add_migration(self, sql: str, rationale: str,
+                      evidence: str = "") -> str:
+        """Write an additive index migration — after parsing the SQL.
+
+        The model supplies SQL and this refuses anything that is not exactly
+        one CREATE INDEX. Not because a model would knowingly send `DROP
+        TABLE`, but because "additive index only" has to be a property of the
+        code rather than of the instructions: the parse decides, and the file
+        that lands is then GENERATED from the parsed table and columns rather
+        than from the string that was sent.
+        """
+        from ..plan.migration import write_index_migration
+        from ..plan.risk import is_additive_index, parse_index
+
+        if not is_additive_index(sql):
+            message = (
+                f"REFUSED: that is not a single additive CREATE INDEX "
+                f"statement, and an index is the only schema change this "
+                f"phase may make. Nothing was written.\n"
+                f"Received: {str(sql).strip()[:200]!r}\n"
+                f"WHAT TO DO NEXT: send exactly one statement of the form "
+                f"CREATE INDEX idx_name ON table (col_a, col_b);"
+            )
+            self.refusals.append(message)
+            self._record("add_migration", {"sql": sql[:120]}, message, ok=False)
+            return message
+
+        parsed = parse_index(sql)
+        if parsed is None:                        # unreachable after the check
+            message = ("REFUSED: the table and columns could not be read out "
+                       "of that statement.")
+            self._record("add_migration", {"sql": sql[:120]}, message, ok=False)
+            return message
+        _name, table, columns = parsed
+
+        if self.allowed_tables and table not in self.allowed_tables:
+            message = (
+                f"REFUSED: {table} is not a table this endpoint reads. "
+                f"Nothing was written. Tables on the path: "
+                f"{', '.join(self.allowed_tables)}."
+            )
+            self.refusals.append(message)
+            self._record("add_migration", {"table": table}, message, ok=False)
+            return message
+
+        try:
+            path = write_index_migration(
+                self.green.path, table, columns, rationale or "index added by "
+                "PerfAgent", evidence=evidence or None)
+        except Exception as exc:  # noqa: BLE001 — a refusal the agent can read
+            message = f"REFUSED: the migration could not be written: {exc}"
+            self.refusals.append(message)
+            self._record("add_migration", {"table": table}, message, ok=False)
+            return message
+
+        relative = path.relative_to(self.green.path).as_posix()
+        self.migrations_written.append(relative)
+        self.edits_since_verify += 1
+        self.last_build_ok = False
+        self.last_tests_ok = False
+
+        result = (
+            f"OK: wrote {relative}\n{path.read_text(encoding='utf-8').strip()}\n"
+            f"The file was GENERATED from the table and columns parsed out of "
+            f"your statement, so what landed is what was checked. You must now "
+            f"call build, then run_tests."
+        )
+        self._record("add_migration", {"file": relative}, result, ok=True)
         return result
 
     def _check_test_counts(self, counts: TestCounts) -> str | None:
@@ -437,5 +591,45 @@ RUN_TESTS_TOOL = {
             "if it does, the run is over."
         ),
         "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+
+ADD_MIGRATION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "add_migration",
+        "description": (
+            "Add a database index as a versioned migration. Send ONE "
+            "`CREATE INDEX` statement; it is parsed before anything is "
+            "written, and anything else — ALTER, DROP, a second statement — is "
+            "refused. The file is numbered and named for you. This is the only "
+            "schema change this phase can make, and the only way a new file "
+            "can be created."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "sql": {
+                    "type": "string",
+                    "description": "Exactly one statement: "
+                                   "CREATE INDEX idx_name ON table (col_a, col_b);",
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": "Why this index, in one sentence. It becomes "
+                                   "a comment in the migration, which is what a "
+                                   "reviewer reads first.",
+                },
+                "evidence": {
+                    "type": "string",
+                    "description": "The measurement behind it, e.g. the "
+                                   "index_benefit output: 'rows examined "
+                                   "2,645 -> 571'. Quoted verbatim into the "
+                                   "file.",
+                },
+            },
+            "required": ["sql", "rationale"],
+        },
     },
 }

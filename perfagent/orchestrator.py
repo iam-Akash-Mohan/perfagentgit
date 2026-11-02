@@ -31,7 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from .contracts import (ArtifactRef, Phase, RunState, TerminalState)
+from .contracts import (ArtifactRef, GateName, Phase, RunState,
+                        TerminalState, Usage)
 from .errors import BudgetExhausted, ContractViolation, PerfAgentError, ToolError
 from .ids import content_hash, new_run_id
 from .trace import EventType, Trace
@@ -43,9 +44,14 @@ DEFAULT_BLUE_PORT = 18080
 DEFAULT_GREEN_PORT = 8081
 
 # Token pricing is NOT a measurement. The provider's rate is configuration, so
-# the dollar figure here is derived from a rate you set rather than something
-# observed — tokens are the ground truth and are always reported. Set the rate
-# to your actual contract before quoting the dollars anywhere.
+# the dollar figure is derived from a rate someone set rather than something
+# observed — tokens are the ground truth and are always reported.
+#
+# These flat rates are the FALLBACK, used only for a response that does not
+# say which model produced it. The real figure comes from `llm/pricing.py`,
+# per model, because a run can use a different model per phase and one flat
+# rate would quietly average them. Leaving these at zero is what made
+# `perfagent trace` print $0.00 for every phase of every run.
 USD_PER_MILLION_INPUT = 0.0
 USD_PER_MILLION_OUTPUT = 0.0
 
@@ -87,11 +93,9 @@ class Budget:
             return float("inf")
         return max(0.0, self.max_wall_s - self.elapsed_s())
 
-    def charge(self, phase: str, tokens_in: int, tokens_out: int) -> float:
-        usd = (
-            tokens_in / 1_000_000 * self.usd_per_million_input
-            + tokens_out / 1_000_000 * self.usd_per_million_output
-        )
+    def charge(self, phase: str, tokens_in: int, tokens_out: int,
+               model: str | None = None) -> float:
+        usd = self._price(tokens_in, tokens_out, model)
         self.tokens_in += tokens_in
         self.tokens_out += tokens_out
         self.usd += usd
@@ -103,6 +107,23 @@ class Budget:
         entry["usd"] += usd
         entry["calls"] += 1
         return usd
+
+    def _price(self, tokens_in: int, tokens_out: int,
+               model: str | None) -> float:
+        """What the provider's published rate says this call cost.
+
+        An unknown model falls back to the flat rates and `pricing.usd_for`
+        warns once, naming the model — a zero that announces itself is
+        recoverable; a silent one is what this fixed.
+        """
+        if model:
+            from .llm.pricing import is_known, usd_for
+
+            if is_known(model):
+                return usd_for(model, Usage(input_tokens=tokens_in,
+                                            output_tokens=tokens_out))
+        return (tokens_in / 1_000_000 * self.usd_per_million_input
+                + tokens_out / 1_000_000 * self.usd_per_million_output)
 
     def check(self) -> str | None:
         """The reason the run must stop, or None."""
@@ -145,6 +166,7 @@ class MeteredClient:
                 self._phase,
                 getattr(usage, "input_tokens", 0) or 0,
                 getattr(usage, "output_tokens", 0) or 0,
+                getattr(response, "model", None) or getattr(self._inner, "model", None),
             )
         self._budget.assert_within()
         return response
@@ -315,6 +337,7 @@ def _run_diagnose(ctx: Context) -> PhaseOutcome:
     ) as arm:
         hypothesis_set, probe_log, path = run_diagnosis(
             base_url=arm.base_url, run_dir=ctx.run_dir, client=client,
+            trace=ctx.trace,
             # This run's comprehension artifact, not a global file that may
             # describe a different endpoint entirely.
             endpoint_model_path=ctx.run_dir / "endpoint_model.json",
@@ -413,6 +436,8 @@ def _run_patch(ctx: Context) -> PhaseOutcome:
     document = run_patch(
         ctx.run_dir, run_id=ctx.run_id, repo=ctx.repo,
         java_home=ctx.java_home, client=_metered_llm(ctx, "patch"),
+        candidate_index=int(ctx.options.get("candidate_index", 0)),
+        oracle_feedback=str(ctx.options.get("oracle_feedback", "")),
     )
     patch = document["patch"]
     if document["outcome"] != "PATCHED":
@@ -567,6 +592,40 @@ def _metered_llm(ctx: Context, phase: str) -> MeteredClient:
 
 
 # ────────────────────────────  validators  ───────────────────────────────
+
+
+def _isolation_problem(ctx: Context) -> str | None:
+    """Whether this run's patch can be measured at all, or None if it can."""
+    from .measure.arms import existing_worktree
+    from .measure.isolation import isolation_problem
+
+    patch_path = ctx.run_dir / "patch.json"
+    plan_path = ctx.run_dir / "plan.json"
+    approach, files = "", []
+    if plan_path.exists():
+        try:
+            from .plan.agent import load_plan
+
+            selected = load_plan(plan_path).selected()
+            approach = selected.approach if selected else ""
+        except Exception:  # noqa: BLE001 — a missing plan is caught elsewhere
+            approach = ""
+    if patch_path.exists():
+        try:
+            payload = json.loads(patch_path.read_text(encoding="utf-8"))
+            files = list(payload.get("patch", {}).get("files_changed") or [])
+        except (OSError, json.JSONDecodeError):
+            files = []
+
+    try:
+        green = existing_worktree(".perfagent/green", repo=ctx.repo)
+        diff = green.source_diff()
+        green_path = green.path
+    except Exception:  # noqa: BLE001
+        return None
+    blue = _repo_root(ctx)
+    return isolation_problem(blue, green_path, approach=approach, diff=diff,
+                             files_changed=files)
 
 
 def _valid_json(ctx: Context, path: Path) -> str | None:
@@ -781,6 +840,13 @@ def _preconditions(spec: PhaseSpec, ctx: Context, state: RunState) -> str | None
         except ContractViolation as exc:
             return f"cannot enter the measure phase: {exc}"
 
+        # A schema change cannot be A/B measured while both arms share one
+        # database. Checked BEFORE measuring, because the failure mode is a
+        # believable number rather than an error — see measure/isolation.py.
+        shared = _isolation_problem(ctx)
+        if shared is not None:
+            return f"ISOLATION: {shared}"
+
     if spec.phase in (Phase.GATE, Phase.SHIP):
         for needed in ("verification.json", "perf_report.json", "patch.json"):
             if not (ctx.run_dir / needed).exists():
@@ -874,7 +940,11 @@ def run_pipeline(
     emit({"kind": "run_start", "run_id": state.run_id,
           "endpoint": state.endpoint, "resumed": bool(resume)})
 
-    for spec in PIPELINE:
+    position = 0
+    while position < len(PIPELINE):
+        spec = PIPELINE[position]
+        position += 1
+
         # ── already done? ────────────────────────────────────────────────
         artifact = spec.artifact(ctx)
         already = spec.phase in state.completed_phases
@@ -896,9 +966,13 @@ def run_pipeline(
             trace.emit(EventType.GUARDRAIL_TRIGGERED, phase=spec.name,
                        reason=blocked)
             emit({"kind": "blocked", "phase": spec.name, "reason": blocked})
+            # "We could not measure this" is not an internal error and must
+            # not be filed as one.
+            terminal = (TerminalState.MEASUREMENT_NOT_ISOLATED
+                        if blocked.startswith("ISOLATION:")
+                        else TerminalState.INTERNAL_ERROR)
             return _terminate(
-                state, run_dir, trace, TerminalState.INTERNAL_ERROR, blocked,
-                budget, emit,
+                state, run_dir, trace, terminal, blocked, budget, emit,
             )
 
         if spec.runner is None:
@@ -941,8 +1015,8 @@ def run_pipeline(
             trace.emit(EventType.NOTE, phase=spec.name, error=str(exc))
             emit({"kind": "phase_failed", "phase": spec.name, "error": str(exc)})
             return _terminate(
-                state, run_dir, trace, _failure_state(spec), str(exc),
-                budget, emit,
+                state, run_dir, trace, _failure_state(spec, str(exc)),
+                str(exc), budget, emit,
             )
         except PerfAgentError as exc:
             return _terminate(
@@ -965,10 +1039,34 @@ def run_pipeline(
               "summary": outcome.summary, "duration_ms": elapsed_ms})
 
         if outcome.terminal is not None:
+            retry = _retry_decision(spec, outcome, ctx, state)
+            if retry is not None:
+                state = _rewind_to_patch(state, ctx, run_dir, retry)
+                position = _index_of(Phase.IMPLEMENT)
+                trace.emit(EventType.NOTE, phase=spec.name, retry=retry.kind,
+                           attempt=ctx.options.get("patch_attempt", 1),
+                           candidate=ctx.options.get("candidate_index", 0),
+                           note=retry.why)
+                emit({"kind": "retry", "phase": spec.name, "reason": retry.why})
+                continue
             return _terminate(
                 state, run_dir, trace, outcome.terminal, outcome.summary,
                 budget, emit,
             )
+
+        # The gate does not set a terminal state — ship does — so a gate that
+        # failed ONLY on the improvement threshold is read here, where there
+        # is still a candidate left to try.
+        if spec.phase is Phase.GATE:
+            retry = _improvement_retry(outcome, ctx, state)
+            if retry is not None:
+                state = _rewind_to_patch(state, ctx, run_dir, retry)
+                position = _index_of(Phase.IMPLEMENT)
+                trace.emit(EventType.NOTE, phase=spec.name, retry=retry.kind,
+                           candidate=ctx.options.get("candidate_index", 0),
+                           note=retry.why)
+                emit({"kind": "retry", "phase": spec.name, "reason": retry.why})
+                continue
 
     # Reaching the end without a terminal state should be impossible: SHIP
     # always sets one. Say so rather than reporting success by default.
@@ -979,13 +1077,202 @@ def run_pipeline(
     )
 
 
-def _failure_state(spec: PhaseSpec) -> TerminalState:
+# ───────────────────────────────  retries  ───────────────────────────────
+#
+# Two failures are worth another attempt, and they are different failures.
+#
+#   * The oracle REJECTED the patch. The agent changed behaviour, usually in a
+#     way it can see and fix once the diff is put in front of it. Worth up to
+#     MAX_PATCH_ATTEMPTS tries on the SAME candidate, because the second
+#     attempt is informed by evidence the first did not have.
+#   * The gate failed ONLY on the improvement threshold. The patch is correct
+#     and too small. Another attempt at the same candidate would produce the
+#     same patch, so this moves to the NEXT candidate — which the plan already
+#     wrote down, with its own approach and its own predicted effect.
+#
+# Everything else terminates. A retry loop that retries everything is a loop
+# that spends a budget discovering the same thing repeatedly.
+
+MAX_PATCH_ATTEMPTS = 2
+
+
+@dataclass(frozen=True)
+class Retry:
+    kind: str
+    why: str
+
+
+def _index_of(phase: Phase) -> int:
+    for index, spec in enumerate(PIPELINE):
+        if spec.phase is phase:
+            return index
+    raise ContractViolation(f"{phase} is not in the pipeline")
+
+
+def _selectable_candidates(ctx: Context) -> list[Any]:
+    """The plan's candidates this harness is allowed to implement, in order.
+
+    Ordered by expected value already. Candidates the plan ruled out for cause
+    — above the risk ceiling, or not claiming to preserve the response bytes —
+    are not retried into: they were rejected by code, and a retry is not an
+    appeal.
+    """
+    from .plan.agent import load_plan
+    from .plan.risk import selection_problem
+
+    path = ctx.run_dir / "plan.json"
+    if not path.exists():
+        return []
+    try:
+        plan = load_plan(path)
+    except Exception:  # noqa: BLE001
+        return []
+    return [c for c in plan.candidates if selection_problem(c) is None]
+
+
+def _retry_decision(spec: PhaseSpec, outcome: PhaseOutcome, ctx: Context,
+                    state: RunState) -> "Retry | None":
+    """Whether a failed phase is worth another attempt, and which kind."""
+    if outcome.terminal is not TerminalState.BEHAVIOUR_NOT_PRESERVED:
+        return None
+    if spec.phase not in (Phase.VERIFY, Phase.IMPLEMENT):
+        return None
+
+    attempt = int(ctx.options.get("patch_attempt", 1))
+    candidates = _selectable_candidates(ctx)
+    index = int(ctx.options.get("candidate_index", 0))
+
+    if attempt < MAX_PATCH_ATTEMPTS:
+        ctx.options["patch_attempt"] = attempt + 1
+        ctx.options["oracle_feedback"] = _oracle_feedback(ctx)
+        return Retry(
+            kind="behaviour",
+            why=(f"the oracle rejected attempt {attempt} of candidate "
+                 f"{index + 1}; retrying with the recorded differences as "
+                 f"context ({attempt + 1}/{MAX_PATCH_ATTEMPTS})"),
+        )
+
+    if index + 1 < len(candidates):
+        ctx.options["candidate_index"] = index + 1
+        ctx.options["patch_attempt"] = 1
+        ctx.options["oracle_feedback"] = ""
+        return Retry(
+            kind="next_candidate",
+            why=(f"candidate {index + 1} changed behaviour on "
+                 f"{MAX_PATCH_ATTEMPTS} attempts; moving to candidate "
+                 f"{index + 2} of {len(candidates)}"),
+        )
+    return None
+
+
+def _improvement_retry(outcome: PhaseOutcome, ctx: Context,
+                       state: RunState) -> "Retry | None":
+    """A gate that failed ONLY on the improvement threshold gets the next
+    candidate. Any other failing gate does not: a behaviour change, a
+    mechanism that did not move or a forbidden edit are not fixed by trying a
+    different fix for the same bottleneck."""
+    failed = list(outcome.detail.get("failed") or [])
+    if failed != [GateName.IMPROVEMENT_THRESHOLD.value]:
+        return None
+
+    candidates = _selectable_candidates(ctx)
+    index = int(ctx.options.get("candidate_index", 0))
+    if index + 1 >= len(candidates):
+        return None
+
+    ctx.options["candidate_index"] = index + 1
+    ctx.options["patch_attempt"] = 1
+    ctx.options["oracle_feedback"] = ""
+    return Retry(
+        kind="next_candidate",
+        why=(f"candidate {index + 1} preserved behaviour but did not clear "
+             f"the improvement threshold; trying candidate {index + 2} of "
+             f"{len(candidates)}, which costs one build"),
+    )
+
+
+def _oracle_feedback(ctx: Context) -> str:
+    """The differences the oracle actually recorded, for the next attempt.
+
+    Read off verification.json rather than regenerated: the patch agent is
+    being told what the frozen recording said, and anything else would be a
+    paraphrase of the only evidence that matters.
+    """
+    path = ctx.run_dir / "verification.json"
+    if not path.exists():
+        return ""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    verdict = payload.get("verdict") or {}
+    diffs = verdict.get("diffs") or []
+    if not diffs:
+        return ""
+    lines = [
+        f"  request {d.get('request_id')}  path {d.get('path')}\n"
+        f"    recorded: {str(d.get('before'))[:160]}\n"
+        f"    yours:    {str(d.get('after'))[:160]}"
+        for d in diffs[:8]
+    ]
+    more = (f"\n  ... and {len(diffs) - 8} more differing path(s)"
+            if len(diffs) > 8 else "")
+    return (f"{len(diffs)} path(s) differed from the frozen recording:\n"
+            + "\n".join(lines) + more)
+
+
+def _rewind_to_patch(state: RunState, ctx: Context, run_dir: Path,
+                     retry: "Retry") -> RunState:
+    """Delete what the failed attempt produced, so the phases really re-run.
+
+    The skip check reads artifacts from disk, so leaving `patch.json` in place
+    would make the retry a no-op that skipped straight back to the failure.
+    """
+    redo = (Phase.IMPLEMENT, Phase.VERIFY, Phase.MEASURE, Phase.GATE)
+    for spec in PIPELINE:
+        if spec.phase not in redo:
+            continue
+        # Ask the spec where its artifact is rather than hardcoding the name.
+        # Hardcoding it meant the rewind deleted `verification.json` while the
+        # phase had actually written `verify.json`, so the skip check sailed
+        # straight past the phase being retried and the run ended with no
+        # terminal state at all.
+        artifact = spec.artifact(ctx)
+        if artifact.exists() and artifact.is_relative_to(Path(run_dir)):
+            artifact.unlink()
+        if spec.phase in state.completed_phases:
+            state.completed_phases.remove(spec.phase)
+        state.artifacts.pop(spec.name, None)
+    state.phase = Phase.IMPLEMENT
+    save_state(state, run_dir)
+    return state
+
+
+# A verify failure whose message is about the ARMS rather than the responses.
+# These are the words `arms.py` uses when it refuses to compare two things that
+# are not comparable.
+_ENVIRONMENT_MARKS = (
+    "DIFFERENT flags", "has never been built", "is missing", "did not boot",
+    "exited during startup", "is not a git repository", "port",
+)
+
+
+def _failure_state(spec: PhaseSpec, error: str = "") -> TerminalState:
     """The honest terminal state for a phase that raised."""
+    if spec.phase is Phase.VERIFY and any(mark in error
+                                          for mark in _ENVIRONMENT_MARKS):
+        return TerminalState.ENVIRONMENT_INFEASIBLE
     if spec.phase in (Phase.ORACLE, Phase.BASELINE):
         # Both need a healthy app and database; a failure there is the
         # environment, not the endpoint.
         return TerminalState.ENVIRONMENT_INFEASIBLE
     if spec.phase is Phase.VERIFY:
+        # Only a real DIFFERENCE is a behaviour change. The verify phase also
+        # fails when the two arms could not be made comparable at all — a
+        # classpath mismatch, an arm that would not boot — and calling that
+        # "behaviour not preserved" blames the patch for the environment.
+        # Same principle as the isolation guard: could-not-measure is not
+        # did-not-work.
         return TerminalState.BEHAVIOUR_NOT_PRESERVED
     if spec.phase in (Phase.PLAN, Phase.IMPLEMENT):
         return TerminalState.BOTTLENECK_NOT_FIXABLE

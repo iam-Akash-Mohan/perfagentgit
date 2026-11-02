@@ -55,6 +55,9 @@ def load_evidence(run_dir: Path) -> dict[str, Any]:
         "patch": _read(directory / "patch.json", "patch"),
         "hypotheses": _read(directory / "hypotheses.json", "diagnosis"),
         "baseline": _read(directory / "baseline.json", "baseline"),
+        # The plan is evidence too: "why not the bigger number" is the part
+        # of this report that makes it reviewable, and it is quoted from here.
+        "plan": _read(directory / "plan.json", "plan"),
     }
 
     store = ArtifactStore(directory)
@@ -250,7 +253,94 @@ def build_ledger(gated: dict[str, Any]) -> tuple[EvidenceLedger, dict[str, Backe
     )
     ledger.record("terminal_state", gated["terminal"].value, decision_ref)
 
+    # ── the plan: the ranking, and why each alternative lost ────────────
+    plan_ref = refs["plan"]
+    plan_payload = payloads["plan"]
+    ledger.record("ranked_alternatives", _ranked_rows(plan_payload), plan_ref)
+    ledger.record("rejected_candidates", _rejected_rows(plan_payload), plan_ref)
+    ledger.record_from(plan_ref, plan_payload, {"endpoint": "endpoint"})
+    selected = _selected_candidate(plan_payload)
+    ledger.record("approach", selected.get("approach", "unknown"), plan_ref)
+    ledger.record("risk_tier", f"T{selected.get('risk_tier', '?')}", plan_ref)
+    ledger.record("candidates_considered",
+                  len(plan_payload.get("candidates") or []), plan_ref)
+    ledger.record("index_evidence", _index_evidence(gated, selected), plan_ref)
+
+    # ── the mechanism check: did the predicted quantity actually move? ──
+    report_body = payloads["perf_report"]["report"]
+    ledger.record(
+        "mechanism_verdict",
+        ("CONFIRMED — the quantity the plan predicted would move did move."
+         if report_body.get("mechanism_confirmed")
+         else "NOT CONFIRMED — the predicted quantity did not move. A latency "
+              "change without its stated mechanism means the diagnosis was "
+              "wrong even if the graph looks good."),
+        refs["perf_report"])
+    ledger.record("mechanism_note", report_body.get("mechanism_note", ""),
+                  refs["perf_report"])
+
     return ledger, {}
+
+
+def _selected_candidate(plan_payload: dict[str, Any]) -> dict[str, Any]:
+    chosen = plan_payload.get("selected_id")
+    for candidate in plan_payload.get("candidates") or []:
+        if candidate.get("id") == chosen:
+            return candidate
+    return {}
+
+
+def _ranked_rows(plan_payload: dict[str, Any]) -> str:
+    """The expected-value table, with the fixability reason for every row.
+
+    This is the section that makes the PR reviewable: a reader can see that
+    the largest measured cost was not attacked, and exactly why not.
+    """
+    rows = []
+    for entry in plan_payload.get("ranked") or []:
+        fix = entry.get("fixability") or {}
+        classified = "" if fix.get("classified", True) else " *(not classified)*"
+        rows.append(
+            f"- **{entry.get('claim')}**{classified}  \n"
+            f"  `{entry.get('layer')}` · attributed {entry.get('attributed_ms')} ms "
+            f"× fixability {fix.get('fixability')} = "
+            f"expected value {entry.get('expected_value_ms')} ms  \n"
+            f"  _{fix.get('reason')}_"
+            + (f"  \n  **Blocked by:** {fix.get('blocked_by')}"
+               if fix.get("blocked_by") else "")
+        )
+    return "\n".join(rows) or "- (no ranking recorded)"
+
+
+def _rejected_rows(plan_payload: dict[str, Any]) -> str:
+    rows = [f"- `{r.get('candidate_id')}` — {r.get('reason')}"
+            for r in plan_payload.get("not_selected") or []]
+    return "\n".join(rows) or "- (the plan produced a single candidate)"
+
+
+def _index_evidence(gated: dict[str, Any], selected: dict[str, Any]) -> str:
+    """The migration in the diff, verbatim, or a statement that there is none.
+
+    The migration file carries its own `-- Evidence:` line, written from the
+    `index_benefit` measurement, so quoting the file quotes the measurement.
+    """
+    diff = gated["patch"].diff
+    migrations = [line[len("+++ b/"):].strip() for line in diff.splitlines()
+                  if line.startswith("+++ b/")
+                  and "db/migration" in line]
+    if not migrations:
+        return ("No schema change: this patch is application code only, so "
+                "there is no `EXPLAIN` plan to compare.")
+
+    added = [line[1:] for line in diff.splitlines()
+             if line.startswith("+") and not line.startswith("+++")
+             and ("CREATE INDEX" in line.upper() or line.strip().startswith("--"))]
+    body = "\n".join(added)
+    return (f"This patch adds a migration: `{', '.join(migrations)}`\n\n"
+            f"```sql\n{body}\n```\n\n"
+            f"The `Evidence:` comment above is the `index_benefit` "
+            f"measurement — rows examined before and after, taken by building "
+            f"the index, re-running `EXPLAIN ANALYZE`, and dropping it again.")
 
 
 def write_report(

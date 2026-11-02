@@ -412,7 +412,10 @@ def test_an_accepted_diagnosis_survives_a_later_loop_crash(
     model_path = tmp_path / "endpoint_model.json"
     model_path.write_text(json.dumps(_endpoint_model()))
 
-    def fake_run_agent(*, client, task, tools, handlers, max_steps):
+    def fake_run_agent(*, handlers, **kw):
+        # **kw, not a fixed list: a double that pins every keyword of the
+        # function it stands in for fails when the real signature grows one,
+        # which says nothing about the behaviour under test.
         handlers["run_probe"](page_size=5, name_filter="a", iterations=2)
         handlers["emit_hypotheses"](**_payload())
         raise KeyError("choices")          # exactly what a 429 produces

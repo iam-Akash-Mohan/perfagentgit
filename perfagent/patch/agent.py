@@ -11,16 +11,17 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from ..agent import run_agent
-from ..contracts import Patch
+from ..contracts import CandidateFix, EndpointModel, Patch
 from ..errors import ContractViolation
 from ..llm import GroqClient
 from ..measure.sql import MySQLTarget
-from .tools import (APPLY_PATCH_TOOL, BUILD_TOOL, MAX_ITERATIONS,
-                    RUN_TESTS_TOOL, PatchTools, TestCounts, count_test_files,
-                    parse_test_counts)
+from .standards import lint_diff, load_standards, render_violations
+from .tools import (ADD_MIGRATION_TOOL, APPLY_PATCH_TOOL, BUILD_TOOL,
+                    MAX_ITERATIONS, RUN_TESTS_TOOL, PatchTools, TestCounts,
+                    count_test_files, parse_test_counts)
 from .worktree import GREEN_DIR, GreenWorktree, build_env
 
 MAX_STEPS = 24
@@ -105,97 +106,137 @@ EMIT_PATCH_TOOL = {
 # together in the opening user message. Every number here is read from
 # hypotheses.json; none is written by hand.
 
-def _render_source(green: Path) -> str:
+def _render_source(green: Path, files: Sequence[str]) -> str:
+    """The files the agent may edit, verbatim, plus the ones on the path.
+
+    `apply_patch` needs byte-exact `old_text` and there is no read_file tool
+    here, so whatever is not in this block cannot be edited correctly. The list
+    used to be a hard-coded tuple of mini-spring's own classes; it is now
+    derived from the plan and the endpoint model, because a tool that only
+    works on one repository is not a tool.
+    """
     blocks: list[str] = []
-    for rel in SOURCE_CONTEXT:
+    for rel in files:
         path = green / rel
-        if not path.exists():
+        if not path.exists() or path.is_dir():
             continue
         blocks.append(f"----- {rel}\n{path.read_text(encoding='utf-8').rstrip()}")
     return "\n\n".join(blocks)
 
 
-def build_task(hypotheses: dict[str, Any], green: Path) -> str:
-    ranked = hypotheses["ranked_ids"]
-    by_id = {h["id"]: h for h in hypotheses["hypotheses"]}
-    top = by_id[ranked[0]]
-    p50 = hypotheses["measured_total_ms"]
-    others = [by_id[i] for i in ranked[1:]]
+def context_files(candidate: CandidateFix, model: EndpointModel) -> list[str]:
+    """Files to show: everything writable, then everything on the call path."""
+    out: list[str] = [f for f in candidate.files_to_touch
+                      if not f.endswith(".sql")]
+    for hop in model.call_chain:
+        if hop.file not in out:
+            out.append(hop.file)
+    for access in model.data_access:
+        if access.file not in out:
+            out.append(access.file)
+    return out
 
-    evidence = "\n".join(f"     - {e}" for e in top["evidence"])
-    runners_up = "\n".join(
-        f"  [{h['id']}] {h['claim']}  ({h['attributed_ms']:.0f} ms attributed, "
-        f"layer {h['layer']})"
-        for h in others
-    )
 
-    return f"""You are a performance engineer. A diagnosis phase has already measured this
-endpoint and ranked the causes. Your job is to write the code change that removes
-the top-ranked cause — and to prove it compiles and passes the existing tests.
+def build_task(*, candidate: CandidateFix, model: EndpointModel, green: Path,
+               fixability_reason: str = "", evidence: str = "",
+               standards: str = "", measured_p50_ms: float | None = None,
+               max_iterations: int = MAX_ITERATIONS,
+               oracle_feedback: str = "") -> str:
+    """The patch prompt, built from ONE SELECTED CANDIDATE.
 
-=== THE MEASURED DIAGNOSIS ===
+    It used to be built from `hypotheses.json` and `ranked_ids[0]` — the
+    hypothesis with the largest attributed milliseconds. On the endpoint this
+    product was built against that is the response body itself, so the agent
+    was asked three times to make the response cheaper without making it
+    smaller, which is not possible. The plan phase now decides what to attack
+    and why; this phase implements that decision.
+    """
+    unbounded = []
+    if model.response_shape is not None:
+        unbounded = [str(f).split("(")[0].strip()
+                     for f in model.response_shape.unbounded_collections]
 
-Measured p50 latency: {p50:.1f} ms
+    allowlist = "\n".join(f"  {f}" for f in candidate.files_to_touch)
+    risks = "\n".join(f"  - {r}" for r in candidate.what_could_break) or "  (none stated)"
+    latency = (f"Measured p50 latency: {measured_p50_ms:.1f} ms\n"
+               if measured_p50_ms else "")
+    frozen = (", ".join(unbounded) if unbounded
+              else "(none recorded — treat every returned field as frozen)")
 
-TOP-RANKED CAUSE — this is what you are fixing:
-  [{top['id']}] {top['claim']}
-     layer        {top['layer']}
-     attributed   {top['attributed_ms']:.0f} ms of the {p50:.1f} ms p50
-     confidence   {top['confidence']:.2f}
-     mechanism    {top['mechanism']}
-     prediction   {top['prediction']}
-     evidence:
-{evidence}
+    rejected = ""
+    if oracle_feedback:
+        rejected = f"""=== YOUR PREVIOUS ATTEMPT WAS REJECTED BY THE ORACLE ===
 
-Also diagnosed, lower ranked:
-{runners_up}
+The tree has been reset. A previous patch for this same candidate changed the
+response, and these are the differences the frozen recording actually found:
 
-=== THE HARD CONSTRAINT — READ THIS TWICE ===
+{oracle_feedback}
+
+Read them literally. Each line is one request and one JSON path where your
+output differed from what the unmodified code produced. Fix the cause — do not
+work around the comparison, which you cannot see or change.
+
+"""
+
+    return f"""You are a performance engineer implementing ONE PLANNED CHANGE. The analysis
+is done: a diagnosis measured where the time goes, and a plan phase chose this
+candidate over the alternatives and said why. Your job is to write it, prove it
+compiles, and prove the existing tests still pass.
+
+=== THE CANDIDATE YOU ARE IMPLEMENTING ===
+
+  id                 {candidate.id}
+  approach           {candidate.approach}
+  targets            {candidate.targets_hypothesis}
+  what to change     {candidate.description}
+  mechanism          {candidate.mechanism_changed}
+  predicted effect   {candidate.predicted_effect}
+  risk tier          T{candidate.risk_tier.value}
+{latency}
+Why this one and not the bigger number:
+  {fixability_reason or "(no fixability reason recorded)"}
+
+The plan's own list of what could break — these are the things to be careful of:
+{risks}
+
+{evidence}{rejected}=== THE HARD CONSTRAINT — READ THIS TWICE ===
 
 THE HTTP RESPONSE MUST STAY BYTE-IDENTICAL.
 
-The response body is large by design. Making it smaller is a BEHAVIOUR CHANGE and
-will be rejected by a frozen oracle that compares every byte of every response
-against a recording made before your patch. That oracle is not in your tool
-surface and you cannot see, widen or regenerate it.
+A frozen recording of this endpoint's responses was made before you were asked
+anything. Every recorded request is replayed afterwards and compared field by
+field, including a held-back set. One differing byte ends the run. That oracle
+is not in your tool surface and you cannot see, widen or regenerate it.
 
-Concretely, all of these will FAIL:
-  - removing or renaming a field in the response
-  - returning fewer rows, or a different page shape
-  - changing a number's formatting or scale — BigDecimal("0") and
-    BigDecimal("0.00") serialise differently and that counts as a change
-  - reordering the elements of the tags array
-  - changing a 400 response into anything else
+UNBOUNDED COLLECTIONS IN THE RESPONSE: {frozen}
 
-Note that the top-ranked hypothesis PREDICTS that a slimmer response would be
-faster. That prediction is correct and it is off-limits. Your job is the harder
-one: PRODUCE EXACTLY THE SAME BYTES WITH LESS WORK.
+Those fields grow with the data and their size is part of the contract. You may
+not trim, cap, page or lazily load them, and you may not propose a slimmer DTO.
+Produce EXACTLY THE SAME BYTES WITH LESS WORK.
 
-=== WHAT YOU MAY AND MAY NOT TOUCH ===
+Also forbidden, and enforced in code rather than by this paragraph:
+  - caching of any kind
+  - changed transaction boundaries
+  - any API change: paths, request shape, response shape, status codes
+  - any schema change other than an added index, via add_migration
+  - any edit to src/test/** — test files are the evidence that behaviour held
 
-You may edit ONLY files under src/main/java. Anything else — the build file,
-configuration, resources, and above all src/test/** — is refused in code, not
-by convention. Test files are immutable: they are the evidence that behaviour
-did not change.
+=== THE FILES YOU MAY WRITE ===
 
-You must NOT:
-  - add caching of any kind
-  - change transaction boundaries
-  - alter the API contract (paths, request shape, response shape, status codes)
-  - modify the database schema, beyond adding an index
+The plan named these, before any code was written. Writing anywhere else is
+refused by code:
 
-=== DIRECTIONS WORTH CONSIDERING ===
+{allowlist}
 
-These are directions, not a checklist. Pick what the evidence supports; you may
-do something not listed here if you can justify it from the measurements.
+A new database migration is the one exception, and only through add_migration,
+which parses your SQL and refuses anything that is not a single CREATE INDEX.
 
-  - eliminating repeated queries, e.g. a fetch join or @EntityGraph so a
-    collection arrives with its parent instead of one query per row
-  - projecting only the columns actually used, instead of hydrating whole
-    entities you then throw away
-  - avoiding repeated work inside per-row loops — anything computed once
-    outside the loop is not computed N times inside it
-  - more efficient string construction
+=== JAVA STANDARDS ===
+
+{standards or "(no standards file found)"}
+
+The rules marked ENFORCED are checked against your diff by a lint pass when you
+call emit_patch. A violation is a rejection, not a warning.
 
 === THE CODE, EXACTLY AS IT IS ON DISK ===
 
@@ -203,21 +244,25 @@ apply_patch needs old_text that matches BYTE FOR BYTE. Copy your snippets from
 below rather than retyping them — a retyped snippet with different indentation
 is the single most common way this fails.
 
-{_render_source(green)}
+{_render_source(green, context_files(candidate, model))}
 
 === HOW TO WORK ===
 
-1. Decide on one change that attacks the top-ranked cause without changing bytes.
-2. apply_patch it.
-3. build. If it fails you get the compiler output verbatim — read it literally,
+1. Make the change the candidate describes. apply_patch, or add_migration for
+   an index.
+2. build. If it fails you get the compiler output verbatim — read it literally,
    it names the file and the line. Fix and build again.
-4. run_tests. It requires a successful build first.
-5. Only when build AND run_tests have both succeeded, call emit_patch.
+3. run_tests. It requires a successful build first. When it passes you will
+   also be given a QUICK BENCHMARK of your own change: twenty requests against
+   the patched tree, with the pre-patch figure beside it. That number is a
+   heuristic, not the verdict — the real measurement is an interleaved A/B
+   against the unpatched tree with a paired significance test, run later. Use
+   it to catch a regression before you commit to one.
+4. Only when build AND run_tests have both succeeded, call emit_patch.
 
-You have {MAX_ITERATIONS} build/test iterations in total, shared between build and
-run_tests. Spend them on the problem, not on retyping snippets. If you run out,
-the run is abandoned and no patch is emitted — an honest abandonment is a better
-outcome than a patch that does not build.
+You have {max_iterations} build/test iterations in total, shared between build
+and run_tests. If you run out, the run is abandoned and no patch is emitted —
+an honest abandonment is a better outcome than a patch that does not build.
 
 Do not write a prose report. Make the change, prove it, then call emit_patch."""
 
@@ -326,6 +371,8 @@ def run_patch(
     java_home: str | None = None,
     client: Any = None,
     keep_worktree: bool = True,
+    candidate_index: int = 0,
+    oracle_feedback: str = "",
 ) -> dict[str, Any]:
     """Create green, measure the pre-patch baseline, let the agent patch, persist.
 
@@ -335,6 +382,8 @@ def run_patch(
     """
     directory = Path(run_dir)
     hypotheses = load_hypotheses(directory, hypotheses_path)
+    candidate, model, plan = load_plan_inputs(directory, index=candidate_index)
+    reason = _fixability_reason(plan, candidate)
 
     blue_status_before = None
     green = GreenWorktree.create(run_id, repo=repo, green=green_dir)
@@ -347,6 +396,9 @@ def run_patch(
             baseline=baseline,
             java_home=java_home,
             max_iterations=max_iterations,
+            allowed_files=tuple(candidate.files_to_touch),
+            allowed_tables=tuple(t.table for t in model.tables),
+            benchmark=_benchmark_for(green, hypotheses, java_home),
         )
 
         accepted: dict[str, Any] = {}
@@ -385,8 +437,22 @@ def run_patch(
                 rejections.append(message)
                 return message
 
+            # The standards lint, over the diff, at the last possible moment —
+            # which is the only moment the whole diff exists. A rejection here
+            # is retryable; an accepted patch that breaks a stated rule is not.
+            violations = lint_diff(green.diff(), repo=green.path)
+            if violations:
+                message = "REJECTED: " + render_violations(violations)
+                rejections.append(message)
+                tools.standards_violations.extend(v.rule for v in violations)
+                return message
+
             accepted["payload"] = payload
-            return "accepted: the patch builds and the tests pass. You are done — stop now."
+            note = ("" if not tools.benchmark_regressed else
+                    " NOTE: your own benchmark said this is slower; that is "
+                    "recorded with the patch.")
+            return ("accepted: the patch builds and the tests pass. You are "
+                    "done — stop now." + note)
 
         llm = client or GroqClient(api_key=_require_api_key())
 
@@ -406,14 +472,22 @@ def run_patch(
             "build": tools.build,
             "run_tests": tools.run_tests,
             "emit_patch": emit_patch,
+            "add_migration": tools.add_migration,
             **{spec.name: spec.handler for spec in db_specs},
         }
         tool_set = [APPLY_PATCH_TOOL, BUILD_TOOL, RUN_TESTS_TOOL,
-                    EMIT_PATCH_TOOL,
+                    ADD_MIGRATION_TOOL, EMIT_PATCH_TOOL,
                     *(spec.schema() for spec in db_specs)]
 
         loop_error: Exception | None = None
-        task = build_task(hypotheses, green.path)
+        task = build_task(
+            candidate=candidate, model=model, green=green.path,
+            fixability_reason=reason, standards=load_standards(),
+            evidence=_evidence_block(hypotheses, candidate),
+            measured_p50_ms=hypotheses.get("measured_total_ms"),
+            max_iterations=max_iterations,
+            oracle_feedback=oracle_feedback,
+        )
         terminal_retries = 0
         while True:
             try:
@@ -692,3 +766,92 @@ def render_patch(document: dict[str, Any], max_diff_lines: int = 120) -> str:
         out.append("")
         out.append(f"NOTE: the agent loop ended with {document['loop_error']}")
     return "\n".join(out)
+
+
+# ──────────────────────  the plan this phase implements  ─────────────────
+
+
+def load_plan_inputs(run_dir: Path, *, index: int = 0
+                     ) -> tuple[CandidateFix, EndpointModel, Any]:
+    """The selected candidate, the map, and the plan it came from.
+
+    Required, not optional. Without a plan this phase would fall back to the
+    hypothesis with the largest attributed milliseconds, which is how three
+    runs in a row attacked a bottleneck the oracle could never accept.
+    """
+    from ..plan.agent import load_plan
+
+    directory = Path(run_dir)
+    plan_path = directory / "plan.json"
+    if not plan_path.exists():
+        raise ContractViolation(
+            f"no plan at {plan_path}. Run `perfagent plan` first — this phase "
+            f"implements a NAMED CANDIDATE chosen by expected value, not the "
+            f"biggest number in the diagnosis."
+        )
+    plan = load_plan(plan_path)
+    # `index` is the retry's doing: candidate 0 is the selection, and a later
+    # one is reached only after the one before it failed for a reason the plan
+    # could not have known. Candidates the plan ruled out for cause are not
+    # in this list at all.
+    from ..plan.risk import selection_problem
+
+    candidates = [c for c in plan.candidates if selection_problem(c) is None]
+    candidate = (candidates[index] if 0 <= index < len(candidates)
+                 else plan.selected())
+    if candidate is None:
+        raise ContractViolation(
+            f"{plan_path} records no selected candidate "
+            f"({plan.selection_reason or 'no reason given'}), so there is "
+            f"nothing to implement."
+        )
+
+    model_path = directory / "endpoint_model.json"
+    if not model_path.exists():
+        raise ContractViolation(
+            f"no comprehension model at {model_path}. The patch prompt names "
+            f"the unbounded response collections from it, and writing a patch "
+            f"without knowing which fields are frozen is how behaviour breaks."
+        )
+    model = EndpointModel.model_validate(
+        json.loads(model_path.read_text(encoding="utf-8")))
+    return candidate, model, plan
+
+
+def _fixability_reason(plan: Any, candidate: CandidateFix) -> str:
+    assessment = plan.assessment_for(candidate.targets_hypothesis)
+    return assessment.reason if assessment is not None else ""
+
+
+def _evidence_block(hypotheses: dict[str, Any], candidate: CandidateFix) -> str:
+    """The measured evidence for the hypothesis this candidate attacks."""
+    by_id = {h["id"]: h for h in hypotheses.get("hypotheses", [])}
+    target = by_id.get(candidate.targets_hypothesis)
+    if target is None:
+        return ""
+    lines = "\n".join(f"     - {e}" for e in target.get("evidence", []))
+    return (f"=== THE MEASURED EVIDENCE FOR {target['id']} ===\n\n"
+            f"  {target['claim']}\n"
+            f"     layer        {target['layer']}\n"
+            f"     attributed   {target['attributed_ms']:.0f} ms\n"
+            f"     mechanism    {target['mechanism']}\n"
+            f"     evidence:\n{lines}\n\n")
+
+
+def _benchmark_for(green: GreenWorktree, hypotheses: dict[str, Any],
+                   java_home: str | None) -> Any:
+    """The in-loop benchmark, bound to this worktree and this baseline."""
+    from .bench import quick_benchmark
+
+    baseline_p50 = hypotheses.get("measured_total_ms")
+
+    def run() -> Any:
+        try:
+            target = MySQLTarget.from_env()
+        except Exception:  # noqa: BLE001 — latency alone is still worth having
+            target = None
+        return quick_benchmark(
+            green.path, java_home=java_home, baseline_p50_ms=baseline_p50,
+            mysql=target)
+
+    return run

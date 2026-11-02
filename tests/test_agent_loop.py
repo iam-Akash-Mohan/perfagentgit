@@ -338,3 +338,91 @@ def test_there_is_no_sleep_left_in_the_loop() -> None:
 
 def test_the_default_step_ceiling_is_not_infinite() -> None:
     assert DEFAULT_MAX_STEPS > 0
+
+
+# ───────────────  a provider that rejects tool calls server-side  ────────
+
+
+def test_a_provider_rejected_tool_call_is_corrected_not_fatal() -> None:
+    """Groq validates tool calls SERVER-SIDE and returns HTTP 400 instead of
+    handing the malformed call back. The loop's "a bad tool call is
+    correctable, not a crash" guarantee has to survive that — otherwise the
+    phase dies on a mistake the model could have fixed in one turn."""
+    import json as _json
+
+    from perfagent.llm.base import LLMHTTPError
+
+    body = _json.dumps({"error": {
+        "code": "tool_use_failed",
+        "message": "parameters for tool search_code did not match schema: "
+                   "errors: [missing properties: 'pattern']",
+        "failed_generation": '{"name":"search_code","arguments":{"query":"x"}}',
+    }})
+
+    class Rejecting:
+        """Fails the first call the way Groq does, then behaves."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.seen: list[list[dict]] = []
+
+        def complete(self, **kwargs):
+            self.calls += 1
+            self.seen.append(list(kwargs["messages"]))
+            if self.calls == 1:
+                raise LLMHTTPError("groq", 400, body, "https://api.groq.com/x")
+            return LLMResponse(
+                content=[{"type": "tool_use", "id": "t1", "name": "finish",
+                          "input": {"ok": True}}],
+                stop_reason="tool_use", usage=Usage(), latency_ms=1.0,
+                raw_message={"role": "assistant", "tool_calls": [{"id": "t1"}]})
+
+        def correction_for(self, error):
+            from perfagent.llm.base import TOOL_ERROR_CODES
+
+            payload = getattr(error, "payload", {})
+            if str(payload.get("code")) not in TOOL_ERROR_CODES:
+                return None
+            return f"schema error: {payload.get('message')}"
+
+        def tool_result_messages(self, results):
+            return [{"role": "tool", "tool_call_id": r.id, "content": r.content}
+                    for r in results]
+
+    client = Rejecting()
+    outcome = run_agent(
+        client=client, task="go",
+        tools=[{"name": "finish", "description": "d",
+                "parameters": {"type": "object", "properties": {}}}],
+        handlers={"finish": lambda ok: "done"},
+        terminal_tool="finish", budget=LoopBudget(max_steps=5))
+
+    assert outcome.status is LoopStatus.COMPLETED
+    assert client.calls == 2, "it asked again instead of dying"
+    # The correction reached the model, with the provider's own words in it.
+    second = client.seen[1]
+    assert any("missing properties: 'pattern'" in str(m.get("content"))
+               for m in second)
+
+
+def test_an_error_the_model_cannot_fix_still_ends_the_loop() -> None:
+    """A 401 is not corrected by saying something different, and retrying it
+    would spend the budget discovering that repeatedly."""
+    from perfagent.llm.base import LLMHTTPError
+
+    class Unauthorised:
+        calls = 0
+
+        def complete(self, **kwargs):
+            type(self).calls += 1
+            raise LLMHTTPError("groq", 401, '{"error":{"code":"invalid_api_key"}}',
+                               "https://api.groq.com/x")
+
+        def correction_for(self, error):
+            return None
+
+    outcome = run_agent(client=Unauthorised(), task="go", tools=[], handlers={},
+                        budget=LoopBudget(max_steps=5))
+    assert outcome.status is LoopStatus.ERROR
+    assert Unauthorised.calls == 1, "no retry on an uncorrectable failure"
+    assert "401" in outcome.stopped_because

@@ -478,3 +478,354 @@ def test_the_patch_agent_cannot_reach_the_oracle() -> None:
         source = path.read_text(encoding="utf-8")
         assert "perfagent.oracle" not in source and "from ..oracle" not in source
         assert "oracle.json" not in source
+
+
+# ─────────────────────────────  F3: standards  ───────────────────────────
+
+
+FIELD_AUTOWIRED_DIFF = """--- a/src/main/java/com/ex/service/CustomerService.java
++++ b/src/main/java/com/ex/service/CustomerService.java
+@@ -10,6 +10,9 @@
+ public class CustomerService {
++    @Autowired
++    private InvoiceService invoices;
++
+     public Page<CustomerDto> search(SearchRequest req) {
+"""
+
+
+def test_a_field_autowired_fails_the_lint_and_the_message_names_the_rule() -> None:
+    from perfagent.patch.standards import lint_diff, render_violations
+
+    violations = lint_diff(FIELD_AUTOWIRED_DIFF, managed_types=["InvoiceService"])
+    assert len(violations) == 1
+    assert "constructor injection only" in violations[0].rule.lower()
+    rendered = render_violations(violations)
+    assert "No field @Autowired" in rendered
+    assert "CustomerService.java" in rendered
+
+
+def test_constructor_injection_passes_the_same_rule() -> None:
+    from perfagent.patch.standards import lint_diff
+
+    diff = """--- a/src/main/java/com/ex/service/CustomerService.java
++++ b/src/main/java/com/ex/service/CustomerService.java
+@@ -10,6 +10,9 @@
++    @Autowired
++    public CustomerService(InvoiceService invoices) {
++        this.invoices = invoices;
+"""
+    assert lint_diff(diff, managed_types=["InvoiceService"]) == []
+
+
+def test_a_wildcard_import_fails_the_lint() -> None:
+    from perfagent.patch.standards import lint_diff
+
+    diff = """--- a/src/main/java/com/ex/A.java
++++ b/src/main/java/com/ex/A.java
+@@
++import java.util.*;
++import java.util.List;
+"""
+    violations = lint_diff(diff)
+    assert len(violations) == 1 and "wildcard" in violations[0].rule.lower()
+
+
+def test_new_on_a_spring_bean_fails_the_lint(tmp_path) -> None:
+    """Read from the source, not guessed from the name: a @Component called
+    Clock is container-managed and `new Clock()` is a bug."""
+    from perfagent.patch.standards import lint_diff, spring_managed_types
+
+    root = tmp_path / "repo" / "src/main/java/com/ex"
+    root.mkdir(parents=True)
+    (root / "Clock.java").write_text(
+        "package com.ex;\n@Component\npublic class Clock {}\n")
+    (root / "Plain.java").write_text("package com.ex;\npublic class Plain {}\n")
+
+    managed = spring_managed_types(tmp_path / "repo")
+    assert managed == {"Clock"}
+
+    diff = """--- a/src/main/java/com/ex/A.java
++++ b/src/main/java/com/ex/A.java
+@@
++        var c = new Clock();
++        var p = new Plain();
+"""
+    violations = lint_diff(diff, repo=tmp_path / "repo")
+    assert len(violations) == 1
+    assert "Spring-managed" in violations[0].rule
+    assert "Clock" in violations[0].detail
+
+
+def test_removing_a_controller_method_fails_the_lint() -> None:
+    from perfagent.patch.standards import lint_diff
+
+    diff = """--- a/src/main/java/com/ex/web/CustomerController.java
++++ b/src/main/java/com/ex/web/CustomerController.java
+@@
+ @RestController
+-    public Page<CustomerDto> search(@RequestBody SearchRequest req) {
++    public Page<CustomerDto> find(@RequestBody SearchRequest req) {
+"""
+    violations = lint_diff(diff)
+    assert any("public method signatures on controllers" in v.rule
+               for v in violations)
+
+
+def test_only_the_four_mechanical_rules_are_enforced() -> None:
+    """The advisory half needs taste. A lint that rejects correct code is a
+    lint someone switches off."""
+    from perfagent.patch.standards import lint_diff
+
+    advisory = """--- a/src/main/java/com/ex/service/A.java
++++ b/src/main/java/com/ex/service/A.java
+@@
++    public String find(long id) { return null; }
++    public List<X> all() { return repo.findAll().stream().toList(); }
+"""
+    assert lint_diff(advisory, managed_types=["A"]) == []
+
+
+def test_the_standards_document_is_loaded_from_disk() -> None:
+    from perfagent.patch.standards import load_standards
+
+    text = load_standards()
+    assert "Constructor injection only" in text
+    assert "ENFORCED" in text
+
+
+# ───────────────────────  F3: the per-candidate allowlist  ───────────────
+
+
+def test_a_write_outside_files_to_touch_is_refused(green) -> None:
+    tools = PatchTools(
+        green=green, baseline=TestCounts(),
+        allowed_files=("src/main/java/com/ex/service/CustomerService.java",))
+
+    refusal = tools.apply_patch(
+        file="src/main/java/com/ex/web/CustomerController.java",
+        old_text="x", new_text="y")
+
+    assert refusal.startswith("REFUSED")
+    assert "not in this plan's files_to_touch" in refusal
+    assert "CustomerService.java" in refusal, "it must name what IS allowed"
+    assert tools.refusals and tools.log[-1]["ok"] is False
+
+
+def test_a_migration_cannot_be_written_with_apply_patch(green) -> None:
+    tools = PatchTools(green=green, baseline=TestCounts())
+    refusal = tools.apply_patch(
+        file="src/main/resources/db/migration/V2__x.sql",
+        old_text="a", new_text="b")
+    assert "add_migration" in refusal
+
+
+# ──────────────────────────  F3: add_migration  ──────────────────────────
+
+
+def flyway_green(green):
+    (green.path / "src/main/resources/db/migration").mkdir(
+        parents=True, exist_ok=True)
+    (green.path / "src/main/resources/db/migration/V1__base.sql"
+     ).write_text("CREATE TABLE x (id BIGINT);\n")
+    (green.path / "pom.xml").write_text("<project>flyway-core</project>")
+    return green
+
+
+def test_an_index_migration_is_written_and_numbered(green) -> None:
+    tools = PatchTools(green=flyway_green(green), baseline=TestCounts(),
+                       allowed_tables=("invoice",))
+    result = tools.add_migration(
+        sql="CREATE INDEX idx_invoice_customer_id_status ON invoice "
+            "(customer_id, status);",
+        rationale="the aggregate filters on both columns",
+        evidence="rows examined 2,645 -> 571")
+
+    assert result.startswith("OK")
+    assert "V2__add_invoice_customer_id_status_index.sql" in result
+    assert tools.migrations_written == [
+        "src/main/resources/db/migration/V2__add_invoice_customer_id_status_index.sql"]
+    # A migration is an edit: build and tests must run again.
+    assert tools.edits_since_verify == 1
+    assert tools.last_build_ok is False and tools.last_tests_ok is False
+
+
+@pytest.mark.parametrize("sql", [
+    "ALTER TABLE invoice ADD COLUMN total DECIMAL(19,2)",
+    "DROP INDEX idx_invoice_customer_id ON invoice",
+    "CREATE TABLE shadow (id BIGINT)",
+    "CREATE INDEX idx_a ON invoice (status); DROP TABLE invoice;",
+    "UPDATE invoice SET status = 'PAID'",
+])
+def test_anything_that_is_not_one_create_index_is_refused(green,
+                                                          sql: str) -> None:
+    """Parsed, not trusted: 'additive index only' is a property of the code."""
+    tools = PatchTools(green=flyway_green(green), baseline=TestCounts(),
+                       allowed_tables=("invoice",))
+    result = tools.add_migration(sql=sql, rationale="why")
+
+    assert result.startswith("REFUSED")
+    assert "CREATE INDEX" in result
+    assert tools.migrations_written == []
+    written = list((tools.green.path / "src/main/resources/db/migration"
+                    ).glob("V2*.sql"))
+    assert written == [], "nothing may reach the disk"
+
+
+def test_an_index_on_a_table_off_the_path_is_refused(green) -> None:
+    tools = PatchTools(green=flyway_green(green), baseline=TestCounts(),
+                       allowed_tables=("invoice",))
+    result = tools.add_migration(
+        sql="CREATE INDEX idx_u ON users (email);", rationale="why")
+    assert result.startswith("REFUSED") and "users" in result
+
+
+# ────────────────────────  F3: the in-loop benchmark  ────────────────────
+
+
+def test_the_benchmark_delta_reaches_the_agent_when_tests_pass(green) -> None:
+    from perfagent.patch.bench import QuickResult
+
+    tools = PatchTools(
+        green=green, baseline=TestCounts(executed=1, files=1),
+        benchmark=lambda: QuickResult(
+            p50_ms=640.0, p95_ms=700.0, sql_per_request=2.0, requests=20,
+            baseline_p50_ms=1022.0, baseline_sql_per_request=6.0),
+    )
+    tools.last_build_ok = True
+    stub_maven(tools, 0, "Tests run: 1, Failures: 0, Errors: 0, Skipped: 0")
+
+    result = tools.run_tests()
+    assert "TESTS OK" in result
+    assert "1,022 ms -> 640 ms (-37%, faster)" in result
+    assert "SQL statements per request 6.0 -> 2.0" in result
+    assert "not the real measurement" in result, "it must say it is heuristic"
+    assert tools.benchmark_regressed is False
+
+
+def test_a_regression_is_visible_to_the_agent_before_it_emits(green) -> None:
+    from perfagent.patch.bench import QuickResult
+
+    tools = PatchTools(
+        green=green, baseline=TestCounts(executed=1, files=1),
+        benchmark=lambda: QuickResult(
+            p50_ms=1500.0, p95_ms=1600.0, sql_per_request=8.0, requests=20,
+            baseline_p50_ms=1000.0, baseline_sql_per_request=6.0),
+    )
+    tools.last_build_ok = True
+    stub_maven(tools, 0, "Tests run: 1, Failures: 0, Errors: 0, Skipped: 0")
+
+    result = tools.run_tests()
+    assert "SLOWER" in result
+    assert "IT GOT SLOWER" in result
+    assert "Do not emit this patch as it stands" in result
+    assert tools.benchmark_regressed is True
+
+
+def test_a_benchmark_that_cannot_run_does_not_fail_the_phase(green) -> None:
+    def explode():
+        raise RuntimeError("no port free")
+
+    tools = PatchTools(green=green,
+                       baseline=TestCounts(executed=1, files=1),
+                       benchmark=explode)
+    tools.last_build_ok = True
+    stub_maven(tools, 0, "Tests run: 1, Failures: 0, Errors: 0, Skipped: 0")
+
+    result = tools.run_tests()
+    assert "TESTS OK" in result
+    assert "could not run" in result
+    assert tools.last_tests_ok is True
+
+
+# ───────────────────  F3: the phase implements the PLAN  ─────────────────
+
+
+def test_the_patch_phase_refuses_to_start_without_a_plan(tmp_path) -> None:
+    from perfagent.errors import ContractViolation
+    from perfagent.patch.agent import load_plan_inputs
+
+    (tmp_path / "hypotheses.json").write_text("{}")
+    with pytest.raises(ContractViolation, match="Run `perfagent plan`"):
+        load_plan_inputs(tmp_path)
+
+
+def test_the_prompt_is_built_from_the_candidate_not_the_top_hypothesis(
+    tmp_path
+) -> None:
+    """Acceptance 1, as a property of the prompt: the candidate's approach and
+    predicted effect are in it, and the plan's files_to_touch are the
+    allowlist."""
+    import json as _json
+
+    from perfagent.contracts import CandidateFix, EndpointModel, RiskTier
+    from perfagent.patch.agent import build_task
+
+    green = tmp_path / "green"
+    service = green / "src/main/java/com/ex/service/CustomerService.java"
+    service.parent.mkdir(parents=True)
+    service.write_text("public class CustomerService { }\n")
+
+    candidate = CandidateFix(
+        id="c2", targets_hypothesis="h2", approach="fetch_join",
+        description="replace the per-row sum with a join fetch",
+        mechanism_changed="SQL statements per request",
+        predicted_effect="queries per request drop from 22 to 2",
+        files_to_touch=["src/main/java/com/ex/service/CustomerService.java"],
+        what_could_break=["duplicate rows if the join is not distinct"],
+        preserves_response_bytes=True, risk_tier=RiskTier.LOW,
+    )
+    model = EndpointModel.model_validate({
+        "route": "POST /api/customers/search",
+        "call_chain": [{"method": "CustomerService.search",
+                        "file": "src/main/java/com/ex/service/CustomerService.java",
+                        "line": 1, "does": "searches"}],
+        "data_access": [],
+        "response_shape": {"dto": "CustomerDto", "fields_returned": ["tags"],
+                           "unbounded_collections": ["tags"]},
+        "per_row_work": [], "uncertainties": [],
+    })
+
+    task = build_task(candidate=candidate, model=model, green=green,
+                      fixability_reason="batchable: fetch join or @EntityGraph",
+                      standards="Constructor injection only.")
+
+    assert "c2" in task and "fetch_join" in task
+    assert "queries per request drop from 22 to 2" in task
+    assert "batchable: fetch join or @EntityGraph" in task
+    assert "duplicate rows if the join is not distinct" in task
+    # The frozen fields are NAMED, not described.
+    assert "UNBOUNDED COLLECTIONS IN THE RESPONSE: tags" in task
+    # The standards travel with it.
+    assert "Constructor injection only." in task
+    # And the allowlist is the plan's.
+    assert "src/main/java/com/ex/service/CustomerService.java" in task
+    assert "ranked" not in task.lower().split("=== how to work")[0]
+
+
+def test_the_test_count_guardrail_fires_on_real_maven_output(green) -> None:
+    """Acceptance 5's other half, against the strings maven actually prints.
+
+    With the test file present, surefire reports a count. With it deleted,
+    `mvn test` prints NO "Tests run" line at all and still says BUILD SUCCESS —
+    which is exactly why the count is checked here rather than trusted to the
+    build's exit code.
+    """
+    with_test = """[INFO] Running com.ex.CustomerSearchIT
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.750 s
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS"""
+    without_test = "[INFO] BUILD SUCCESS"
+
+    baseline = parse_test_counts(with_test, green.path)
+    assert baseline.executed == 1, "surefire must actually run the IT now"
+
+    tools = PatchTools(green=green, baseline=baseline)
+    tools.last_build_ok = True
+    stub_maven(tools, 0, without_test)
+
+    result = tools.run_tests()
+    assert "GUARDRAIL VIOLATION" in result
+    assert "tests executed dropped from 1 to 0" in result
+    assert tools.guardrail_violations, "the run is over, not warned about"
+    assert tools.last_tests_ok is False

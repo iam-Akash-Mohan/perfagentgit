@@ -68,9 +68,16 @@ def test_corpus_held_back_defaults_empty_but_present():
     assert c.held_back == []
 
 
-def test_terminal_states_cover_all_eight():
-    assert len(TerminalState) == 8
+def test_every_terminal_state_is_distinct_and_named():
+    """Nine now. MEASUREMENT_NOT_ISOLATED was added because "we could not
+    measure this" and "this did not help" are different facts, and a run that
+    reported the second when the first was true would be lying with a
+    straight face."""
+    assert len(TerminalState) == 9
     assert TerminalState.NO_BOTTLENECK_FOUND in TerminalState
+    assert TerminalState.MEASUREMENT_NOT_ISOLATED is not \
+           TerminalState.NO_SIGNIFICANT_IMPROVEMENT
+    assert len({s.value for s in TerminalState}) == len(TerminalState)
 
 
 def test_risk_tiers_ordered():

@@ -435,7 +435,7 @@ def test_a_failing_environment_phase_reports_environment_infeasible(
     assert state.terminal == TerminalState.ENVIRONMENT_INFEASIBLE
 
 
-def test_all_eight_terminal_states_are_reachable_from_the_orchestrator() -> None:
+def test_every_terminal_state_is_reachable_from_the_orchestrator() -> None:
     """Every state the contract defines has a code path that produces it."""
     source = Path(orch.__file__).read_text()
     ship_source = (Path(orch.__file__).parent / "ship.py").read_text()

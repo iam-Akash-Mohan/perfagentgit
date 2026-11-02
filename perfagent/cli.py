@@ -94,8 +94,8 @@ def patch(
 ) -> None:
     """Write, build and test a real fix on the green worktree."""
     from .ids import new_run_id
-    from .patch.agent import (build_task, load_hypotheses, render_patch,
-                              resolve_run_dir, run_patch)
+    from .patch.agent import (build_task, load_hypotheses, load_plan_inputs,
+                              render_patch, resolve_run_dir, run_patch)
     from .patch.worktree import GreenWorktree
 
     identifier = run_id or new_run_id()
@@ -107,8 +107,18 @@ def patch(
             # two things most likely to be wrong. Load the diagnosis BEFORE
             # creating a worktree, so a missing one leaves nothing to clean up.
             hypotheses = load_hypotheses(directory)
+            candidate, model, plan = load_plan_inputs(directory)
             worktree = GreenWorktree.create(identifier, repo=repo, green=green)
-            typer.echo(build_task(hypotheses, worktree.path))
+            from .patch.agent import _evidence_block, _fixability_reason
+            from .patch.standards import load_standards
+
+            typer.echo(build_task(
+                candidate=candidate, model=model, green=worktree.path,
+                fixability_reason=_fixability_reason(plan, candidate),
+                evidence=_evidence_block(hypotheses, candidate),
+                standards=load_standards(),
+                measured_p50_ms=hypotheses.get("measured_total_ms"),
+            ))
             typer.echo("")
             typer.secho(
                 f"green worktree at {worktree.path} on {worktree.branch}; "

@@ -47,7 +47,11 @@ PRICES: dict[str, Price] = {
     "gemini-2.5-flash": Price(0.30, 2.50),
     "gemini-2.5-pro": Price(1.25, 10.00),
     "gemini-2.0-flash": Price(0.10, 0.40),
-    # ── Groq ─────────────────────────────────────────────────────────────
+    # ── Groq (its ids are vendor-prefixed, and prefix matching is
+    #    longest-first, so these need their own entries) ────────────────────
+    "openai/gpt-oss-120b": Price(0.15, 0.75),
+    "openai/gpt-oss-20b": Price(0.10, 0.50),
+    "qwen/qwen3.8-27b": Price(0.30, 0.60),
     "llama-3.3-70b-versatile": Price(0.59, 0.79),
     "moonshotai/kimi-k2-instruct": Price(1.00, 3.00),
     # ── Ollama (local; the electricity is not billed to the run) ─────────

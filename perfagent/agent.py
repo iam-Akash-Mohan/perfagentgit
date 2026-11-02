@@ -61,6 +61,13 @@ TRUNCATED_NUDGE = (
 )
 MAX_TRUNCATIONS = 3
 
+# A tool call the PROVIDER refused before it reached us. The loop already
+# absorbs a bad call it can see; this is the same mistake arriving as an HTTP
+# error, and it gets the same treatment — tell the model what was wrong and
+# ask again. Bounded, because a model that cannot read a schema after three
+# corrections is not going to on the fourth.
+MAX_TOOL_CORRECTIONS = 3
+
 
 class LoopStatus(StrEnum):
     COMPLETED = "completed"
@@ -163,6 +170,7 @@ def run_agent(
     force_next: str | None = None
     forces = 0
     truncations = 0
+    corrections = 0
 
     def emit(kind: EventType, **fields: Any) -> None:
         if trace is not None:
@@ -182,6 +190,15 @@ def run_agent(
             response = client.complete(system=system, messages=messages,
                                        tools=tools, tool_choice=choice)
         except Exception as exc:  # noqa: BLE001 — reported, never propagated
+            correction = _correction_for(client, exc)
+            if correction is not None and corrections < MAX_TOOL_CORRECTIONS:
+                corrections += 1
+                messages.append({"role": "user", "content": correction})
+                emit(EventType.NOTE, step=steps,
+                     note=f"the provider rejected a malformed tool call "
+                          f"({corrections}/{MAX_TOOL_CORRECTIONS}); asking "
+                          f"again with the schema error")
+                continue
             emit(EventType.NOTE, note=f"LLM call failed: "
                  f"{type(exc).__name__}: {exc}", step=steps)
             return LoopOutcome(LoopStatus.ERROR, None, final_text, steps,
@@ -366,6 +383,18 @@ def _signature(call: dict[str, Any]) -> str:
     args = json.dumps(call.get("input") or {}, sort_keys=True,
                       separators=(",", ":"), default=str)
     return f"{call['name']}({args})"
+
+
+def _correction_for(client: Any, error: Exception) -> str | None:
+    """Ask the client whether this failure is the model's to fix."""
+    hook = getattr(client, "correction_for", None)
+    if not callable(hook):
+        return None
+    try:
+        result = hook(error)
+    except Exception:  # noqa: BLE001 — a broken hook is not a reason to die
+        return None
+    return str(result) if result else None
 
 
 def _tool_choice(client: Any, force: str | None) -> dict[str, Any] | None:

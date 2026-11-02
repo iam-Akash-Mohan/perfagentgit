@@ -326,6 +326,10 @@ def mechanism_verdict(
 # ──────────────────────────────  the report  ─────────────────────────────
 
 
+def _rounded(value: float | None) -> float | None:
+    return None if value is None else round(value, 6)
+
+
 def build_report(
     run: InterleavedRun, blue_sql: ArmSql, green_sql: ArmSql
 ) -> PerfReport:
@@ -345,6 +349,10 @@ def build_report(
         rows_examined_before=blue_sql.rows_examined,
         rows_examined_after=green_sql.rows_examined,
         p_value=round(mann_whitney_p(run.arm_samples("blue"), run.arm_samples("green")), 6),
+        # The paired test, on the artifact rather than beside it. The gate
+        # reads this; the unpaired figure above is reported for contrast and
+        # gates nothing.
+        p_value_paired=_rounded(wilcoxon_p(run.pairs)),
         mechanism_confirmed=confirmed,
         mechanism_note=note,
     )

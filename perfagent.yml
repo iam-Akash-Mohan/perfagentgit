@@ -1,9 +1,9 @@
 # Runtime configuration. Environment variables of the form PERFAGENT_LLM_*
 # override anything here; explicit CLI flags override both.
 llm:
-  provider: gemini
-  model: gemini-2.5-flash     # Google's OpenAI-compatible endpoint; key: GEMINI_API_KEY or GOOGLE_API_KEY
-  max_tokens: 8192            # 2.5-flash bills its thinking to completion_tokens, so leave room
+  provider: groq
+  model: openai/gpt-oss-120b  # llama-3.3-70b-versatile 404s: this account cannot see it
+  max_tokens: 8192            # well inside Groq's 32k completion ceiling for this model
   timeout_s: 120
   cassette_dir: .perfagent/cassettes
   offline: false

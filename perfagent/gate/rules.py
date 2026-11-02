@@ -359,16 +359,16 @@ def evaluate_gates(
     patch: Patch,
     plan: CandidatePlan,
     *,
-    paired_p_value: float | None,
+    paired_p_value: float | None = None,
 ) -> GateDecision:
     """Run all six gates and compute the decision.
 
-    `paired_p_value` is a required keyword because `PerfReport.p_value` holds
-    the Mann-Whitney value and gating on that would pass regressions on this
-    corpus. It is an INPUT, not an override: it cannot make a failing gate
-    pass, only supply the evidence one gate reads. (PerfReport arguably wants a
-    `p_value_paired` field; that is a contract change, so it is flagged rather
-    than invented.)
+    The paired p-value is now a FIELD on `PerfReport`, read from the artifact.
+    The keyword survives for callers holding a report recorded before the
+    field existed, and for those it is an INPUT rather than an override: it
+    cannot make a failing gate pass, only supply the evidence one gate reads.
+    When both are present the artifact wins, because the artifact is what a
+    reader can check.
 
     Every gate runs even after one has failed — a report that stops at the
     first failure hides the other five, and the reader needs all six to know
@@ -377,7 +377,9 @@ def evaluate_gates(
     results = [
         _behaviour_preserved(verdict),
         _improvement_threshold(perf_report),
-        _statistical_significance(paired_p_value),
+        _statistical_significance(
+            perf_report.p_value_paired
+            if perf_report.p_value_paired is not None else paired_p_value),
         _diff_minimality(patch, plan),
         _mechanism_match(perf_report, plan),
         _no_forbidden_change(patch),

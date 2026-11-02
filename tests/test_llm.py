@@ -364,9 +364,12 @@ def gemini(post: Recorder, tmp_path: Path, **kwargs: Any) -> OpenAICompatClient:
 
 
 def test_gemini_is_built_by_the_factory_with_googles_endpoint(monkeypatch) -> None:
+    """The endpoint and the auth header, not the model — the configured model
+    is whatever perfagent.yml currently names, and this test is not about
+    that."""
     monkeypatch.setenv("GEMINI_API_KEY", "g")
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    instance = make_client("gemini")
+    instance = make_client("gemini", "gemini-2.5-flash")
     assert isinstance(instance, OpenAICompatClient)
     assert instance.model == "gemini-2.5-flash"
     assert instance.endpoint() == (

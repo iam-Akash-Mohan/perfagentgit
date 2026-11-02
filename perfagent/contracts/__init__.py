@@ -284,7 +284,17 @@ class PerfReport(BaseModel):
     sql_count_after: int
     rows_examined_before: int
     rows_examined_after: int
-    p_value: float
+    p_value: float                      # Mann-Whitney U, unpaired
+    p_value_paired: float | None = Field(
+        default=None,
+        description="Wilcoxon signed-rank, computed over the interleaved "
+                    "pairs. THIS is what the significance gate reads: the "
+                    "samples are paired by design, and on this corpus the "
+                    "per-request spread is two orders of magnitude larger "
+                    "than the between-arm difference, so the unpaired test "
+                    "reports p=0.36 where the paired one reports p=0.0015. "
+                    "Optional only so that artifacts recorded before the "
+                    "field existed still validate.")
     interleaved: Literal[True] = True
     mechanism_confirmed: bool
     mechanism_note: str
@@ -321,6 +331,11 @@ class TerminalState(str, Enum):
     BOTTLENECK_NOT_FIXABLE = "BOTTLENECK_NOT_FIXABLE"
     BEHAVIOUR_NOT_PRESERVED = "BEHAVIOUR_NOT_PRESERVED"
     NO_SIGNIFICANT_IMPROVEMENT = "NO_SIGNIFICANT_IMPROVEMENT"
+    # "we could not measure this" is a different fact from "this did not
+    # help", and a report in which they look alike is a report that teaches
+    # the reader the wrong lesson. Raised when a schema change cannot be A/B
+    # measured because both arms share one database.
+    MEASUREMENT_NOT_ISOLATED = "MEASUREMENT_NOT_ISOLATED"
     ENVIRONMENT_INFEASIBLE = "ENVIRONMENT_INFEASIBLE"
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
     INTERNAL_ERROR = "INTERNAL_ERROR"

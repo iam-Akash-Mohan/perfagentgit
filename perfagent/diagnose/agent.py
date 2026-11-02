@@ -248,6 +248,7 @@ def run_diagnosis(
     base_url: str = DEFAULT_BASE_URL,
     run_dir: Path | None = None,
     *,
+    trace: Any = None,
     endpoint_model_path: Path = DEFAULT_ENDPOINT_MODEL,
     mysql: MySQLTarget | None = None,
     max_steps: int = MAX_STEPS,
@@ -317,6 +318,11 @@ def run_diagnosis(
                 **{spec.name: spec.handler for spec in db_specs},
             },
             max_steps=max_steps,
+            # Without this the phase's tool calls never reach the trace, so
+            # `perfagent trace` renders a run with a silent middle — which is
+            # exactly where the probes that justify the diagnosis happen.
+            trace=trace,
+            phase="diagnose",
         )
     except Exception as exc:  # noqa: BLE001 - see comment above
         loop_error = exc

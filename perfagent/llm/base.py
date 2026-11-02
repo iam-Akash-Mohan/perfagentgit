@@ -38,6 +38,15 @@ MAX_BACKOFF_S = 60.0
 BASE_BACKOFF_S = 1.0
 
 
+# Some providers validate tool calls SERVER-SIDE and reject the request rather
+# than returning the malformed call. Groq does: a call whose arguments do not
+# match the schema comes back as HTTP 400 `tool_use_failed`, so the loop's
+# "a bad tool call is a correctable mistake, not a crash" guarantee never gets
+# to run — the phase dies three frames away from anything that explains it.
+# That is a MODEL mistake wearing a transport error's clothes.
+TOOL_ERROR_CODES = frozenset({"tool_use_failed", "invalid_tool_call"})
+
+
 class LLMHTTPError(PerfAgentError):
     """A non-200 that survived the retry policy."""
 
@@ -46,6 +55,10 @@ class LLMHTTPError(PerfAgentError):
         self.status = status
         self.body = body
         self.url = url
+        try:
+            self.payload: dict[str, Any] = dict(json.loads(body)).get("error", {})
+        except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+            self.payload = {}
         super().__init__(
             f"{provider} returned HTTP {status} from {url}. "
             f"The provider said:\n{body.strip()[:2000]}"
@@ -273,6 +286,31 @@ class HTTPLLMClient(ABC):
             cache_write_tokens=self.total.cache_write_tokens
                                + response.usage.cache_write_tokens,
             usd=round(self.total.usd + response.usage.usd, 8),
+        )
+
+    def correction_for(self, error: Exception) -> str | None:
+        """A message that turns a provider-side rejection back into a turn.
+
+        Returns None for anything that is not the model's fault — a 500, a
+        rate limit, a bad key. Those are not correctable by saying something
+        different, and pretending otherwise would spend the budget repeating
+        a request that cannot work.
+        """
+        if not isinstance(error, LLMHTTPError):
+            return None
+        if str(error.payload.get("code")) not in TOOL_ERROR_CODES:
+            return None
+
+        message = str(error.payload.get("message", "")).strip()
+        attempted = str(error.payload.get("failed_generation", "")).strip()
+        return (
+            f"{self.provider} rejected your last tool call before it reached "
+            f"the tool, because the arguments did not match the tool's "
+            f"schema.\n\nWhat the provider said:\n  {message[:600]}\n\n"
+            + (f"What you sent:\n  {attempted[:600]}\n\n" if attempted else "")
+            + "Nothing ran and nothing changed. Read the tool's parameter "
+              "names again in the tool definitions above — they are exact — "
+              "and call it again with every required property present."
         )
 
     def price(self, usage: Usage) -> float:
