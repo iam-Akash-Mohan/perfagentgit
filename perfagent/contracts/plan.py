@@ -116,6 +116,15 @@ class CandidateFix(BaseModel):
     risk_tier: RiskTier
     requires_flag: bool = False
     expected_value_ms: float = 0.0
+    not_selectable_because: str | None = Field(
+        default=None,
+        description="Set at PLAN time when this candidate changes the schema "
+                    "and the two arms would not be isolated — measuring it "
+                    "would compare two arms that both have the change and "
+                    "report a false negative. The candidate is NOT deleted: "
+                    "'we could not verify this here' is itself a finding, and "
+                    "the argument for building per-arm schemas. A model never "
+                    "sets this field; only code does.")
 
 
 class Rejection(BaseModel):

@@ -23,7 +23,7 @@ from ..tools import SourceRoot, ToolSpec
 from .fixability import covering_index
 from .risk import (MAX_SELECTABLE_TIER, TEST_TREE, assess_risk,
                    forbidden_reason, is_additive_index, parse_index,
-                   selection_problem)
+                   schema_change_blocked, selection_problem)
 
 MIN_CANDIDATES = 2
 MAX_CANDIDATES = 4
@@ -274,6 +274,15 @@ def _build(entry: dict[str, Any], *, index: int, tables: dict[str, TableInfo],
         approach=approach, description=description,
         predicted_effect=str(entry.get("predicted_effect") or ""),
     )
+    # Checked here, not at measure time: a candidate that changes the schema
+    # while the arms share one database could never have been verified, and
+    # the patch agent should not spend a build iteration finding that out.
+    # Not deleted from the plan either way — "we could not verify this here"
+    # is a finding a reviewer should see.
+    not_selectable_because = schema_change_blocked(
+        approach=approach, sql_change=sql_change, files_to_touch=files,
+        repo=root.path,
+    )
 
     try:
         return CandidateFix.model_validate({
@@ -284,6 +293,7 @@ def _build(entry: dict[str, Any], *, index: int, tables: dict[str, TableInfo],
             "risk_tier": tier,
             "requires_flag": requires_flag,
             "expected_value_ms": expected.get(target, 0.0),
+            "not_selectable_because": not_selectable_because,
         })
     except ValidationError as exc:
         raise ToolError(

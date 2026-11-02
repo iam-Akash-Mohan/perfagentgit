@@ -103,6 +103,11 @@ def _candidates(plan: Plan) -> list[str]:
         out.append(f"     files         {', '.join(candidate.files_to_touch)}")
         for risk in candidate.what_could_break:
             out.append(f"     could break   - {risk}")
+        if candidate.not_selectable_because:
+            out.append("     NOT SELECTABLE  the arms cannot be isolated "
+                       "for this schema change:")
+            for line in candidate.not_selectable_because.splitlines():
+                out.append(f"       {line}")
         out.append("")
     return out
 

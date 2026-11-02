@@ -13,6 +13,7 @@ cannot be selected.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from ..contracts import CandidateFix, RiskTier
 
@@ -148,6 +149,40 @@ def assess_risk(*, approach: str, description: str,
     return (tier, False, f"approach '{approach}' is tier {tier.value}")
 
 
+# ──────────────────────────  schema-change feasibility  ──────────────────
+
+
+def schema_change_blocked(*, approach: str, sql_change: str | None,
+                          files_to_touch: list[str], repo: Path) -> str | None:
+    """Would THIS candidate's schema change be unmeasurable, right now?
+
+    Asked at SELECTION time, before a green worktree exists — before the patch
+    agent spends a single build iteration on a candidate that could never have
+    been verified. The isolation guard in `measure/isolation.py` used to be
+    the only place this was checked, and by then the plan had already picked
+    the candidate: the knowledge arrived too late to change anything.
+
+    Blue is compared against ITSELF here, because there is no green yet and
+    nothing has diverged — the only question this early is whether the
+    harness has ANY per-arm isolation mechanism at all. It does not today, so
+    this fires for every schema-changing candidate. That is correct: the
+    measure-time guard exists as a BACKSTOP for when the environment changes
+    between plan and measure, not as the primary check — this is.
+
+    Two signals, matching `touches_schema`'s definition plus the literal case
+    named in the brief: the approach is `add_index`, the migration directory
+    appears among the files to touch, OR `sql_change` is set at all (a
+    candidate can in principle carry DDL without declaring `add_index`).
+    """
+    from ..measure.isolation import arms_share_one_schema, touches_schema
+
+    changes_schema = bool(sql_change) or touches_schema(
+        approach=approach, files_changed=files_to_touch)
+    if not changes_schema:
+        return None
+    return arms_share_one_schema(repo, repo)
+
+
 # ────────────────────────────────  selection  ────────────────────────────
 
 MAX_SELECTABLE_TIER = RiskTier.MEDIUM
@@ -155,6 +190,8 @@ MAX_SELECTABLE_TIER = RiskTier.MEDIUM
 
 def selection_problem(candidate: CandidateFix) -> str | None:
     """Why this candidate cannot be the selected one, or None."""
+    if candidate.not_selectable_because is not None:
+        return candidate.not_selectable_because
     if candidate.risk_tier > MAX_SELECTABLE_TIER:
         return (f"risk tier {candidate.risk_tier.value} is above the "
                 f"T{MAX_SELECTABLE_TIER.value} ceiling for an unattended fix")

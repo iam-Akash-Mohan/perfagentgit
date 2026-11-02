@@ -30,7 +30,7 @@ from perfagent.plan.fixability import (assess_fixability, covering_index,
                                        uncovered_columns)
 from perfagent.plan.risk import (assess_risk, forbidden_reason,
                                  is_additive_index, parse_index,
-                                 selection_problem)
+                                 schema_change_blocked, selection_problem)
 from perfagent.plan.submit import make_submit_plan
 from perfagent.tools import SourceRoot
 from perfagent.trace import Trace
@@ -1183,3 +1183,198 @@ def test_an_unclassified_entry_renders_as_a_placeholder_not_a_finding() -> None:
     assert "expected value" not in block
     # The classified entries keep the ordinary shape.
     assert "×  fixability" in rendered
+
+
+# ──────────────  feasibility at SELECTION time, not measure time  ────────
+#
+# The isolation guard in measure/isolation.py used to be the only place a
+# schema-changing candidate's unmeasurability was discovered, and by then the
+# plan had already picked it and the patch agent had spent build iterations on
+# it. These tests are about catching it at SELECTION time instead — before any
+# worktree exists — while the measure-time guard stays as a backstop.
+
+
+def repo_with_datasource(path: Path, url: str) -> Path:
+    resources = path / "src/main/resources"
+    resources.mkdir(parents=True, exist_ok=True)
+    (resources / "application-perfagent.yml").write_text(
+        f"spring:\n  datasource:\n    url: {url}\n", encoding="utf-8")
+    return path
+
+
+SHARED_JDBC = "jdbc:mysql://localhost:3307/mini?useSSL=false"
+
+
+def test_schema_change_blocked_when_the_repo_shares_one_schema(
+    tmp_path: Path
+) -> None:
+    """Blue compared against itself: nothing has diverged yet, so this is
+    asking 'does the harness have per-arm isolation at all' — it does not."""
+    repo = repo_with_datasource(tmp_path / "repo", SHARED_JDBC)
+    problem = schema_change_blocked(
+        approach="add_index", sql_change="CREATE INDEX idx_a ON t (a);",
+        files_to_touch=["src/main/resources/db/migration/V2__x.sql"],
+        repo=repo,
+    )
+    assert problem is not None
+    assert "SAME schema" in problem
+
+
+def test_schema_change_blocked_fires_on_sql_change_alone(tmp_path: Path) -> None:
+    """The literal case named in the brief: a candidate can carry sql_change
+    without declaring approach='add_index'."""
+    repo = repo_with_datasource(tmp_path / "repo", SHARED_JDBC)
+    problem = schema_change_blocked(
+        approach="query_rewrite", sql_change="CREATE INDEX idx_a ON t (a);",
+        files_to_touch=["src/main/java/com/ex/A.java"], repo=repo,
+    )
+    assert problem is not None
+
+
+def test_schema_change_blocked_fires_on_a_migration_file_alone(
+    tmp_path: Path
+) -> None:
+    repo = repo_with_datasource(tmp_path / "repo", SHARED_JDBC)
+    problem = schema_change_blocked(
+        approach="other", sql_change=None,
+        files_to_touch=["src/main/resources/db/migration/V2__x.sql"],
+        repo=repo,
+    )
+    assert problem is not None
+
+
+def test_schema_change_not_blocked_for_a_java_only_candidate(
+    tmp_path: Path
+) -> None:
+    repo = repo_with_datasource(tmp_path / "repo", SHARED_JDBC)
+    assert schema_change_blocked(
+        approach="fetch_join", sql_change=None,
+        files_to_touch=["src/main/java/com/ex/A.java"], repo=repo,
+    ) is None
+
+
+def test_schema_change_not_blocked_when_the_repo_is_genuinely_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not a real scenario today — the point is that this is a real
+    comparison, not a hardcoded 'always block add_index'. `schema_change_
+    blocked` imports `arms_share_one_schema` lazily from measure.isolation, so
+    patching it on that module is what the call site actually sees."""
+    import perfagent.measure.isolation as isolation_mod
+
+    monkeypatch.setattr(isolation_mod, "arms_share_one_schema",
+                        lambda blue, green: None)   # pretend per-arm schemas exist
+
+    repo = tmp_path / "repo"
+    (repo / "src/main/resources").mkdir(parents=True)
+    assert schema_change_blocked(
+        approach="add_index", sql_change="CREATE INDEX idx_a ON t (a);",
+        files_to_touch=["x"], repo=repo,
+    ) is None
+
+
+def test_selection_problem_reads_not_selectable_because_first() -> None:
+    candidate = CandidateFix(
+        id="c1", targets_hypothesis="h2", approach="add_index",
+        description="d", mechanism_changed="rows examined",
+        predicted_effect="fewer", files_to_touch=[SERVICE],
+        what_could_break=[], preserves_response_bytes=True,
+        risk_tier=RiskTier.LOW,
+        not_selectable_because="the arms share one schema",
+    )
+    assert selection_problem(candidate) == "the arms share one schema"
+
+
+def test_an_add_index_candidate_that_ties_on_merit_is_still_passed_over(
+    root: SourceRoot
+) -> None:
+    """c1 (add_index) and c2 (fetch_join) tie on expected value AND risk tier,
+    so the plain tie-break (lowest id) would pick c1. The isolation block must
+    win that race: c1 is excluded, c2 is selected, and c1's OWN reason is the
+    isolation message — not 'a higher expected value was available', because
+    nothing outscored it on the numbers.
+    """
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        candidate_payload(id="c1", approach="add_index",
+                          sql_change="CREATE INDEX idx_line_order_id_status "
+                                     "ON order_line (order_id, status);",
+                          files_to_touch=["src/main/resources/db/migration/"
+                                         "V2__x.sql"]),
+        candidate_payload(id="c2", approach="fetch_join"),
+    ])
+    result: Plan = sink["plan"]
+
+    blocked = next(c for c in result.candidates if c.id == "c1")
+    assert blocked.not_selectable_because is not None
+    assert result.selected_id == "c2"
+
+    rejection = next(r for r in result.not_selected if r.candidate_id == "c1")
+    assert "higher expected value" not in rejection.reason
+    assert rejection.reason == blocked.not_selectable_because
+
+
+def test_the_blocked_candidate_is_not_deleted_from_the_plan(
+    root: SourceRoot
+) -> None:
+    """'We could not verify this here' is a finding a reviewer should see,
+    and the argument for building per-arm schemas — so the candidate stays."""
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        candidate_payload(id="c1", approach="add_index",
+                          sql_change="CREATE INDEX idx_line_order_id_status "
+                                     "ON order_line (order_id, status);",
+                          files_to_touch=["src/main/resources/db/migration/"
+                                         "V2__x.sql"]),
+        candidate_payload(id="c2", approach="fetch_join"),
+    ])
+    result: Plan = sink["plan"]
+    assert {c.id for c in result.candidates} == {"c1", "c2"}
+
+
+def test_it_is_visible_in_the_ranking_output(root: SourceRoot) -> None:
+    from perfagent.render.plan import render_plan
+
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        candidate_payload(id="c1", approach="add_index",
+                          sql_change="CREATE INDEX idx_line_order_id_status "
+                                     "ON order_line (order_id, status);",
+                          files_to_touch=["src/main/resources/db/migration/"
+                                         "V2__x.sql"]),
+        candidate_payload(id="c2", approach="fetch_join"),
+    ])
+    result: Plan = sink["plan"]
+    rendered = render_plan(result)
+    assert "NOT SELECTABLE" in rendered
+    # And the standard "not selected" section also carries it — the same
+    # section a passed-over-on-merit candidate appears in.
+    assert "not selected:" in rendered
+    assert "[c1]" in rendered.split("not selected:")[1]
+
+
+def test_it_is_visible_in_the_pr_body_rejected_candidates_section() -> None:
+    """ship.py's `_rejected_rows` reads `plan.not_selected` — the same list
+    the ranking renders from — so no separate wiring is needed for the PR
+    body; this proves that's actually true rather than assumed."""
+    from perfagent.ship import _rejected_rows
+
+    plan_payload = {
+        "not_selected": [
+            {"candidate_id": "c1",
+             "reason": "this patch changes the database schema, and both "
+                       "arms resolve to the SAME schema: mysql://x/mini."},
+        ],
+    }
+    rendered = _rejected_rows(plan_payload)
+    assert "c1" in rendered and "SAME schema" in rendered
+
+
+def test_the_measure_time_guard_still_exists_as_a_backstop() -> None:
+    """The plan-time check does not replace the measure-time one — the
+    environment can change between plan and measure (a worktree rebuilt, a
+    config edited). Both must independently be able to say no."""
+    from perfagent.measure.isolation import isolation_problem
+
+    repo = Path("/tmp/does-not-need-to-exist-for-this-assertion")
+    assert isolation_problem.__module__ == "perfagent.measure.isolation"

@@ -110,18 +110,17 @@ def touches_schema(*, approach: str = "", diff: str = "",
     return any(MIGRATION_MARK in f for f in (files_changed or []))
 
 
-def isolation_problem(blue: Path, green: Path, *, approach: str = "",
-                      diff: str = "",
-                      files_changed: list[str] | None = None) -> str | None:
-    """Why this patch cannot be A/B measured here, or None.
+def arms_share_one_schema(blue: Path, green: Path) -> str | None:
+    """Would these two arms' resolved datasources collide, or None.
 
-    Returns None for every patch that does not touch the schema — which is
-    most of them — so the common path is unaffected.
+    Pure comparison, no opinion on whether the candidate under test even
+    touches the schema — that is `touches_schema`'s job, deliberately kept
+    separate. The split exists because a caller at PLAN TIME has no `diff` or
+    `green` worktree yet (nothing has been written) and needs to ask "if this
+    ran today, would it be measurable" without a patch to point at; a caller
+    at MEASURE TIME has a real diff and a real green checkout. Both go through
+    this one comparison so "are the arms isolated" has one definition.
     """
-    if not touches_schema(approach=approach, diff=diff,
-                          files_changed=files_changed):
-        return None
-
     blue_source = resolve_datasource(blue)
     green_source = resolve_datasource(green)
     if blue_source.identity != green_source.identity:
@@ -148,3 +147,20 @@ def isolation_problem(blue: Path, green: Path, *, approach: str = "",
         f"find out. Give each arm its own schema and run again; "
         f"docs/schema-changes.md says what that requires."
     )
+
+
+def isolation_problem(blue: Path, green: Path, *, approach: str = "",
+                      diff: str = "",
+                      files_changed: list[str] | None = None) -> str | None:
+    """Why this patch cannot be A/B measured here, or None.
+
+    Returns None for every patch that does not touch the schema — which is
+    most of them — so the common path is unaffected. The MEASURE-time entry
+    point: called with a real diff and a real green worktree, right before
+    firing the A/B. `perfagent/plan/risk.py` calls `arms_share_one_schema`
+    directly at SELECTION time, earlier, before either exists.
+    """
+    if not touches_schema(approach=approach, diff=diff,
+                          files_changed=files_changed):
+        return None
+    return arms_share_one_schema(blue, green)
