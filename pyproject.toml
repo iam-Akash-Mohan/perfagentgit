@@ -36,8 +36,10 @@ perfagent = "perfagent.cli:app"
 [tool.setuptools.packages.find]
 include = ["perfagent*"]
 
-[tool.setuptools.package-data]
-"perfagent.measure" = ["*.json"]
+# No package-data. The glob here existed to ship
+# `perfagent/measure/corpus.json` -- 12 hand-written requests against one
+# endpoint of one repo, used as the DEFAULT corpus for every run. A corpus
+# is per-run evidence and now lives in the run directory.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

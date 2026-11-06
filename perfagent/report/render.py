@@ -35,6 +35,14 @@ _BARE_NUMERAL = re.compile(r"(?<![A-Za-z0-9_.])\d")
 
 _SLOT = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
+# The one ledger key with a mandatory source: `terminal_state` may only be
+# backed by the GateDecision that computed it. Backing it with any other
+# artifact (the perf report, say — a document the gate decision is DERIVED
+# from, not the other way around) is how a report ends up stating a terminal
+# state its own citation never produced.
+_TERMINAL_STATE_KEY = "terminal_state"
+_TERMINAL_STATE_ARTIFACT_KIND = "gate_decision"
+
 
 @dataclass(frozen=True)
 class Backed:
@@ -58,6 +66,15 @@ class EvidenceLedger:
 
     def record(self, key: str, value: Any, ref: ArtifactRef) -> Backed:
         """Register a value together with the artifact that produced it."""
+        if key == _TERMINAL_STATE_KEY and ref.kind != _TERMINAL_STATE_ARTIFACT_KIND:
+            raise ContractViolation(
+                f"'{_TERMINAL_STATE_KEY}' must be backed by the "
+                f"'{_TERMINAL_STATE_ARTIFACT_KIND}' artifact — the GateDecision "
+                f"that actually determined it — not '{ref.kind}'. Citing a "
+                "different artifact here is exactly the bug that let a "
+                "rendered report show a terminal state the cited artifact "
+                "never produced."
+            )
         if self._verify_refs:
             self._assert_ref_resolves(key, ref)
         backed = Backed(value=value, ref=ref)

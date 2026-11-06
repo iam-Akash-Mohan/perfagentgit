@@ -423,7 +423,7 @@ def test_an_accepted_diagnosis_survives_a_later_loop_crash(
     monkeypatch.setattr(agent_mod, "run_agent", fake_run_agent)
     monkeypatch.setattr(agent_mod, "make_run_probe", _recording_probe_factory)
     monkeypatch.setattr(agent_mod, "_require_api_key", lambda: "test-key")
-    monkeypatch.setattr(agent_mod, "GroqClient", lambda api_key: object())
+    monkeypatch.setattr(agent_mod, "make_client", lambda *a, **k: object())
 
     hset, _log, path = agent_mod.run_diagnosis(
         base_url="http://app", run_dir=run, endpoint_model_path=model_path,
@@ -454,7 +454,7 @@ def test_a_crash_before_any_acceptance_is_reported_not_swallowed(
     monkeypatch.setattr(agent_mod, "run_agent", fake_run_agent)
     monkeypatch.setattr(agent_mod, "make_run_probe", _recording_probe_factory)
     monkeypatch.setattr(agent_mod, "_require_api_key", lambda: "test-key")
-    monkeypatch.setattr(agent_mod, "GroqClient", lambda api_key: object())
+    monkeypatch.setattr(agent_mod, "make_client", lambda *a, **k: object())
 
     with pytest.raises(ContractViolation, match="KeyError"):
         agent_mod.run_diagnosis(

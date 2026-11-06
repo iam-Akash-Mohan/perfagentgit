@@ -219,13 +219,24 @@ def _trim(text: str) -> str:
 
 
 def _default_client():
-    from ..llm import GroqClient
+    """The configured client, via the one resolution path every phase uses.
 
-    from dotenv import load_dotenv
+    This used to build `GroqClient` directly, which despite its name posts to
+    Cerebras, and to prefer CEREBRAS_API_KEY over GROQ_API_KEY. That made it
+    the last place in the package that could route a run to a provider
+    `perfagent.yml` never named -- and once the dead Cerebras key was removed
+    it would have handed a Groq key to Cerebras and collected a 401. Going
+    through `make_client` means the provider, model, cassette dir and offline
+    flag are whatever the configuration says, for this call as for every
+    other.
+    """
+    from ..errors import PerfAgentError
+    from ..llm import make_client
 
-    load_dotenv()
-    for name in ("CEREBRAS_API_KEY", "GROQ_API_KEY"):
-        key = os.environ.get(name)
-        if key:
-            return GroqClient(api_key=key)
-    raise ContractViolation("neither CEREBRAS_API_KEY nor GROQ_API_KEY is set")
+    try:
+        return make_client()
+    except PerfAgentError as exc:
+        # resolve_key already names every variable that would have worked;
+        # re-raising as ContractViolation keeps write_narrative's existing
+        # fallback-to-deterministic-prose path intact.
+        raise ContractViolation(str(exc)) from exc

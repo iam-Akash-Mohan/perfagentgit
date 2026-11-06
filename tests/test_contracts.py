@@ -69,14 +69,20 @@ def test_corpus_held_back_defaults_empty_but_present():
 
 
 def test_every_terminal_state_is_distinct_and_named():
-    """Nine now. MEASUREMENT_NOT_ISOLATED was added because "we could not
+    """Ten now. MEASUREMENT_NOT_ISOLATED was added because "we could not
     measure this" and "this did not help" are different facts, and a run that
     reported the second when the first was true would be lying with a
-    straight face."""
-    assert len(TerminalState) == 9
+    straight face. READY_TO_SHIP was added because "all gates passed" and
+    "all gates passed and it shipped" are also different facts -- a report
+    rendered before a dry run's fate was decided had been defaulting to
+    BOTTLENECK_NOT_FIXABLE, which is a passing run lying in the other
+    direction."""
+    assert len(TerminalState) == 10
     assert TerminalState.NO_BOTTLENECK_FOUND in TerminalState
     assert TerminalState.MEASUREMENT_NOT_ISOLATED is not \
            TerminalState.NO_SIGNIFICANT_IMPROVEMENT
+    assert TerminalState.READY_TO_SHIP is not TerminalState.PR_OPENED
+    assert TerminalState.READY_TO_SHIP is not TerminalState.BOTTLENECK_NOT_FIXABLE
     assert len({s.value for s in TerminalState}) == len(TerminalState)
 
 

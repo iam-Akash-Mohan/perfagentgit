@@ -28,14 +28,26 @@ PROVIDER_KEY_ENV: dict[str, tuple[str, ...] | None] = {
     "ollama": None,          # a local server; no key
 }
 
-DEFAULT_PROVIDER = "cerebras"
-DEFAULT_MODEL = "gpt-oss-120b"
+# Groq, not Cerebras. The Cerebras key was removed from .env after it was
+# confirmed dead (HTTP 401 "Wrong API Key"), and a default naming a provider
+# with no usable credential turns every unconfigured run into a 401 that
+# reads like a code bug. Groq is the one provider this project has a working
+# key for; `--provider` still reaches the others for anyone who has theirs.
+DEFAULT_PROVIDER = "groq"
+DEFAULT_MODEL = "openai/gpt-oss-120b"
 
-# A model id belongs to ONE provider. `DEFAULT_MODEL` is a Cerebras model, so
-# `--provider gemini` with no `--model` would otherwise send "gpt-oss-120b" to
-# Google and get a 404 that reads like a configuration bug. Only providers
-# whose default differs from the global one appear here; everything else keeps
-# the resolution order exactly as it was.
+# A model id belongs to ONE provider. `DEFAULT_MODEL` is a Groq model id, so
+# `--provider gemini` with no `--model` would otherwise send
+# "openai/gpt-oss-120b" to Google and get a 404 that reads like a
+# configuration bug. Only providers whose default differs from the global one
+# appear here; everything else keeps the resolution order exactly as it was.
+#
+# Cerebras is deliberately NOT listed, even though it spells this same model
+# without the "openai/" prefix. An entry here OVERRIDES an explicitly
+# configured `PERFAGENT_LLM_MODEL` (that is what it is for), so adding one
+# would silently discard a model the operator actually asked for. A cerebras
+# run with no key now fails in `resolve_key` with a message naming the
+# variable, which is the honest outcome.
 PROVIDER_DEFAULT_MODEL: dict[str, str] = {
     "gemini": "gemini-2.5-flash",
 }

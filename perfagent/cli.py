@@ -25,7 +25,7 @@ app.command(name="plan")(plan_command)
 
 @app.command()
 def diagnose(
-    url: str = typer.Option("http://localhost:18080", "--url",
+    url: str | None = typer.Option(None, "--url",
                             help="Base URL of the running app (probes hit this)."),
     run_dir: Path | None = typer.Option(
         None, "--run-dir", help="Run directory holding baseline.json. Defaults to latest."),
@@ -175,8 +175,8 @@ def verify(
         None, "--run-dir", help="Run directory. Defaults to the latest with a patch."),
     repo: Path | None = typer.Option(
         None, "--repo", help="Target repo. Env: PERFAGENT_TARGET_REPO."),
-    blue_port: int = typer.Option(18080, "--blue-port", help="Port for the blue arm."),
-    green_port: int = typer.Option(8081, "--green-port", help="Port for the green arm."),
+    blue_port: int | None = typer.Option(None, "--blue-port", help="Port for the blue arm. Default: a free port chosen at runtime."),
+    green_port: int | None = typer.Option(None, "--green-port", help="Port for the green arm. Default: a free port chosen at runtime."),
     oracle_path: Path = typer.Option(
         Path(".perfagent/oracle.json"), "--oracle", help="The frozen bundle."),
     corpus: Path | None = typer.Option(None, "--corpus", help="Request corpus JSON."),
@@ -236,8 +236,8 @@ def measure(
         None, "--run-dir", help="Run directory. Defaults to the latest with a patch."),
     repo: Path | None = typer.Option(
         None, "--repo", help="Target repo. Env: PERFAGENT_TARGET_REPO."),
-    blue_port: int = typer.Option(18080, "--blue-port", help="Port for the blue arm."),
-    green_port: int = typer.Option(8081, "--green-port", help="Port for the green arm."),
+    blue_port: int | None = typer.Option(None, "--blue-port", help="Port for the blue arm. Default: a free port chosen at runtime."),
+    green_port: int | None = typer.Option(None, "--green-port", help="Port for the green arm. Default: a free port chosen at runtime."),
     warmup: int = typer.Option(10, "--warmup", help="Discarded warmup rounds."),
     iterations: int = typer.Option(10, "--iterations", "-n", help="Measured rounds."),
     corpus: Path | None = typer.Option(None, "--corpus", help="Request corpus JSON."),
@@ -414,7 +414,7 @@ def _render_verdict(
 
 @oracle_app.command("record")
 def oracle_record(
-    url: str = typer.Option("http://localhost:18080", "--url",
+    url: str | None = typer.Option(None, "--url",
                             help="Base URL of the running, UNMODIFIED app."),
     corpus: Path | None = typer.Option(
         None, "--corpus", help="Request corpus JSON. Defaults to the shipped corpus."),
@@ -438,8 +438,10 @@ def oracle_record(
     try:
         request_corpus = load_corpus(corpus)
         policy = load_policy(tolerance)
+        from .measure.sql import require_base_url
+
         bundle = record_oracle(
-            url,
+            require_base_url(url),
             request_corpus,
             policy=policy,
             repo_path=repo,
@@ -488,7 +490,7 @@ def oracle_record(
 
 @oracle_app.command("check")
 def oracle_check(
-    url: str = typer.Option("http://localhost:18080", "--url",
+    url: str | None = typer.Option(None, "--url",
                             help="Base URL of the app under test."),
     corpus: Path | None = typer.Option(
         None, "--corpus", help="Request corpus JSON. Must be the recorded one."),
@@ -535,8 +537,10 @@ def oracle_check(
                     fg=typer.colors.YELLOW,
                 )
 
+        from .measure.sql import require_base_url
+
         live = replay_live(
-            url, request_corpus, capture_db=not no_db, timeout_s=timeout
+            require_base_url(url), request_corpus, capture_db=not no_db, timeout_s=timeout
         )
         verdict = compare(oracle, live, request_corpus)
     except NotImplementedError as exc:
@@ -634,8 +638,8 @@ def run(
     max_usd: float = typer.Option(5.0, "--max-usd", help="Run-level spend ceiling."),
     max_wall: float = typer.Option(
         3600.0, "--max-wall", help="Run-level wall-clock ceiling (seconds)."),
-    blue_port: int = typer.Option(18080, "--blue-port", help="Port for blue."),
-    green_port: int = typer.Option(8081, "--green-port", help="Port for green."),
+    blue_port: int | None = typer.Option(None, "--blue-port", help="Port for blue. Default: a free port chosen at runtime."),
+    green_port: int | None = typer.Option(None, "--green-port", help="Port for green. Default: a free port chosen at runtime."),
     java_home: str | None = typer.Option(None, "--java-home", help="JDK for maven."),
     baseline_iterations: int = typer.Option(
         100, "--baseline-iterations", help="Measured baseline requests."),

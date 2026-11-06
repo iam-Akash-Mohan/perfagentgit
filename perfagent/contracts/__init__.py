@@ -85,6 +85,12 @@ class TolerancePolicy(BaseModel):
 
 
 class BehaviourOracle(BaseModel):
+    # Which endpoint this recording is OF. The oracle used to carry only a
+    # corpus_hash, so the only link back to an endpoint ran through a corpus
+    # file you had to still possess; a stale global oracle for another route
+    # therefore validated cleanly and the mismatch surfaced much later, as a
+    # hash error, if at all.
+    endpoint: str = ""
     corpus_hash: str
     recorded: list[RecordedResponse]
     policy: TolerancePolicy
@@ -334,6 +340,11 @@ class GateDecision(BaseModel):
 
 class TerminalState(str, Enum):
     PR_OPENED = "PR_OPENED"
+    # All six gates passed and nothing has been pushed yet -- the state a
+    # dry run, or any passing decision not yet shipped, actually reached.
+    # Distinct from PR_OPENED (which requires shipped=True) and from
+    # BOTTLENECK_NOT_FIXABLE (which means a gate FAILED).
+    READY_TO_SHIP = "READY_TO_SHIP"
     NO_BOTTLENECK_FOUND = "NO_BOTTLENECK_FOUND"
     BOTTLENECK_NOT_FIXABLE = "BOTTLENECK_NOT_FIXABLE"
     BEHAVIOUR_NOT_PRESERVED = "BEHAVIOUR_NOT_PRESERVED"

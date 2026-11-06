@@ -76,8 +76,8 @@ READ_FILE_PARAMETERS: dict[str, Any] = {
     "properties": {
         "path": {
             "type": "string",
-            "description": "Path relative to the repository root, e.g. "
-                           "src/main/java/com/ex/web/CustomerController.java",
+            "description": "Path relative to the repository root, using the "
+                           "repository's own source layout.",
         },
         "start_line": {
             "type": "integer",

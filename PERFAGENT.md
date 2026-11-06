@@ -70,6 +70,22 @@ perfagent run --repo ./crm-service --endpoint "POST /api/customers/search"
 
 Everything else — the execution path, the data volume needed, the workload, the bottleneck, the fix — is derived by the system.
 
+### 2.1a Supported stack
+
+**PerfAgent supports JVM web services on MySQL.** This is a real and deliberate limit, not an oversight, and it is **detected at onboarding** rather than discovered as a crash at baseline.
+
+| Dimension | Supported | Detected from |
+|---|---|---|
+| Build tool | Maven, Gradle (wrapper preferred over the binary on PATH) | `pom.xml`, `build.gradle[.kts]`, `mvnw`, `gradlew` |
+| Entrypoint | Spring Boot (`@SpringBootApplication` + `main`) | the annotation, not the filename |
+| Source layout | `src/main/{java,kotlin,scala}`, `app/src/main/java` | the directory that exists on disk |
+| Database | **MySQL / MariaDB only** | the `jdbc:` URL in the repo's own `application*.yml`/`.properties` |
+| Migrations | Flyway (Liquibase detected, not yet applied) | the build file *and* a migration directory |
+
+The database limit is the load-bearing one. `measure/sql.py` attributes latency to individual statements by reading MySQL's `performance_schema` digest tables; there is no portable equivalent, so a Postgres or H2 datasource is **detected and refused at phase P-1** with that sentence, before a single token is spent. Everything the onboarding phase concludes is written to a `RepoProfile` artifact in which **every field cites the file it was read from** — see `perfagent/onboard.py` and `tests/test_onboard.py`, which assert what each detector refuses.
+
+A repository that cannot be onboarded fails with `ENVIRONMENT_INFEASIBLE` naming the question it could not answer, where it looked, and what the operator should do.
+
 ### 2.2 Output
 
 One of a small set of **honest terminal states**, each with a full report and trace:
@@ -77,15 +93,17 @@ One of a small set of **honest terminal states**, each with a full report and tr
 | Terminal state | Meaning | Artefact |
 |---|---|---|
 | `PR_OPENED` | Verified, measured optimization shipped | PR + report + trace |
+| `READY_TO_SHIP` | All six gates passed; nothing has been pushed yet (a dry run, or any passing decision before `open_pull_request` runs) | Report + trace |
 | `NO_BOTTLENECK_FOUND` | Endpoint is already efficient | Report explaining why |
 | `BOTTLENECK_NOT_FIXABLE` | Real bottleneck found, but no safe fix within risk budget | Diagnosis report — still valuable |
 | `BEHAVIOUR_NOT_PRESERVED` | Patch worked but changed behaviour; rejected | Report + the diff that failed |
 | `NO_SIGNIFICANT_IMPROVEMENT` | Patch was correct but didn't help | Report + measurements |
+| `MEASUREMENT_NOT_ISOLATED` | A schema-changing candidate can't be A/B measured because both arms share one database | Report + the isolation reason |
 | `ENVIRONMENT_INFEASIBLE` | Cannot build/run/measure this repo | Blocker list |
 | `BUDGET_EXHAUSTED` | Ran out of steps/tokens/time | Partial findings |
 | `INTERNAL_ERROR` | Bug in the harness | Trace |
 
-**Only one of eight outcomes is a PR.** This is a core product decision, not a limitation. A system that always produces a patch is a system nobody can trust. `NO_BOTTLENECK_FOUND` is a correct, valuable answer.
+**Only one of ten outcomes is a PR.** This is a core product decision, not a limitation. A system that always produces a patch is a system nobody can trust. `NO_BOTTLENECK_FOUND` is a correct, valuable answer.
 
 ### 2.3 Console output of a successful run
 
@@ -1176,7 +1194,7 @@ This project doubles as a structured path into AI engineering. The concept each 
 | No framework, no vector DB in v1 | Exact structure beats embeddings here; hand-rolling is the lesson |
 | Repo profile inferred by AI, verified by execution | Only way to be repo-agnostic without hardcoding or guessing |
 | Build the stack-pack seam, one implementation behind it | Seam costs an afternoon; premature generality costs the project |
-| Eight terminal states, one of which is a PR | Honest failure is a feature; always-produces-a-patch is untrustworthy |
+| Ten terminal states, one of which is a PR | Honest failure is a feature; always-produces-a-patch is untrustworthy |
 
 ---
 

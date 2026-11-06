@@ -24,19 +24,24 @@ from typing import Iterator
 
 import httpx
 
+from ..contracts.repo import RepoProfile
 from ..errors import ContractViolation, ToolError
 from ..patch.worktree import GreenWorktree, build_env, target_repo
 
 BLUE_DIR = Path(".perfagent/blue")
 GREEN_DIR = Path(".perfagent/green")
 
-# mini-spring's perfagent profile pins ${SERVER_PORT:18080}; 8080 on this
-# machine is a different application entirely and answers 401.
-BLUE_PORT = 18080
-GREEN_PORT = 8081
-
-SPRING_PROFILE = "perfagent"
-MAIN_CLASS = "com.ex.Application"
+# Ports, the run profile and the main class all used to be module constants
+# here: two port numbers lifted from one repo's `application-perfagent.yml`,
+# that repo's profile name, and that repo's entrypoint. None of them had ANY
+# override path -- not a keyword argument, not an environment variable, not a
+# CLI flag -- which made them the hardest blocker to running against a second
+# repository.
+#
+# They now come from the RepoProfile that the onboard phase detects
+# (`profile.run_profile`, `profile.entrypoint`) and from provisioning, which
+# picks a free port pair at runtime rather than hoping two fixed numbers are
+# available. `free_port_pair()` below is that chooser.
 
 # Identical on both arms, and that is the whole point.
 #   -Xms == -Xmx        : no arm pays for heap growth the other avoided
@@ -142,34 +147,65 @@ def classpath_file(path: Path, classpath_dir: Path = CLASSPATH_DIR) -> Path:
     return (Path(classpath_dir) / f"{Path(path).name}-classpath.txt").resolve()
 
 
+def free_port_pair() -> tuple[int, int]:
+    """Two ports the kernel says are free, right now.
+
+    Replaces a pair of literals (18080/8081) lifted from one repo's config.
+    Both sockets are held open until both ports have been chosen, so the
+    kernel cannot hand out the same port twice; there is still a race against
+    any OTHER process between close and bind, which is why the arms report a
+    bind failure rather than this function promising more than it can.
+    """
+    import socket
+
+    first = socket.socket()
+    second = socket.socket()
+    try:
+        first.bind(("127.0.0.1", 0))
+        second.bind(("127.0.0.1", 0))
+        return first.getsockname()[1], second.getsockname()[1]
+    finally:
+        first.close()
+        second.close()
+
+
 def build_arm(
-    path: Path, *, java_home: str | None = None, classpath_dir: Path = CLASSPATH_DIR
+    path: Path, *, java_home: str | None = None,
+    classpath_dir: Path = CLASSPATH_DIR,
+    profile: RepoProfile | None = None,
 ) -> None:
     """Compile, then materialise the runtime classpath.
 
-    `mvn` reads JAVA_HOME rather than PATH, which is why this goes through
-    build_env: without it the compiler reports "release version 21 not
-    supported" on a machine whose default java is 11, and the failure looks
-    like a source problem.
+    The build tool reads JAVA_HOME rather than PATH, which is why this goes
+    through build_env: without it the compiler reports "release version 21
+    not supported" on a machine whose default java is 11, and the failure
+    looks like a source problem.
+
+    The invocation comes from the profile — `./mvnw`, `mvn`, `./gradlew` —
+    rather than a hardcoded `["mvn", ...]`. A Gradle repo used to fail here
+    with "mvn is not on PATH", which says nothing about the real problem.
     """
+    if profile is None:
+        raise ContractViolation(
+            "build_arm needs a RepoProfile: which build tool builds this "
+            "repository is a property of the repository. Run the onboard "
+            "phase, or pass profile=."
+        )
     env = build_env(java_home)
     out = classpath_file(path, classpath_dir)
     out.parent.mkdir(parents=True, exist_ok=True)
-    for args, label in (
-        (["-q", "-DskipTests", "package"], "build"),
-        (
-            [
-                "-q",
-                "dependency:build-classpath",
-                f"-Dmdep.outputFile={out}",
-                "-DincludeScope=runtime",
-            ],
-            "classpath",
-        ),
-    ):
+
+    steps: list[tuple[list[str], str]] = [
+        (list(profile.build.build_args), "build")]
+    if profile.build.classpath_args:
+        steps.append((
+            [*profile.build.classpath_args, f"-Dmdep.outputFile={out}"],
+            "classpath"))
+
+    for args, label in steps:
         completed = subprocess.run(
-            ["mvn", *args], cwd=str(path), capture_output=True, text=True,
-            env=env, timeout=BUILD_TIMEOUT_S,
+            [*profile.build.invocation, *args], cwd=str(path),
+            capture_output=True, text=True, env=env, timeout=BUILD_TIMEOUT_S,
         )
         if completed.returncode != 0:
             output = (completed.stdout or "") + (completed.stderr or "")
@@ -215,27 +251,39 @@ def assert_build_current(path: Path) -> None:
 def arm_argv(
     path: Path, port: int, *, java_home: str | None = None,
     classpath_dir: Path = CLASSPATH_DIR,
+    profile: RepoProfile | None = None,
 ) -> list[str]:
-    """One template, both arms. Only -Dserver.port and the classpath root differ."""
+    """One template, both arms. Only -Dserver.port and the classpath root differ.
+
+    `profile` supplies the entrypoint, the run profile and the classes and
+    resource directories. It is keyword-optional only so that callers which
+    already hold a worktree can be migrated one at a time; passing None
+    raises rather than falling back to one repo's main class, because a
+    launch command that names the wrong entrypoint fails in a way that reads
+    like a classpath problem.
+    """
+    if profile is None:
+        raise ContractViolation(
+            "arm_argv needs a RepoProfile: the entrypoint, the run profile "
+            "and the classes directory are properties of the repository "
+            "under test, not constants of this harness. Run the onboard "
+            "phase, or pass profile=."
+        )
     cp_file = classpath_file(path, classpath_dir)
     if not cp_file.exists():
         raise ContractViolation(
             f"{cp_file} is missing — build_arm() has not run for {path}"
         )
     dependencies = cp_file.read_text(encoding="utf-8").strip()
-    classpath = ":".join(
-        [str(path / "target" / "classes"), str(path / "src" / "main" / "resources"),
-         dependencies]
-    )
+    roots = [str(path / profile.build.classes_dir)]
+    roots += [str(path / r) for r in profile.layout.resource_roots]
+    classpath = ":".join([*roots, dependencies])
     java = str(Path(build_env(java_home)["JAVA_HOME"]) / "bin" / "java")
-    return [
-        java,
-        *JVM_FLAGS,
-        "-cp", classpath,
-        f"-Dserver.port={port}",
-        f"-Dspring.profiles.active={SPRING_PROFILE}",
-        MAIN_CLASS,
-    ]
+    argv = [java, *JVM_FLAGS, "-cp", classpath, f"-Dserver.port={port}"]
+    if profile.run_profile:
+        argv.append(f"-Dspring.profiles.active={profile.run_profile}")
+    argv.append(profile.entrypoint)
+    return argv
 
 
 def assert_flags_identical(blue: Arm, green: Arm) -> None:
@@ -338,10 +386,11 @@ def single_arm(
     which: str = "blue",
     repo: str | Path | None = None,
     path: str | Path | None = None,
-    port: int = BLUE_PORT,
+    port: int | None = None,
     java_home: str | None = None,
     log_dir: Path = Path(".perfagent/arms"),
     build: bool = True,
+    profile: RepoProfile | None = None,
 ) -> Iterator[Arm]:
     """Run ONE arm — what the oracle, baseline and diagnosis phases need.
 
@@ -351,6 +400,11 @@ def single_arm(
     made against a process started the same way; a different launcher would put
     a JVM difference inside the before/after comparison.
     """
+    # No default port. 18080 was one repo's `application-perfagent.yml`
+    # leaking into the harness; on a machine where something else holds it
+    # the arm answered 401 and the run measured a stranger's service.
+    if port is None:
+        port, _ = free_port_pair()
     if not port_is_free(port):
         raise ContractViolation(
             f"port {port} is already in use, so the {which} arm cannot start "
@@ -365,12 +419,13 @@ def single_arm(
         worktree = existing_worktree(GREEN_DIR, repo=repo)
 
     if build:
-        build_arm(worktree.path, java_home=java_home)
+        build_arm(worktree.path, java_home=java_home, profile=profile)
     else:
         assert_build_current(worktree.path)
 
     arm = Arm(which, worktree.path, port,
-              arm_argv(worktree.path, port, java_home=java_home))
+              arm_argv(worktree.path, port, java_home=java_home,
+                       profile=profile))
     try:
         start_arm(arm, log_dir)
         await_health(arm)
@@ -386,13 +441,18 @@ def both_arms(
     repo: str | Path | None = None,
     blue_dir: str | Path = BLUE_DIR,
     green_dir: str | Path = GREEN_DIR,
-    blue_port: int = BLUE_PORT,
-    green_port: int = GREEN_PORT,
+    blue_port: int | None = None,
+    green_port: int | None = None,
     java_home: str | None = None,
     log_dir: Path = Path(".perfagent/arms"),
     build: bool = True,
+    profile: RepoProfile | None = None,
 ) -> Iterator[ArmPair]:
     """Build and run both arms simultaneously; shut both down on the way out."""
+    if blue_port is None or green_port is None:
+        chosen_blue, chosen_green = free_port_pair()
+        blue_port = blue_port if blue_port is not None else chosen_blue
+        green_port = green_port if green_port is not None else chosen_green
     for name, port in (("blue", blue_port), ("green", green_port)):
         if not port_is_free(port):
             raise ContractViolation(
@@ -405,17 +465,19 @@ def both_arms(
     blue_worktree = prepare_blue_worktree(run_id, repo=repo, blue=blue_dir)
 
     if build:
-        build_arm(blue_worktree.path, java_home=java_home)
-        build_arm(green_worktree.path, java_home=java_home)
+        build_arm(blue_worktree.path, java_home=java_home, profile=profile)
+        build_arm(green_worktree.path, java_home=java_home, profile=profile)
     else:
         # Skipping the build is allowed, serving stale bytecode is not.
         assert_build_current(blue_worktree.path)
         assert_build_current(green_worktree.path)
 
     blue = Arm("blue", blue_worktree.path, blue_port,
-               arm_argv(blue_worktree.path, blue_port, java_home=java_home))
+               arm_argv(blue_worktree.path, blue_port, java_home=java_home,
+                        profile=profile))
     green = Arm("green", green_worktree.path, green_port,
-                arm_argv(green_worktree.path, green_port, java_home=java_home))
+                arm_argv(green_worktree.path, green_port, java_home=java_home,
+                         profile=profile))
     assert_flags_identical(blue, green)
 
     pair = ArmPair(blue=blue, green=green)

@@ -168,8 +168,39 @@ def run_gate(run_dir: Path) -> dict[str, Any]:
 # ──────────────────────────────  the report  ─────────────────────────────
 
 
-def build_ledger(gated: dict[str, Any]) -> tuple[EvidenceLedger, dict[str, Backed]]:
-    """Put every quantity on the ledger, each with the artifact behind it."""
+def _gate_decision_ref(gated: dict[str, Any]) -> ArtifactRef:
+    """Write the GateDecision itself to the artifact store and ref it.
+
+    `evaluate_gates` PRODUCES the decision; nothing upstream of it (the perf
+    report, the patch, ...) did. `terminal_state` and the pass/fail of each
+    gate are facts about THIS decision, so they need to be backed by it, not
+    by whichever input artifact happened to be lying around.
+    """
+    from .ids import content_hash
+
+    run_dir = gated["evidence"]["run_dir"]
+    store = ArtifactStore(run_dir)
+    payload = gated["decision"].model_dump(mode="json")
+    target = store.artifacts_dir / "gate_decision.json"
+    target.write_text(
+        json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    ref = ArtifactRef(kind="gate_decision", hash=content_hash(payload), path=str(target))
+    # Visible in gate.json's own "artifacts" block alongside the inputs.
+    gated["evidence"]["refs"]["gate_decision"] = ref
+    return ref
+
+
+def build_ledger(
+    gated: dict[str, Any], terminal: TerminalState
+) -> tuple[EvidenceLedger, dict[str, Backed]]:
+    """Put every quantity on the ledger, each with the artifact behind it.
+
+    `terminal` is the state THIS run actually reached — computed by the
+    caller, who knows whether this is a dry run or a real push — not
+    recomputed here from a pre-ship default.
+    """
     refs = gated["evidence"]["refs"]
     payloads = gated["evidence"]["payloads"]
     ledger = EvidenceLedger()
@@ -249,7 +280,7 @@ def build_ledger(gated: dict[str, Any]) -> tuple[EvidenceLedger, dict[str, Backe
         f"{r.threshold} | {r.actual} |"
         for r in gated["decision"].results
     )
-    decision_ref = refs["perf_report"]
+    decision_ref = _gate_decision_ref(gated)
     ledger.record("gate_rows", gate_rows, decision_ref)
     ledger.record(
         "gate_summary",
@@ -258,7 +289,7 @@ def build_ledger(gated: dict[str, Any]) -> tuple[EvidenceLedger, dict[str, Backe
              f"{len(gated['decision'].results)} gates failed",
         decision_ref,
     )
-    ledger.record("terminal_state", gated["terminal"].value, decision_ref)
+    ledger.record("terminal_state", terminal.value, decision_ref)
 
     # ── the plan: the ranking, and why each alternative lost ────────────
     plan_ref = refs["plan"]
@@ -378,10 +409,15 @@ def _index_evidence(gated: dict[str, Any], selected: dict[str, Any]) -> str:
 
 
 def write_report(
-    gated: dict[str, Any], *, client: Any = None
+    gated: dict[str, Any], *, terminal: TerminalState, client: Any = None
 ) -> tuple[str, Path, dict[str, Any]]:
-    """Render report.md. One LLM call, for the root-cause paragraph only."""
-    ledger, _ = build_ledger(gated)
+    """Render report.md. One LLM call, for the root-cause paragraph only.
+
+    `terminal` must be the state this run actually reached (the caller
+    computes it, since only the caller knows dry-run vs. a real push) — it is
+    not re-derived here, so the rendered body can never drift from it.
+    """
+    ledger, _ = build_ledger(gated, terminal)
 
     narrative, narrative_trace = write_narrative(
         top_hypothesis(gated["evidence"]["payloads"]["hypotheses"]),
@@ -425,10 +461,62 @@ def _git(path: Path, *args: str, check: bool = True) -> str:
     return result.stdout
 
 
+def _check_worktree_matches_patch(
+    green_path: Path, branch: str, base_commit: str, files_changed: list[str]
+) -> None:
+    """Refuse to ship if the worktree is not what the patch artifact claims.
+
+    The gate verified the PATCH; it never looked at the WORKTREE. Those can
+    drift apart — a stale checkout, a `--green` pointed at the wrong path, a
+    patch artifact left over from a different run — and if they have, pushing
+    whatever happens to be sitting in the worktree under the patch's claimed
+    branch name ships something nobody gated. This is an environment mismatch,
+    not a broken artifact, so it is a ToolError, not a ContractViolation.
+    """
+    actual_branch = _git(green_path, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    if actual_branch != branch:
+        raise ToolError(
+            f"worktree branch mismatch at {green_path}: patch.branch claims "
+            f"'{branch}', but the worktree is actually on '{actual_branch}'. "
+            f"Check out the right branch, or point --green at the right "
+            f"worktree, before shipping."
+        )
+
+    # `git diff` alone misses a brand-new file that was never `git add`ed --
+    # exactly the state a freshly-written migration is in before ship commits
+    # it. Union tracked changes against base with untracked-but-not-ignored
+    # files so a new file the patch added is actually visible to this check.
+    diff_output = _git(green_path, "diff", "--name-only", base_commit)
+    tracked_changed = {line for line in diff_output.splitlines() if line.strip()}
+    untracked_output = _git(green_path, "ls-files", "--others", "--exclude-standard")
+    untracked = {line for line in untracked_output.splitlines() if line.strip()}
+    actual_files = tracked_changed | untracked
+    claimed_files = set(files_changed)
+    if actual_files != claimed_files:
+        missing = sorted(claimed_files - actual_files)
+        extra = sorted(actual_files - claimed_files)
+        problems = []
+        if missing:
+            problems.append(f"claimed by patch.files_changed but not actually "
+                            f"touched: {', '.join(missing)}")
+        if extra:
+            problems.append(f"actually touched but not in patch.files_changed: "
+                            f"{', '.join(extra)}")
+        raise ToolError(
+            f"worktree content mismatch at {green_path}: patch.files_changed "
+            f"claims {sorted(claimed_files)} against base {base_commit}, but "
+            f"the worktree's actual diff touches {sorted(actual_files)}. "
+            + "; ".join(problems) + "."
+        )
+
+
 def open_pull_request(
-    green_path: Path, branch: str, title: str, body: str, *, dry_run: bool = False
+    green_path: Path, branch: str, title: str, body: str, *,
+    base_commit: str, files_changed: list[str], dry_run: bool = False,
 ) -> dict[str, Any]:
     """Commit, push, `gh pr create`. Only reached when the gate passed."""
+    _check_worktree_matches_patch(green_path, branch, base_commit, files_changed)
+
     _git(green_path, "add", "-A")
     status = _git(green_path, "status", "--porcelain")
     if status.strip():
@@ -469,20 +557,31 @@ def run_ship(
     gated = run_gate(run_dir)
     decision: GateDecision = gated["decision"]
 
-    body, report_path, narrative_trace = write_report(gated, client=client)
+    # Computed ONCE, before the report is built, so the rendered body carries
+    # the state this run actually reached: READY_TO_SHIP for a dry run,
+    # PR_OPENED for a real push, the failure state otherwise. `shipped` here
+    # only matters when decision.passed (terminal_state_for ignores it
+    # otherwise) — true exactly when this is not a dry run, since a passing,
+    # non-dry-run decision is shipped by the open_pull_request call below.
+    terminal = terminal_state_for(decision, shipped=not dry_run)
+
+    body, report_path, narrative_trace = write_report(
+        gated, client=client, terminal=terminal
+    )
 
     shipped: dict[str, Any] | None = None
     if decision.passed:
+        base_commit = gated["evidence"]["payloads"]["patch"]["worktree"]["base_commit"]
         shipped = open_pull_request(
             Path(green_path), gated["patch"].branch,
             title=f"perf: {gated['plan'].description[:60]}",
-            body=body, dry_run=dry_run,
+            body=body,
+            base_commit=base_commit,
+            files_changed=gated["patch"].files_changed,
+            dry_run=dry_run,
         )
-        terminal = terminal_state_for(decision, shipped=not dry_run)
-    else:
-        # No PR. The report is still written, with the state the evidence
-        # supports — a refusal nobody records is a refusal that gets repeated.
-        terminal = gated["terminal"]
+    # else: no PR. The report is still written, with the state the evidence
+    # supports — a refusal nobody records is a refusal that gets repeated.
 
     document = {
         "terminal_state": terminal.value,

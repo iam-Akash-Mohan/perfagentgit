@@ -94,6 +94,9 @@ def _assert_under_run_dir(path: Path, run_dir: Path) -> None:
 
 def test_the_phase_order_is_a_constant_and_matches_the_pipeline() -> None:
     assert [s.name for s in PIPELINE] == [
+        # ONBOARD and PROVISION lead: a repository this harness cannot read
+        # or cannot start must fail before a single token is spent.
+        "onboard", "provision",
         "understand", "workload", "oracle", "baseline", "diagnose",
         "plan", "patch", "verify", "measure", "gate", "ship",
     ]
@@ -102,6 +105,7 @@ def test_the_phase_order_is_a_constant_and_matches_the_pipeline() -> None:
     # written, or the patch agent attacks the biggest number rather than the
     # fixable one.
     assert [s.phase for s in PIPELINE] == [
+        Phase.ONBOARD, Phase.PROVISION,
         Phase.COMPREHEND, Phase.WORKLOAD, Phase.ORACLE, Phase.BASELINE,
         Phase.DIAGNOSE, Phase.PLAN, Phase.IMPLEMENT, Phase.VERIFY,
         Phase.MEASURE, Phase.GATE, Phase.SHIP,
@@ -154,7 +158,8 @@ def test_resume_restarts_after_the_last_completed_phase(
         fails={"diagnose": ToolError("provider fell over")},
     )
     state = run_pipeline(run_id="r3", runs_dir=runs)
-    assert first == ["understand", "workload", "oracle", "baseline", "diagnose"]
+    assert first == ["onboard", "provision", "understand", "workload",
+                     "oracle", "baseline", "diagnose"]
     assert state.terminal == TerminalState.INTERNAL_ERROR
     assert Phase.BASELINE in state.completed_phases
     assert Phase.DIAGNOSE not in state.completed_phases

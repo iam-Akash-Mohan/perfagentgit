@@ -410,7 +410,7 @@ def terminal_state_for(
         # Minimality, mechanism, or a forbidden change: the bottleneck may be
         # real and the measurement good, but this patch is not shippable.
         return TerminalState.BOTTLENECK_NOT_FIXABLE
-    return TerminalState.PR_OPENED if shipped else TerminalState.BOTTLENECK_NOT_FIXABLE
+    return TerminalState.PR_OPENED if shipped else TerminalState.READY_TO_SHIP
 
 
 def render_gate_table(decision: GateDecision, terminal: TerminalState) -> str:

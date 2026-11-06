@@ -403,6 +403,12 @@ def test_switching_to_gemini_does_not_send_another_vendors_model(
     """perfagent.yml names a Cerebras model; `--provider gemini` must not
     forward it to Google."""
     monkeypatch.setenv("GEMINI_API_KEY", "g")
+    # Supplied explicitly because line 3 of this test builds a cerebras
+    # client. It used to pass without this only because `make_client` calls
+    # `load_dotenv()` and the developer's real `.env` happened to carry a
+    # CEREBRAS_API_KEY -- a unit test silently depending on a live
+    # credential, which surfaced the moment that dead key was deleted.
+    monkeypatch.setenv("CEREBRAS_API_KEY", "c")
     monkeypatch.setenv("PERFAGENT_LLM_PROVIDER", "cerebras")
     monkeypatch.setenv("PERFAGENT_LLM_MODEL", "gpt-oss-120b")
     assert make_client("gemini").model == "gemini-2.5-flash"

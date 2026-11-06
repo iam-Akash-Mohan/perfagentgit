@@ -173,3 +173,20 @@ def collect_digests(target: MySQLTarget, limit: int | None = None) -> list[SqlDi
         )
 
     return stats[:limit] if limit is not None else stats
+
+
+def require_base_url(base_url: str | None) -> str:
+    """The arm's URL, or a refusal naming why there is no default.
+
+    Ports are chosen at runtime by the provision phase, so a module-level
+    `http://localhost:18080` could only ever name one repo's configured port
+    and be wrong everywhere else. Callers that have no URL are a bug, not a
+    case to paper over with a constant.
+    """
+    if base_url:
+        return base_url
+    raise ToolError(
+        "no base URL was supplied. The arms are provisioned onto free ports "
+        "chosen at runtime, so there is no default to fall back to — pass "
+        "--url, or the base_url the provision phase recorded."
+    )

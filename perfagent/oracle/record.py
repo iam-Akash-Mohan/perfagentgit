@@ -38,9 +38,10 @@ from .canonicalise import canonicalise, load_policy
 ORACLE_PATH = Path(".perfagent/oracle.json")
 DEFAULT_TIMEOUT_S = 120.0
 
-# P20's RepoProfile should eventually own this; today it is duplicated with
-# perfagent/tools.py:REPO_ROOT.
-DEFAULT_TARGET_REPO = Path("/Users/akashm/Documents/mini-spring")
+# The duplicated DEFAULT_TARGET_REPO that used to live here is gone. It was a
+# second copy of one developer's home directory, with its own inline env
+# lookup, so fixing the copy in patch/worktree.py did not fix this one.
+# `target_repo()` is now the single resolver and it has no built-in default.
 
 # Response headers that carry behaviour. Deliberately an allowlist: `Date`
 # changes every request and `Content-Length` changes with JSON whitespace, so
@@ -96,11 +97,9 @@ def base_commit(repo_path: str | Path | None = None) -> str:
     argv list, never `shell=True` — invariant 1 governs the agent's tool
     surface, but harness code has no excuse for shelling out either.
     """
-    repo = Path(
-        repo_path
-        if repo_path is not None
-        else os.environ.get("PERFAGENT_TARGET_REPO", DEFAULT_TARGET_REPO)
-    )
+    from ..patch.worktree import target_repo
+
+    repo = target_repo(repo_path)
     if not (repo / ".git").exists():
         raise ContractViolation(
             f"{repo} is not a git repository, so the recording cannot be "
@@ -542,6 +541,7 @@ def record_oracle(
     timeout_s: float = DEFAULT_TIMEOUT_S,
     path: str | Path = ORACLE_PATH,
     force: bool = False,
+    endpoint: str = "",
     client: httpx.Client | None = None,
 ) -> dict[str, Any]:
     """Capture behaviour on unmodified code and freeze it.
@@ -582,6 +582,10 @@ def record_oracle(
 
     resolved_base_commit = base_commit(repo_path)
     fields: dict[str, Any] = {
+        # Stamped so a stale oracle for ANOTHER endpoint is detectable
+        # directly, rather than only as a corpus-hash mismatch three phases
+        # later -- if the corpus that produced that hash still exists.
+        "endpoint": endpoint,
         "corpus_hash": corpus.hash,
         "recorded": [r.model_dump(mode="json") for r in recorded],
         "policy": resolved_policy.model_dump(mode="json"),

@@ -8,8 +8,8 @@ from typing import Any
 from ..agent import run_agent
 from ..contracts import HypothesisSet, Layer
 from ..errors import ContractViolation, ToolError
-from ..llm import GroqClient
-from ..measure.sql import MySQLTarget
+from ..llm import make_client
+from ..measure.sql import MySQLTarget, require_base_url
 from ..tools.db import DIAGNOSE_TOOLS, optional_db_tools
 from .evidence import (
     load_baseline,
@@ -25,7 +25,11 @@ from .validate import ATTRIBUTION_TOLERANCE, validate_hypothesis_set
 # and read_file/search_code cost tokens on a provider tier that limits tokens
 # per minute — measured across two runs, the agent spent its read calls on
 # malformed arguments and established mechanism from probe numbers anyway.
-DEFAULT_BASE_URL = "http://localhost:18080"
+# No default port. The arms are provisioned onto free ports chosen at
+# runtime, so a module constant here could only ever name one repo's
+# configured port and be wrong everywhere else. Callers pass the URL
+# the provisioning phase actually bound.
+DEFAULT_BASE_URL: str | None = None
 DEFAULT_ENDPOINT_MODEL = Path(".perfagent/endpoint_model.json")
 MAX_STEPS = 20
 
@@ -245,7 +249,7 @@ Do not write a prose report. Call emit_hypotheses."""
 # ───────────────────────────  orchestration  ─────────────────────────────
 
 def run_diagnosis(
-    base_url: str = DEFAULT_BASE_URL,
+    base_url: str | None = DEFAULT_BASE_URL,
     run_dir: Path | None = None,
     *,
     trace: Any = None,
@@ -289,7 +293,7 @@ def run_diagnosis(
             f"{len(result.probes_run)} probes. You are done — stop now."
         )
 
-    llm = client or GroqClient(api_key=_require_api_key())
+    llm = client or make_client()
 
     # Once validation has ACCEPTED a diagnosis, that artifact is durable. The
     # loop may still die afterwards — run_agent keeps going after the terminal
@@ -313,7 +317,8 @@ def run_diagnosis(
             tools=[RUN_PROBE_TOOL, EMIT_HYPOTHESES_TOOL,
                    *(spec.schema() for spec in db_specs)],
             handlers={
-                "run_probe": make_run_probe(base_url, target, log=probe_log),
+                "run_probe": make_run_probe(require_base_url(base_url), target,
+                                            log=probe_log),
                 "emit_hypotheses": emit_hypotheses,
                 **{spec.name: spec.handler for spec in db_specs},
             },
@@ -363,12 +368,26 @@ def run_diagnosis(
 
 
 def _require_api_key() -> str:
+    """DEPRECATED. `make_client()` resolves the key for the CONFIGURED
+    provider; this function only ever knew about one.
+
+    Kept as a thin delegate so an external caller does not break, but nothing
+    in this package calls it any more: hardcoding a provider's env var here
+    is how a run reached a provider `perfagent.yml` never named.
+    """
+    from ..config import Settings
+    from ..llm import resolve_key
+
     from dotenv import load_dotenv
 
     load_dotenv()
-    key = os.environ.get("GROQ_API_KEY")
-    if not key:
-        raise ContractViolation("GROQ_API_KEY is not set (put it in .env)")
+    provider = Settings.load().llm.provider
+    key = resolve_key(provider)
+    if key is None:
+        raise ContractViolation(
+            f"the {provider} provider needs no API key, so there is none to "
+            f"return; call make_client() instead."
+        )
     return key
 
 

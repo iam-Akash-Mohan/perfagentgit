@@ -208,9 +208,55 @@ def test_any_other_flag_difference_is_refused(mutation) -> None:
         assert_flags_identical(blue, green)
 
 
+def _profile() -> "RepoProfile":
+    """A minimal detected profile. arm_argv needs one: the entrypoint and the
+    classes directory are properties of the repo, not constants."""
+    from perfagent.contracts.repo import RepoProfile
+    return RepoProfile.model_validate({
+        "repo": "/tmp/x",
+        "build": {"tool": "maven", "invocation": ["mvn"], "build_args": [],
+                  "test_args": [], "classes_dir": "target/classes",
+                  "build_inputs": ["src/"]},
+        "layout": {"source_root": "src/main/java", "test_root": "src/test/java",
+                   "resource_roots": ["src/main/resources"]},
+        "entrypoint": "com.example.App",
+        "run_profile": "bench",
+        "database": {"kind": "none"},
+        "write_allowlist": ["src/main/java"],
+    })
+
+
 def test_a_missing_classpath_file_is_reported_not_guessed(tmp_path: Path) -> None:
     with pytest.raises(ContractViolation, match="build_arm"):
+        arm_argv(tmp_path, 8081, profile=_profile())
+
+
+def test_arm_argv_refuses_without_a_profile(tmp_path: Path) -> None:
+    """The entrypoint used to be the module constant `com.ex.Application`.
+    A launch command naming the wrong main class fails in a way that reads
+    like a classpath problem, so this refuses instead of guessing."""
+    with pytest.raises(ContractViolation, match="needs a RepoProfile"):
         arm_argv(tmp_path, 8081)
+
+
+def test_arm_argv_takes_the_entrypoint_and_profile_from_the_repo_profile(
+    tmp_path: Path
+) -> None:
+    (tmp_path / "x-classpath.txt").write_text("/deps/a.jar")
+    argv = arm_argv(tmp_path / "x", 9999, classpath_dir=tmp_path,
+                    profile=_profile())
+    assert argv[-1] == "com.example.App"
+    assert "-Dspring.profiles.active=bench" in argv
+    assert "-Dserver.port=9999" in argv
+    assert any("target/classes" in a for a in argv)
+
+
+def test_free_port_pair_returns_two_distinct_usable_ports() -> None:
+    """Replaces the 18080/8081 literals: ports are chosen at runtime."""
+    from perfagent.measure.arms import free_port_pair, port_is_free
+    first, second = free_port_pair()
+    assert first != second
+    assert port_is_free(first) and port_is_free(second)
 
 
 def test_xms_equals_xmx_in_the_shipped_flags() -> None:

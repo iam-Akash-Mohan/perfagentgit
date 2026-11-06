@@ -26,28 +26,41 @@ from pathlib import Path
 from ..errors import ContractViolation, ToolError
 
 GREEN_DIR = Path(".perfagent/green")
-DEFAULT_TARGET_REPO = Path("/Users/akashm/Documents/mini-spring")
 
 # Never carried into green: build output and vendored dependencies. Both are
 # large, both are regenerated, and copying them would make the diff unreadable.
 _NEVER_CARRY = ("target/", "node_modules/", ".git/")
 
-# Untracked files are carried over only under these prefixes — the paths the
-# build actually reads. Everything else is recorded as skipped rather than
-# copied: this repo's untracked `seed/` tree alone is 936 files, none of which
-# maven compiles, and dragging them into green makes the patch diff unreadable.
-_BUILD_INPUTS = ("src/", "pom.xml", "mvnw", "mvnw.cmd", ".mvn/")
+# The fallback set of untracked-file prefixes to carry into green, used ONLY
+# when no RepoProfile is supplied. The real list is `profile.build
+# .build_inputs`, which is build-tool specific — a Gradle repo has no pom.xml
+# and these five prefixes would drop its `settings.gradle` on the floor.
+_BUILD_INPUTS = ("src/", "pom.xml", "mvnw", "mvnw.cmd", ".mvn/",
+                 "build.gradle", "build.gradle.kts", "settings.gradle",
+                 "settings.gradle.kts", "gradlew", "gradle/")
 
 _GIT_TIMEOUT_S = 120
 
 
 def target_repo(explicit: str | Path | None = None) -> Path:
-    """Where blue lives. Env override so this is not pinned to one machine."""
-    return Path(
-        explicit
-        if explicit is not None
-        else os.environ.get("PERFAGENT_TARGET_REPO", DEFAULT_TARGET_REPO)
-    ).resolve()
+    """Where blue lives.
+
+    There is no built-in default any more. It used to be one developer's
+    home directory, which meant every command in this package silently
+    worked on exactly one machine and failed confusingly everywhere else.
+    A caller must say which repository it means, or set
+    PERFAGENT_TARGET_REPO.
+    """
+    if explicit is not None:
+        return Path(explicit).resolve()
+    from_env = os.environ.get("PERFAGENT_TARGET_REPO")
+    if from_env:
+        return Path(from_env).resolve()
+    raise ContractViolation(
+        "no target repository. Pass --repo, or set PERFAGENT_TARGET_REPO. "
+        "This used to default to a path on one developer's laptop, which is "
+        "why nothing said so when it was wrong."
+    )
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> str:

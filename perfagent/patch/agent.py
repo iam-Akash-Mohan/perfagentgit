@@ -1,6 +1,6 @@
 """The patch agent: read the diagnosis, write a real fix, prove it builds.
 
-Reuses GroqClient (P01) and run_agent (P02) unmodified. run_agent short-circuits
+Reuses make_client (S1) and run_agent (P02) unmodified. run_agent short-circuits
 only on `emit_endpoint_model`, so `emit_patch` travels the normal handler path —
 which is what we want: the handler refuses a submission that has not built and
 passed tests, and the refusal comes back as a tool result the agent can act on.
@@ -16,7 +16,7 @@ from typing import Any, Sequence
 from ..agent import run_agent
 from ..contracts import CandidateFix, EndpointModel, Patch
 from ..errors import ContractViolation
-from ..llm import GroqClient
+from ..llm import make_client
 from ..measure.sql import MySQLTarget
 from .standards import lint_diff, load_standards, render_violations
 from .tools import (ADD_MIGRATION_TOOL, APPLY_PATCH_TOOL, BUILD_TOOL,
@@ -26,20 +26,10 @@ from .worktree import GREEN_DIR, GreenWorktree, build_env
 
 MAX_STEPS = 24
 
-# Shown to the agent in full, because apply_patch needs byte-exact old_text and
-# the agent has no read_file tool. ReportService is excluded on purpose: 200
-# dead one-line methods that would crowd out everything that matters.
-SOURCE_CONTEXT = (
-    "src/main/java/com/ex/web/CustomerController.java",
-    "src/main/java/com/ex/service/CustomerService.java",
-    "src/main/java/com/ex/service/InvoiceService.java",
-    "src/main/java/com/ex/repo/CustomerRepository.java",
-    "src/main/java/com/ex/repo/InvoiceRepository.java",
-    "src/main/java/com/ex/domain/Customer.java",
-    "src/main/java/com/ex/domain/Invoice.java",
-    "src/main/java/com/ex/dto/CustomerDto.java",
-    "src/main/java/com/ex/dto/SearchRequest.java",
-)
+# NOTE: a nine-entry SOURCE_CONTEXT tuple of one repo's own classes used
+# to live here. It was already dead -- `context_files()` derives the list
+# from the plan and the endpoint model -- and it named `com/ex` paths, so
+# it is gone rather than merely unused.
 
 
 # ────────────────────────────  terminal tool  ────────────────────────────
@@ -369,6 +359,7 @@ def run_patch(
     max_iterations: int = MAX_ITERATIONS,
     max_terminal_retries: int = 2,
     java_home: str | None = None,
+    profile: Any = None,
     client: Any = None,
     keep_worktree: bool = True,
     candidate_index: int = 0,
@@ -390,7 +381,7 @@ def run_patch(
     blue_status_before = green.blue_status()
 
     try:
-        baseline = _measure_baseline(green, java_home)
+        baseline = _measure_baseline(green, java_home, profile)
         tools = PatchTools(
             green=green,
             baseline=baseline,
@@ -399,6 +390,10 @@ def run_patch(
             allowed_files=tuple(candidate.files_to_touch),
             allowed_tables=tuple(t.table for t in model.tables),
             benchmark=_benchmark_for(green, hypotheses, java_home),
+            # The detected layout. Without it the write guardrail defends
+            # `src/main/java` on every repo, which on a Gradle/Kotlin tree
+            # means it defends a directory that does not exist.
+            profile=profile,
         )
 
         accepted: dict[str, Any] = {}
@@ -454,7 +449,7 @@ def run_patch(
             return ("accepted: the patch builds and the tests pass. You are "
                     "done — stop now." + note)
 
-        llm = client or GroqClient(api_key=_require_api_key())
+        llm = client or make_client()
 
         # As in P09: once code has ACCEPTED a submission the work is durable.
         # run_agent keeps going after a terminal tool returns, and P01 raises on
@@ -557,7 +552,8 @@ def run_patch(
             green.remove()
 
 
-def _measure_baseline(green: GreenWorktree, java_home: str | None) -> TestCounts:
+def _measure_baseline(green: GreenWorktree, java_home: str | None,
+                      profile: Any = None) -> TestCounts:
     """Build and test the pristine worktree, before the agent touches anything.
 
     Without this there is no reference for "the test count may not decrease",
@@ -566,7 +562,8 @@ def _measure_baseline(green: GreenWorktree, java_home: str | None) -> TestCounts
     import subprocess
 
     probe = PatchTools(
-        green=green, baseline=TestCounts(), java_home=java_home, max_iterations=2
+        green=green, baseline=TestCounts(), java_home=java_home,
+        max_iterations=2, profile=profile,
     )
     build_result = probe.build()
     if not probe.last_build_ok:
@@ -665,28 +662,29 @@ def _persist(directory: Path, document: dict[str, Any], green: GreenWorktree) ->
 
 
 def _require_api_key() -> str:
-    """The key for the endpoint GroqClient actually posts to.
+    """DEPRECATED. `make_client()` resolves the key for the CONFIGURED
+    provider; this function only ever knew about one.
 
-    llm.py posts to https://api.cerebras.ai, so a Cerebras key (`csk-...`) is
-    what that endpoint accepts; a Groq key (`gsk_...`) comes back as HTTP 401
-    "Wrong API Key". CEREBRAS_API_KEY is therefore preferred, with GROQ_API_KEY
-    kept as a fallback for whenever the client is pointed back at Groq.
-
-    NOTE: perfagent/diagnose/agent.py::_require_api_key has the same bug and
-    reads GROQ_API_KEY only. It is left alone here because P09 is not this
-    phase; it needs the same three-line fix.
+    It used to prefer CEREBRAS_API_KEY because the misleadingly-named
+    `GroqClient` posts to Cerebras. Both it and the diagnose phase's copy
+    (which had the mirror-image bug, reading GROQ_API_KEY only) now go
+    through `make_client`, so the provider comes from `perfagent.yml` and a
+    missing key names every variable that would have worked.
     """
+    from ..config import Settings
+    from ..llm import resolve_key
+
     from dotenv import load_dotenv
 
     load_dotenv()
-    for name in ("CEREBRAS_API_KEY", "GROQ_API_KEY"):
-        key = os.environ.get(name)
-        if key:
-            return key
-    raise ContractViolation(
-        "neither CEREBRAS_API_KEY nor GROQ_API_KEY is set (put one in .env). "
-        "llm.py posts to api.cerebras.ai, so it needs the csk-... key."
-    )
+    provider = Settings.load().llm.provider
+    key = resolve_key(provider)
+    if key is None:
+        raise ContractViolation(
+            f"the {provider} provider needs no API key, so there is none to "
+            f"return; call make_client() instead."
+        )
+    return key
 
 
 # ─────────────────────────────  rendering  ──────────────────────────────

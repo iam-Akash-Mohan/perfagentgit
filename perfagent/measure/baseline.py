@@ -13,9 +13,13 @@ from ..contracts import RequestCorpus, SqlDigestStat
 from ..errors import ContractViolation, PerfAgentError, ToolError
 from .bench import DEFAULT_ITERATIONS, DEFAULT_TIMEOUT_S, DEFAULT_WARMUP, run_benchmark
 from .corpus import DEFAULT_CORPUS_PATH, load_corpus
-from .sql import MySQLTarget, collect_digests, reset_digests
+from .sql import require_base_url, MySQLTarget, collect_digests, reset_digests
 
-DEFAULT_BASE_URL = "http://localhost:18080"
+# No default port. The arms are provisioned onto free ports chosen at
+# runtime, so a module constant here could only ever name one repo's
+# configured port and be wrong everywhere else. Callers pass the URL
+# the provisioning phase actually bound.
+DEFAULT_BASE_URL: str | None = None
 HEALTH_PATH = "/actuator/health"
 TOP_DIGESTS = 10
 
@@ -151,7 +155,7 @@ def derive_facts(bench: dict[str, Any], digests: list[SqlDigestStat]) -> dict[st
 # ────────────────────────────  the measurement  ──────────────────────────
 
 def run_baseline(
-    base_url: str = DEFAULT_BASE_URL,
+    base_url: str | None = DEFAULT_BASE_URL,
     corpus_path: str | Path | None = None,
     warmup: int = DEFAULT_WARMUP,
     iterations: int = DEFAULT_ITERATIONS,
@@ -174,13 +178,14 @@ def run_baseline(
     target = mysql or MySQLTarget.from_env()
     corpus: RequestCorpus = load_corpus(corpus_path)
 
-    health = health_check(base_url)
+    resolved_url = require_base_url(base_url)
+    health = health_check(resolved_url)
     if collect_sql:
         # Fail fast on a privilege problem now rather than after the run.
         reset_digests(target)
 
     bench = run_benchmark(
-        base_url,
+        resolved_url,
         corpus,
         warmup=warmup,
         iterations=iterations,

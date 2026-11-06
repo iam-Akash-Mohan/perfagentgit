@@ -21,15 +21,18 @@ from typing import Any
 
 from .worktree import GreenWorktree, build_env
 
-# Writes are confined to this prefix when no plan names specific files. The
-# per-candidate allowlist below is narrower and is what a real run uses;
-# CLAUDE.md invariant 1 asks for an allowlist, not a denylist, because a
-# denylist protects the paths you thought of.
+# These three used to be module constants naming one repo's Maven layout.
+# They are now FALLBACKS, used only when no RepoProfile has been supplied --
+# which `PatchTools` records as a guardrail note rather than passing over in
+# silence, because an allowlist that does not match the repository under test
+# is an allowlist protecting the wrong tree.
+#
+# The real values come from `profile.write_allowlist`, `profile.layout
+# .test_root` and `profile.migrations.directory`, all DETECTED by the onboard
+# phase. CLAUDE.md invariant 1 asks for an allowlist, not a denylist, because
+# a denylist protects the paths you thought of.
 WRITE_ALLOWLIST = ("src/main/java",)
 TEST_TREE = "src/test"
-
-# The one place a NEW file may appear, and only through `add_migration`, which
-# parses the SQL before writing it. `apply_patch` cannot create a file at all.
 MIGRATION_DIR = "src/main/resources/db/migration"
 
 MAX_BUILD_LINES = 40
@@ -137,6 +140,10 @@ class PatchTools:
     allowed_files: tuple[str, ...] = ()
     # Tables the endpoint actually reads; an index migration may touch no other.
     allowed_tables: tuple[str, ...] = ()
+    # The detected repository profile. When present its layout wins over the
+    # module fallbacks above, so the guardrail defends the tree actually
+    # under test.
+    profile: Any = None
     # Returns a rendered delta, or a note saying why there is none.
     benchmark: Any = None
 
@@ -154,6 +161,31 @@ class PatchTools:
     last_tests_ok: bool = False
     last_error: str = ""
 
+    # ───────────────────────  layout, from the profile  ──────────────────
+
+    def write_allowlist(self) -> tuple[str, ...]:
+        """Prefixes a write may land under, from the profile when there is one."""
+        if self.profile is not None:
+            return tuple(self.profile.write_allowlist)
+        return WRITE_ALLOWLIST
+
+    def test_tree(self) -> str:
+        """The write-DENIED test root (invariant 3)."""
+        if self.profile is not None:
+            return self.profile.layout.test_root
+        return TEST_TREE
+
+    def migration_dir(self) -> str | None:
+        """Where `add_migration` may create a file, or None if the repo has
+        no migration tool -- in which case a schema change cannot ship and
+        saying so is better than writing a file nothing will apply."""
+        if self.profile is not None:
+            return self.profile.migrations.directory
+        return MIGRATION_DIR
+
+    def _allowlist_hint(self) -> str:
+        return " or ".join(self.write_allowlist())
+
     # ─────────────────────────────  apply_patch  ─────────────────────────
 
     def apply_patch(self, file: str, old_text: str, new_text: str) -> str:
@@ -169,9 +201,9 @@ class PatchTools:
             source = path.read_text(encoding="utf-8")
         except OSError as exc:
             message = (
-                f"REFUSED: cannot read {file}: {exc}. Check the path — it must be "
-                f"relative to the repository root, e.g. "
-                f"src/main/java/com/ex/service/CustomerService.java"
+                f"REFUSED: cannot read {file}: {exc}. Check the path — it "
+                f"must be relative to the repository root and under "
+                f"{self._allowlist_hint()}."
             )
             self.refusals.append(message)
             self._record("apply_patch", {"file": file}, message, ok=False)
@@ -231,8 +263,8 @@ class PatchTools:
         candidate = Path(file)
         if candidate.is_absolute():
             return (
-                f"REFUSED: {file} is an absolute path. Pass a path relative to the "
-                f"repository root, e.g. src/main/java/com/ex/service/CustomerService.java"
+                f"REFUSED: {file} is an absolute path. Pass a path relative "
+                f"to the repository root, under {self._allowlist_hint()}."
             )
 
         resolved = (self.green.path / candidate).resolve()
@@ -242,25 +274,26 @@ class PatchTools:
             return (
                 f"REFUSED: {file} resolves outside the worktree you may write to. "
                 f"Nothing was written. Only files inside the repository are "
-                f"writable, and only under {', '.join(WRITE_ALLOWLIST)}/."
+                f"writable, and only under {self._allowlist_hint()}/."
             )
 
         posix = relative.as_posix()
-        if posix.startswith(MIGRATION_DIR):
+        migration_dir = self.migration_dir()
+        if migration_dir and posix.startswith(migration_dir):
             return (
                 f"REFUSED: {posix} is a database migration. apply_patch cannot "
                 f"write one — call add_migration instead, which parses the SQL "
                 f"and refuses anything that is not a single CREATE INDEX, then "
                 f"numbers the file for you."
             )
-        if posix.startswith(TEST_TREE):
+        if posix.startswith(self.test_tree()):
             # Invariant 3, in code. A prompt asking nicely is not a guardrail.
             return (
                 f"REFUSED: {posix} is a test file. Test files are immutable — they "
                 f"are the evidence that behaviour did not change, so a patch may "
                 f"never edit them.\n"
                 f"WHAT TO DO NEXT: make the production code satisfy the existing "
-                f"test. Edit only files under {', '.join(WRITE_ALLOWLIST)}/."
+                f"test. Edit only files under {self._allowlist_hint()}/."
             )
         if self.allowed_files:
             # The PLAN decided which files this fix touches, before any code
@@ -280,12 +313,12 @@ class PatchTools:
                 )
             return None
 
-        if not posix.startswith(WRITE_ALLOWLIST):
+        if not posix.startswith(self.write_allowlist()):
             return (
                 f"REFUSED: {posix} is outside the write allowlist. Nothing was "
                 f"written.\n"
                 f"WHAT TO DO NEXT: this task may only change application source. "
-                f"Edit files under {', '.join(WRITE_ALLOWLIST)}/ only — not the "
+                f"Edit files under {self._allowlist_hint()}/ only — not the "
                 f"build file, not configuration, not resources."
             )
         return None
@@ -546,8 +579,8 @@ APPLY_PATCH_TOOL = {
                 "file": {
                     "type": "string",
                     "description": (
-                        "Path relative to the repository root, e.g. "
-                        "src/main/java/com/ex/service/CustomerService.java"
+                        "Path relative to the repository root, inside the "
+                        "write allowlist you were given."
                     ),
                 },
                 "old_text": {

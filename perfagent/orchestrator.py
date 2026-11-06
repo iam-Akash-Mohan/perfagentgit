@@ -40,8 +40,12 @@ from .trace import EventType, Trace
 RUNS_DIR = Path(".perfagent/runs")
 STATE_FILE = "run_state.json"
 
-DEFAULT_BLUE_PORT = 18080
-DEFAULT_GREEN_PORT = 8081
+# No default ports. 18080/8081 were lifted from one repo's
+# `application-perfagent.yml`; on a machine where something else holds 8081
+# the green arm answered 401 and the run measured a stranger's service.
+# `measure.arms.free_port_pair()` asks the kernel instead, at provision time.
+DEFAULT_BLUE_PORT: int | None = None
+DEFAULT_GREEN_PORT: int | None = None
 
 # Token pricing is NOT a measurement. The provider's rate is configuration, so
 # the dollar figure is derived from a rate someone set rather than something
@@ -194,10 +198,26 @@ class Context:
     endpoint: str
     budget: Budget
     trace: Trace
-    blue_port: int = DEFAULT_BLUE_PORT
-    green_port: int = DEFAULT_GREEN_PORT
+    blue_port: int | None = DEFAULT_BLUE_PORT
+    green_port: int | None = DEFAULT_GREEN_PORT
     java_home: str | None = None
     options: dict[str, Any] = field(default_factory=dict)
+
+    def profile(self) -> Any:
+        """The detected RepoProfile for this run, read from its artifact.
+
+        A method rather than a field so that a resumed run picks the profile
+        off disk exactly like every other artifact, instead of depending on
+        whatever the process that resumed it happened to hold in memory.
+        """
+        from .onboard import load_profile
+
+        return load_profile(self.run_dir / "repo_profile.json")
+
+    def provisioning(self) -> Any:
+        from .provision import load_provisioning
+
+        return load_provisioning(self.run_dir / "provisioning.json")
 
 
 @dataclass(frozen=True)
@@ -220,6 +240,60 @@ def _fixed(path: str) -> Callable[[Context], Path]:
 
 
 # ─────────────────────────────  phase runners  ───────────────────────────
+
+
+
+def _run_onboard(ctx: Context) -> PhaseOutcome:
+    """Read the repository and write down what it is.
+
+    First phase on purpose: a repo this harness cannot onboard must fail
+    here, before a single token is spent.
+    """
+    from .onboard import assert_instrumentable, onboard, save_profile
+
+    if ctx.repo is None:
+        return PhaseOutcome(
+            terminal=TerminalState.ENVIRONMENT_INFEASIBLE,
+            summary="no target repository was given",
+            detail={"advice": "pass --repo <path>"},
+        )
+    profile = onboard(ctx.repo)
+    assert_instrumentable(profile)
+    artifact = save_profile(profile, ctx.run_dir / "repo_profile.json")
+    return PhaseOutcome(
+        artifact=artifact,
+        summary=(f"{profile.build.tool.value} · {profile.entrypoint} · "
+                 f"{profile.database.kind.value}"),
+        detail={
+            "source_root": profile.layout.source_root,
+            "write_allowlist": profile.write_allowlist,
+            "migrations": profile.migrations.tool.value,
+        },
+    )
+
+
+def _run_provision(ctx: Context) -> PhaseOutcome:
+    """Free ports, a reachable database, a current schema."""
+    from .provision import provision, save_provisioning
+
+    profile = ctx.profile()
+    record = provision(
+        profile, repo=ctx.repo,
+        blue_port=ctx.blue_port, green_port=ctx.green_port,
+        java_home=ctx.java_home,
+        require_database=ctx.options.get("require_database", True),
+        run_migrations=ctx.options.get("run_migrations", True),
+    )
+    # The rest of the pipeline reads the ports off the context, so bind them
+    # here rather than making every phase re-open the artifact.
+    ctx.blue_port, ctx.green_port = record.blue.port, record.green.port
+    artifact = save_provisioning(record, ctx.run_dir / "provisioning.json")
+    return PhaseOutcome(
+        artifact=artifact,
+        summary=f"blue :{record.blue.port}  green :{record.green.port}",
+        detail={"database_ready": record.database_ready,
+                "migrations": record.migrations_applied},
+    )
 
 
 def _run_understand(ctx: Context) -> PhaseOutcome:
@@ -262,20 +336,54 @@ def _run_understand(ctx: Context) -> PhaseOutcome:
     )
 
 
+
+def _run_workload(ctx: Context) -> PhaseOutcome:
+    """Generate THIS run's corpus from the comprehension model and the DB."""
+    from .measure.corpus import save_corpus
+    from .onboard import load_profile
+    from .tools.sample import ValueSampler
+    from .understand.agent import load_model
+    from .workload import generate_corpus
+
+    model = load_model(ctx.run_dir / "endpoint_model.json")
+    profile = load_profile(ctx.run_dir / "repo_profile.json")
+
+    sampler = ctx.options.get("sampler")
+    if sampler is None:
+        from .measure.sql import MySQLTarget
+        sampler = ValueSampler(
+            MySQLTarget.from_env(),
+            allowed_tables=[t.table for t in model.tables],
+        )
+    corpus, notes = generate_corpus(model, sampler=sampler)
+    artifact = save_corpus(corpus, ctx.run_dir / "corpus.json")
+    for note in notes:
+        ctx.trace.emit(EventType.NOTE, phase="workload", note=note)
+    return PhaseOutcome(
+        artifact=artifact,
+        summary=(f"{len(corpus.benchmark)} benchmark + "
+                 f"{len(corpus.held_back)} held-back request(s), "
+                 f"hash {corpus.hash}"),
+        detail={"corpus_hash": corpus.hash, "notes": notes,
+                "endpoint": ctx.endpoint},
+    )
+
+
 def _run_oracle(ctx: Context) -> PhaseOutcome:
     from .measure.arms import single_arm
     from .measure.corpus import load_corpus
     from .oracle.canonicalise import load_policy
     from .oracle.record import ORACLE_PATH, record_oracle
 
-    corpus = load_corpus(ctx.options.get("corpus"))
+    corpus = load_corpus(ctx.run_dir / "corpus.json")
     with single_arm(
         ctx.run_id, which="blue", repo=ctx.repo, port=ctx.blue_port,
-        java_home=ctx.java_home, build=ctx.options.get("build", True),
+        java_home=ctx.java_home, profile=ctx.profile(), build=ctx.options.get("build", True),
     ) as arm:
         bundle = record_oracle(
             arm.base_url, corpus, policy=load_policy(),
-            repo_path=ctx.repo, path=ORACLE_PATH, force=False,
+            repo_path=ctx.repo, path=ctx.run_dir / "oracle.json", force=False,
+            endpoint=ctx.endpoint,
         )
     return PhaseOutcome(
         artifact=ORACLE_PATH,
@@ -301,11 +409,11 @@ def _run_baseline(ctx: Context) -> PhaseOutcome:
 
     with single_arm(
         ctx.run_id, which="blue", repo=ctx.repo, port=ctx.blue_port,
-        java_home=ctx.java_home, build=ctx.options.get("build", True),
+        java_home=ctx.java_home, profile=ctx.profile(), build=ctx.options.get("build", True),
     ) as arm:
         document, produced = run_baseline(
             base_url=arm.base_url,
-            corpus_path=ctx.options.get("corpus"),
+            corpus_path=ctx.run_dir / "corpus.json",
             warmup=ctx.options.get("warmup", 20),
             iterations=ctx.options.get("iterations", 100),
             runs_dir=ctx.run_dir / "baseline-runs",
@@ -333,7 +441,7 @@ def _run_diagnose(ctx: Context) -> PhaseOutcome:
     client = _metered_llm(ctx, "diagnose")
     with single_arm(
         ctx.run_id, which="blue", repo=ctx.repo, port=ctx.blue_port,
-        java_home=ctx.java_home, build=ctx.options.get("build", True),
+        java_home=ctx.java_home, profile=ctx.profile(), build=ctx.options.get("build", True),
     ) as arm:
         hypothesis_set, probe_log, path = run_diagnosis(
             base_url=arm.base_url, run_dir=ctx.run_dir, client=client,
@@ -435,7 +543,7 @@ def _run_patch(ctx: Context) -> PhaseOutcome:
 
     document = run_patch(
         ctx.run_dir, run_id=ctx.run_id, repo=ctx.repo,
-        java_home=ctx.java_home, client=_metered_llm(ctx, "patch"),
+        java_home=ctx.java_home, profile=ctx.profile(), client=_metered_llm(ctx, "patch"),
         candidate_index=int(ctx.options.get("candidate_index", 0)),
         oracle_feedback=str(ctx.options.get("oracle_feedback", "")),
     )
@@ -470,7 +578,7 @@ def _run_verify(ctx: Context) -> PhaseOutcome:
     green = existing_worktree(".perfagent/green", repo=ctx.repo)
     with both_arms(
         f"verify-{ctx.run_id}", repo=ctx.repo, blue_port=ctx.blue_port,
-        green_port=ctx.green_port, java_home=ctx.java_home,
+        green_port=ctx.green_port, java_home=ctx.java_home, profile=ctx.profile(),
         build=ctx.options.get("build", True),
     ) as pair:
         verdict, path = run_verification(
@@ -497,10 +605,10 @@ def _run_measure(ctx: Context) -> PhaseOutcome:
     from .measure.corpus import load_corpus
     from .measure.sql import MySQLTarget
 
-    corpus = load_corpus(ctx.options.get("corpus"))
+    corpus = load_corpus(ctx.run_dir / "corpus.json")
     with both_arms(
         f"measure-{ctx.run_id}", repo=ctx.repo, blue_port=ctx.blue_port,
-        green_port=ctx.green_port, java_home=ctx.java_home,
+        green_port=ctx.green_port, java_home=ctx.java_home, profile=ctx.profile(),
         build=ctx.options.get("build", True),
     ) as pair:
         run = run_interleaved(
@@ -637,12 +745,26 @@ def _valid_json(ctx: Context, path: Path) -> str | None:
 
 
 def _valid_oracle(ctx: Context, path: Path) -> str | None:
+    """Self-consistent AND recorded against THIS run's endpoint.
+
+    The hash check alone let a recording of another route satisfy "an oracle
+    exists". Behaviour equivalence would then be asserted against responses
+    from a different endpoint -- the single most load-bearing comparison in
+    the product, made against the wrong evidence.
+    """
     from .oracle.record import load_oracle
 
     try:
-        load_oracle(path)
+        oracle = load_oracle(path)
     except ContractViolation as exc:
         return str(exc)
+
+    if ctx.endpoint and oracle.endpoint:
+        found, wanted = (_normalise_route(oracle.endpoint),
+                         _normalise_route(ctx.endpoint))
+        if found != wanted:
+            return (f"{path} was recorded against {oracle.endpoint!r}, but "
+                    f"this run is about {ctx.endpoint!r}.")
     return None
 
 
@@ -726,14 +848,108 @@ def _valid_plan(ctx: Context, path: Path) -> str | None:
     return None
 
 
+
+def _valid_repo_profile(ctx: Context, path: Path) -> str | None:
+    """A profile must parse AND describe the repo this run was pointed at.
+
+    A profile left over from another repository satisfies "a profile
+    exists" and tells the pipeline nothing true -- the same trap
+    `_valid_endpoint_model` exists to close for the comprehension model.
+    """
+    problem = _valid_json(ctx, path)
+    if problem:
+        return problem
+    from .onboard import load_profile
+
+    try:
+        profile = load_profile(path)
+    except Exception as exc:  # noqa: BLE001
+        return f"{path} is not a repo profile: {type(exc).__name__}: {exc}"
+    if ctx.repo is not None:
+        wanted = Path(ctx.repo).expanduser().resolve()
+        if Path(profile.repo) != wanted:
+            return (f"{path} profiles {profile.repo}, but this run is about "
+                    f"{wanted}.")
+    return None
+
+
+def _valid_provisioning(ctx: Context, path: Path) -> str | None:
+    """Ports recorded by a PREVIOUS run are not evidence that they are free
+    now. Re-provisioning is cheap; measuring a stranger's service is not."""
+    problem = _valid_json(ctx, path)
+    if problem:
+        return problem
+    from .measure.arms import port_is_free
+    from .provision import load_provisioning
+
+    try:
+        record = load_provisioning(path)
+    except Exception as exc:  # noqa: BLE001
+        return f"{path} is not a provisioning record: {exc}"
+    for arm in (record.blue, record.green):
+        if not port_is_free(arm.port):
+            return (f"{path} records the {arm.name} arm on port {arm.port}, "
+                    f"which is in use now. Re-provisioning.")
+    return None
+
+
 def _valid_corpus(ctx: Context, path: Path) -> str | None:
+    """A corpus must parse, be non-empty, and contain ONLY this endpoint.
+
+    It used to check only that the file parsed. A corpus full of
+    `POST /api/customers/search` therefore validated cleanly for a run about
+    `GET /api/invoices/{id}`, the workload phase was skipped as "artifact
+    present", and the oracle was recorded against the wrong endpoint
+    entirely -- surfacing much later, if at all, as a corpus-hash mismatch.
+    """
     from .measure.corpus import load_corpus
 
     try:
-        load_corpus(path)
+        corpus = load_corpus(path)
     except ContractViolation as exc:
         return str(exc)
+
+    if not corpus.benchmark:
+        return f"{path} has an empty benchmark set; there is nothing to measure."
+
+    if not ctx.endpoint:
+        return None
+    wanted_method, wanted_path = _normalise_route(ctx.endpoint)
+    template = [segment for segment in wanted_path.split("/") if segment]
+    offenders: list[str] = []
+    for spec in corpus.benchmark + corpus.held_back:
+        found_method = (spec.method or "").strip().upper()
+        found_path = "/" + (spec.path or "").split("?")[0].strip().strip("/")
+        if found_method != wanted_method or not _matches_template(
+                found_path, template):
+            offenders.append(f"{spec.id} ({found_method} {found_path})")
+    if offenders:
+        shown = ", ".join(offenders[:5])
+        more = f" and {len(offenders) - 5} more" if len(offenders) > 5 else ""
+        return (f"{path} contains request(s) that are not this run's "
+                f"endpoint ({ctx.endpoint}): {shown}{more}.")
     return None
+
+
+def _matches_template(concrete: str, template: list[str]) -> bool:
+    """Does a concrete path fit the route template it claims to?
+
+    `/api/customers/7/invoices` matches `/api/customers/{id}/invoices`: the
+    literal segments must be equal and a `{...}` segment matches anything
+    non-empty. Comparing the strings directly would reject every generated
+    request, since generation is what substitutes the parameters.
+    """
+    segments = [s for s in concrete.split("/") if s]
+    if len(segments) != len(template):
+        return False
+    for found, wanted in zip(segments, template):
+        if wanted.startswith("{") or wanted.startswith(":"):
+            if not found:
+                return False
+            continue
+        if found != wanted:
+            return False
+    return True
 
 
 def _valid_patch(ctx: Context, path: Path) -> str | None:
@@ -749,15 +965,23 @@ def _valid_patch(ctx: Context, path: Path) -> str | None:
 # no argument to run_pipeline changes it.
 
 PIPELINE: tuple[PhaseSpec, ...] = (
+    PhaseSpec(Phase.ONBOARD, "onboard",
+              _run_artifact("repo_profile.json"), _run_onboard,
+              _valid_repo_profile,
+              describe="what kind of repository this is"),
+    PhaseSpec(Phase.PROVISION, "provision",
+              _run_artifact("provisioning.json"), _run_provision,
+              _valid_provisioning,
+              describe="free ports, reachable database, current schema"),
     PhaseSpec(Phase.COMPREHEND, "understand",
               _run_artifact("endpoint_model.json"), _run_understand,
               _valid_endpoint_model, uses_llm=True,
               describe="endpoint comprehension model"),
     PhaseSpec(Phase.WORKLOAD, "workload",
-              _fixed("perfagent/measure/corpus.json"), None, _valid_corpus,
-              describe="request corpus"),
+              _run_artifact("corpus.json"), _run_workload, _valid_corpus,
+              describe="request corpus, generated for this endpoint"),
     PhaseSpec(Phase.ORACLE, "oracle",
-              _fixed(".perfagent/oracle.json"), _run_oracle, _valid_oracle,
+              _run_artifact("oracle.json"), _run_oracle, _valid_oracle,
               describe="frozen behaviour recording"),
     PhaseSpec(Phase.BASELINE, "baseline",
               _run_artifact("baseline.json"), _run_baseline, _valid_json,
@@ -900,8 +1124,8 @@ def run_pipeline(
     resume: str | None = None,
     max_usd: float | None = DEFAULT_MAX_USD,
     max_wall_s: float | None = DEFAULT_MAX_WALL_S,
-    blue_port: int = DEFAULT_BLUE_PORT,
-    green_port: int = DEFAULT_GREEN_PORT,
+    blue_port: int | None = DEFAULT_BLUE_PORT,
+    green_port: int | None = DEFAULT_GREEN_PORT,
     java_home: str | None = None,
     options: dict[str, Any] | None = None,
     on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -1259,6 +1483,13 @@ _ENVIRONMENT_MARKS = (
 
 def _failure_state(spec: PhaseSpec, error: str = "") -> TerminalState:
     """The honest terminal state for a phase that raised."""
+    # A repo that cannot be read or cannot be started is the environment,
+    # by definition. These two phases have no other kind of failure, so the
+    # mapping is on the PHASE rather than on words in the message — the
+    # string-matching below is a workaround for VERIFY, not a pattern worth
+    # copying.
+    if spec.phase in (Phase.ONBOARD, Phase.PROVISION):
+        return TerminalState.ENVIRONMENT_INFEASIBLE
     if spec.phase is Phase.VERIFY and any(mark in error
                                           for mark in _ENVIRONMENT_MARKS):
         return TerminalState.ENVIRONMENT_INFEASIBLE

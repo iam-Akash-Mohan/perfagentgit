@@ -358,8 +358,12 @@ def test_all_passing_gates_yield_pr_opened_only_when_actually_shipped() -> None:
     )
     assert decision.passed is True
     assert terminal_state_for(decision, shipped=True) == TerminalState.PR_OPENED
-    # Nothing pushed means no PR_OPENED, however good the numbers are.
-    assert terminal_state_for(decision, shipped=False) != TerminalState.PR_OPENED
+    # Nothing pushed means no PR_OPENED, however good the numbers are -- and
+    # specifically READY_TO_SHIP, not the pre-fix fallthrough of
+    # BOTTLENECK_NOT_FIXABLE, which is a FAILURE state and would make a
+    # passing, unshipped decision indistinguishable from a real refusal.
+    assert terminal_state_for(decision, shipped=False) == TerminalState.READY_TO_SHIP
+    assert terminal_state_for(decision, shipped=False) != TerminalState.BOTTLENECK_NOT_FIXABLE
 
 
 def test_diff_helpers_read_the_diff_not_the_claim() -> None:
@@ -422,6 +426,29 @@ def test_an_artifact_edited_after_citation_is_refused(
     Path(backed_ref.path).write_text(json.dumps({"p95_ms": 999.9}))
     with pytest.raises(ContractViolation, match="changed since it was cited"):
         ledger.record("p95_again", 1417.2, backed_ref)
+
+
+def test_terminal_state_must_be_backed_by_the_gate_decision_ref(
+    tmp_path: Path, backed_ref: ArtifactRef
+) -> None:
+    """The exact bug this guard exists to prevent: `terminal_state` backed by
+    the perf report (or any artifact other than the GateDecision that
+    actually determined it) once let a rendered report state a terminal
+    state its cited artifact never produced."""
+    ledger = EvidenceLedger()
+    with pytest.raises(ContractViolation, match="gate_decision"):
+        ledger.record("terminal_state", "READY_TO_SHIP", backed_ref)
+
+    decision_payload = {"passed": True, "results": []}
+    decision_path = tmp_path / "gate_decision.json"
+    decision_path.write_text(json.dumps(decision_payload))
+    decision_ref = ArtifactRef(
+        kind="gate_decision", hash=content_hash(decision_payload),
+        path=str(decision_path),
+    )
+    # The correct ref is accepted without complaint.
+    ledger.record("terminal_state", "READY_TO_SHIP", decision_ref)
+    assert ledger.get("terminal_state").value == "READY_TO_SHIP"
 
 
 def test_digits_inside_identifiers_are_allowed(backed_ref: ArtifactRef) -> None:
