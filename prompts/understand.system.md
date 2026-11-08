@@ -65,6 +65,39 @@ This matters because a later phase must know whether the response can be made
 smaller. If a returned collection grows with the data, its size is part of the
 API contract and cannot be trimmed without changing behaviour.
 
+## Request parameters
+
+Record every path and query parameter the controller method reads — not only
+the ones the route template shows. This is the symmetric counterpart of what
+you record for the response: a request corpus can only be built from what you
+report here, and a required parameter nothing recorded about is a parameter a
+generated request silently omits.
+
+For each one, report:
+- **required** — does the request fail without it? `@RequestParam` with no
+  `defaultValue` and not an `Optional`/primitive-wrapper type is required;
+  `@PathVariable` always is.
+- **default** — the value Spring supplies when it is omitted, if any. A
+  parameter with a default is not required in the sense above.
+- **allowed_values** — whenever the code constrains it, however it shows that:
+  an enum type, a `@Pattern`, an explicit `if` that rejects anything else —
+  or IMPLICITLY, the same way you already read per-row work and lazy loads
+  instead of only explicit annotations. A repository method named
+  `findByCustomerIdAndStatus`, read alongside the service that calls it with
+  a literal status value, is evidence of an allowed value just as much as an
+  enum is. A JPQL or native query comparing the parameter to a literal
+  (`WHERE status = 'OPEN'`), or a service comparing it to a named constant,
+  is the same kind of evidence. Cite exactly where you read it — the
+  method, the query, or the comparison — the same way every other field
+  here is cited. Leave this empty when nothing constrains it, implicitly or
+  otherwise. Do not invent a plausible-looking set of values you cannot
+  cite — a corpus generator trusts this list literally, and a wrong value
+  measures the error path instead of the endpoint.
+
+A required parameter with no default and no allowed_values is still worth
+reporting exactly as such — it tells the next phase it cannot invent a value
+either, rather than it being free to guess one.
+
 ## Pagination
 
 State the mechanism: offset-based, keyset, or none. Say whether a separate
@@ -91,5 +124,6 @@ Call submit_endpoint_analysis. That call is your entire output — do not write 
 summary. If your submission is rejected, fix exactly what the error names and submit
 again.
 
-`per_row_work` and `response_shape` are required. If an endpoint genuinely has
-no per-row work, submit an empty array — that is a finding, not an omission.
+`per_row_work`, `response_shape` and `request_shape` are required. If an endpoint
+genuinely has no per-row work, submit an empty array — that is a finding, not an omission.
+If it takes no parameters, submit `request_shape: {"parameters": []}`.

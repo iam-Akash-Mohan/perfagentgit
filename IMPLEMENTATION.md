@@ -1,6 +1,6 @@
-# PerfAgent — Implementation Plan
+# Senapathy — Implementation Plan
 
-Companion to `PERFAGENT.md` (the design doc). That document says *what* and *why*.
+Companion to `SENAPATHY.md` (the design doc). That document says *what* and *why*.
 This one says *in what order*, and hands each step to a Claude agent as an
 executable prompt.
 
@@ -54,7 +54,7 @@ agent loop bolted on. Section 7 exists to prevent that.
 ### How to run a phase
 
 ```bash
-cd perfagent
+cd senapathy
 claude                       # in the repo, so CLAUDE.md is picked up
 > Execute phases/P05-environment.md
 ```
@@ -73,19 +73,19 @@ whole point is that each one has a checkpoint you can trust.
 
 ## 2. The thin thread — first working version
 
-The full plan is 20 phases. The **critical path to `perfagent run` working end to
+The full plan is 20 phases. The **critical path to `senapathy run` working end to
 end** is 13 of them. Everything else is deliberately deferred until after you've
 seen it work once.
 
 | Day | Phases | You can run |
 |---|---|---|
 | 1 | P00 contracts · P01 LLM client · P02 agent loop | unit tests green |
-| 2 | P03 read tools · P04 comprehension agent | `perfagent understand` |
-| 3 | P05 environment · P06 workload · P07 benchmark | `perfagent baseline` |
-| 4 | P09 diagnosis agent | `perfagent diagnose` |
-| 5 | P12 patch loop | `perfagent patch` |
-| 6 | P13 oracle · P14 measure | `perfagent verify` |
-| 7 | P15 gate + PR + report · thin `run.py` | **`perfagent run`** |
+| 2 | P03 read tools · P04 comprehension agent | `senapathy understand` |
+| 3 | P05 environment · P06 workload · P07 benchmark | `senapathy baseline` |
+| 4 | P09 diagnosis agent | `senapathy diagnose` |
+| 5 | P12 patch loop | `senapathy patch` |
+| 6 | P13 oracle · P14 measure | `senapathy verify` |
+| 7 | P15 gate + PR + report · thin `run.py` | **`senapathy run`** |
 
 Deferred out of the thread, and why:
 
@@ -114,7 +114,7 @@ what you have is a demo rather than a product.
 | P03 | Read tools — `fs_read`, `code_search`, `list_dir` | **HAND-WRITE** | tool set |
 | P04 | Comprehension agent + citation validation | mixed | `EndpointModel` |
 
-Milestone demo: `perfagent understand --repo ../crm --endpoint "POST /api/customers/search"`
+Milestone demo: `senapathy understand --repo ../crm --endpoint "POST /api/customers/search"`
 
 ### Milestone B — evidence, zero AI
 
@@ -125,7 +125,7 @@ Milestone demo: `perfagent understand --repo ../crm --endpoint "POST /api/custom
 | P07 | Benchmark — latency, SQL capture, digest aggregation, variance | mixed | `BaselineReport` |
 | P08 | Evidence bundle + computed red flags | **HAND-WRITE** | `EvidenceBundle` |
 
-Milestone demo: `perfagent baseline` — a genuinely useful profiler with no AI in it.
+Milestone demo: `senapathy baseline` — a genuinely useful profiler with no AI in it.
 
 ### Milestone C — diagnosis and patching
 
@@ -143,7 +143,7 @@ Milestone demo: `perfagent baseline` — a genuinely useful profiler with no AI 
 | P13 | Oracle — record, canonicalise, compare, hash | **HAND-WRITE** | `EquivalenceVerdict` |
 | P14 | Interleaved A/B measurement + significance | mixed | `PerfReport` |
 | P15 | Gate rules, PR creation, artifact-backed report | **HAND-WRITE** (gate) | PR |
-| P16 | Orchestrator FSM, trace viewer, resume | mixed | `perfagent run` |
+| P16 | Orchestrator FSM, trace viewer, resume | mixed | `senapathy run` |
 
 ### Milestone E — reliability, post-MVP
 

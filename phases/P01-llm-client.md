@@ -26,13 +26,13 @@ manage. Nothing later in this document makes sense until that's obvious to you.
 
 ## 3. PRECONDITIONS
 
-`perfagent/contracts.py` exists with `LLMClient`, `LLMResponse`, `Usage`.
+`senapathy/contracts.py` exists with `LLMClient`, `LLMResponse`, `Usage`.
 `ANTHROPIC_API_KEY` set. A few dollars of budget you're willing to lose.
 
 ## 4. DELIVERABLES
 
 ```
-perfagent/llm.py
+senapathy/llm.py
 tests/test_llm.py                  # from section 6
 ```
 
@@ -103,7 +103,7 @@ so the caller can place breakpoints.
 Key every request by `content_hash` of the full request body. On `complete()`:
 
 - If a cassette file for that hash exists → return it, `from_cassette=True`, no HTTP.
-- Else if `offline=True` → raise `PerfAgentError` naming the missing hash.
+- Else if `offline=True` → raise `SenapathyError` naming the missing hash.
 - Else → make the call, write the cassette, return it.
 
 This gives you three things: replay a run without paying twice, deterministic offline
@@ -135,8 +135,8 @@ injected. Design `AnthropicClient` to accept an optional `transport` so this wor
 from __future__ import annotations
 import json, pytest
 from pathlib import Path
-from perfagent.llm import AnthropicClient
-from perfagent.errors import PerfAgentError
+from senapathy.llm import AnthropicClient
+from senapathy.errors import SenapathyError
 
 
 def _resp(content=None, stop="end_turn", usage=None):
@@ -217,7 +217,7 @@ def test_retries_on_429_then_succeeds(tmp_path, monkeypatch):
 
 def test_does_not_retry_400(tmp_path):
     c = _client([(400, {"error": {"message": "bad tool schema"}})], tmp_path)
-    with pytest.raises(PerfAgentError) as e:
+    with pytest.raises(SenapathyError) as e:
         c.complete(system="s", messages=[{"role": "user", "content": "x"}])
     assert "bad tool schema" in str(e.value)    # surface the API's message
 
@@ -225,7 +225,7 @@ def test_does_not_retry_400(tmp_path):
 def test_gives_up_after_max_retries(tmp_path, monkeypatch):
     monkeypatch.setattr("time.sleep", lambda s: None)
     c = _client([(529, {"error": {"message": "o"}})] * 6, tmp_path, max_retries=3)
-    with pytest.raises(PerfAgentError):
+    with pytest.raises(SenapathyError):
         c.complete(system="s", messages=[{"role": "user", "content": "x"}])
 
 
@@ -272,7 +272,7 @@ def test_offline_mode_raises_on_miss(tmp_path):
     c = AnthropicClient(api_key="k", model="claude-opus-4-5",
                         cassette_dir=tmp_path / "cass",
                         transport=FakeTransport([]), offline=True)
-    with pytest.raises(PerfAgentError) as e:
+    with pytest.raises(SenapathyError) as e:
         c.complete(system="s", messages=[{"role": "user", "content": "x"}])
     assert "cassette" in str(e.value).lower()
 

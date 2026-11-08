@@ -3,7 +3,7 @@
 `standards/java.md` is loaded into the patch prompt verbatim at runtime. Edit
 that file to change what the agent is told; no Python change is needed.
 
-Four of its rules are also **enforced**: `perfagent/patch/standards.py` lints
+Four of its rules are also **enforced**: `senapathy/patch/standards.py` lints
 the diff when the agent calls `emit_patch`, and a violation is a rejection the
 agent must fix before the patch can be accepted. The rest are prompt guidance.
 

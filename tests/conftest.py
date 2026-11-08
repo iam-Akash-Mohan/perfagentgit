@@ -68,6 +68,13 @@ public class OrderService {
     }
 }
 """,
+    "src/main/java/com/ex/repo/OrderRepository.java": """package com.ex.repo;
+
+public interface OrderRepository {
+
+    Page<Order> findByFilter(String name, Pageable pageable);
+}
+""",
     "src/main/resources/application.yml": "server:\n  port: 8080\n",
     "README.md": "fixture repo\n",
 }
@@ -87,7 +94,7 @@ def fixture_repo(tmp_path: Path) -> Path:
 @pytest.fixture(autouse=True)
 def _clear_route_cache():
     """The route table caches per repo path; tmp_path reuse would poison it."""
-    from perfagent.tools.routes import clear_cache
+    from senapathy.tools.routes import clear_cache
 
     clear_cache()
     yield

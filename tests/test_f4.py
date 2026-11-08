@@ -12,13 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from perfagent import orchestrator as orch
-from perfagent.contracts import (GateName, LatencyStats, PerfReport, Phase,
+from senapathy import orchestrator as orch
+from senapathy.contracts import (GateName, LatencyStats, PerfReport, Phase,
                                  RunState, TerminalState)
-from perfagent.measure.isolation import (isolation_problem, resolve_datasource,
+from senapathy.measure.isolation import (isolation_problem, resolve_datasource,
                                          touches_schema)
-from perfagent.orchestrator import Budget, Context, PhaseOutcome
-from perfagent.trace import Trace
+from senapathy.orchestrator import Budget, Context, PhaseOutcome
+from senapathy.trace import Trace
 
 
 # ─────────────────────────  the shared-schema guard  ─────────────────────
@@ -109,9 +109,9 @@ def test_the_guard_terminates_with_its_own_state(monkeypatch, tmp_path: Path) ->
     monkeypatch.setattr(orch, "_valid_patch", lambda c, p: None)
     for name in ("verification.json", "perf_report.json", "patch.json"):
         (run_dir / name).write_text("{}")
-    monkeypatch.setattr("perfagent.measure.verify.require_verified",
+    monkeypatch.setattr("senapathy.measure.verify.require_verified",
                         lambda *a, **k: None)
-    monkeypatch.setattr("perfagent.measure.arms.existing_worktree",
+    monkeypatch.setattr("senapathy.measure.arms.existing_worktree",
                         lambda *a, **k: type("W", (), {
                             "source_diff": lambda self: "",
                             "path": tmp_path})())
@@ -251,7 +251,7 @@ def stats(p50: float) -> LatencyStats:
 
 
 def test_the_gate_reads_the_paired_p_value_off_the_artifact() -> None:
-    from perfagent.gate.rules import evaluate_gates
+    from senapathy.gate.rules import evaluate_gates
     from tests.test_gate import patch, plan, verdict
 
     report = PerfReport(
@@ -270,7 +270,7 @@ def test_the_gate_reads_the_paired_p_value_off_the_artifact() -> None:
 
 
 def test_the_artifact_wins_over_the_loose_keyword() -> None:
-    from perfagent.gate.rules import evaluate_gates
+    from senapathy.gate.rules import evaluate_gates
     from tests.test_gate import patch, plan, verdict
 
     report = PerfReport(

@@ -19,24 +19,25 @@ from typing import Any
 
 import pytest
 
-from perfagent.agent import LoopBudget
-from perfagent.contracts import (CandidateFix, EndpointModel, Hypothesis,
+from senapathy.agent import LoopBudget
+from senapathy.contracts import (CandidateFix, EndpointModel, Hypothesis,
                                  HypothesisSet, Layer, LLMResponse, Plan,
                                  RiskTier, Usage)
-from perfagent.errors import ContractViolation, ToolError
-from perfagent.plan.agent import load_plan, plan
-from perfagent.plan.fixability import (assess_fixability, covering_index,
+from senapathy.errors import ContractViolation, ToolError
+from senapathy.plan.agent import load_plan, plan
+from senapathy.plan.fixability import (assess_fixability, covering_index,
                                        matching_per_row_work, rank_hypotheses,
                                        uncovered_columns)
-from perfagent.plan.risk import (assess_risk, forbidden_reason,
+from senapathy.plan.risk import (assess_risk, forbidden_reason,
                                  is_additive_index, parse_index,
                                  schema_change_blocked, selection_problem)
-from perfagent.plan.submit import make_submit_plan
-from perfagent.tools import SourceRoot
-from perfagent.trace import Trace
+from senapathy.plan.submit import make_submit_plan
+from senapathy.tools import SourceRoot
+from senapathy.trace import Trace
 
 CONTROLLER = "src/main/java/com/ex/web/OrderController.java"
 SERVICE = "src/main/java/com/ex/service/OrderService.java"
+REPOSITORY = "src/main/java/com/ex/repo/OrderRepository.java"
 
 
 # ────────────────────────────────  fixtures  ─────────────────────────────
@@ -187,6 +188,78 @@ def test_a_per_row_query_is_batchable() -> None:
     assert verdict.blocked_by is None
 
 
+def test_a_non_sargable_predicate_matches_a_real_policy_row() -> None:
+    """COL-04's h0: sql_share 95%, 157M rows examined, no policy row matched
+    and it fell to the 0.40 UNCLASSIFIED placeholder. The query runs once
+    and scans too much because the predicate wraps an indexed column in a
+    function -- EXPLAIN's own syntax, quoted as evidence, not the model's
+    characterisation of the problem."""
+    verdict = assess_fixability(
+        hypothesis(
+            layer="database_query",
+            claim="the bulk of latency is spent executing the database "
+                  "query itself",
+            mechanism="the WHERE clause wraps the indexed paid_on column "
+                      "in a function, so the optimizer cannot use the index",
+            evidence=["EXPLAIN: Filter: (cast(cp1_0.paid_on as date) >= ?) "
+                     "Table scan on cp1_0 (cost=150921 rows=1.49e+6)"],
+        ),
+        # No per-row access, so the batchable row cannot fire first; no
+        # layer-9 fallthrough either -- this must be classified.
+        endpoint_model(data_access=[]),
+    )
+    assert verdict.classified is True
+    assert verdict.fixability == 0.90
+    assert "rewrite the predicate" in verdict.reason
+    assert "cast(" in verdict.reason
+
+
+def test_a_leading_wildcard_matches_the_same_row() -> None:
+    verdict = assess_fixability(
+        hypothesis(
+            layer="database_query",
+            claim="the name filter scans the whole table",
+            mechanism="the filter uses LIKE '%smith%', which cannot use an "
+                      "index from the left",
+            evidence=["EXPLAIN: WHERE name LIKE '%smith%'"],
+        ),
+        endpoint_model(data_access=[]),
+    )
+    assert verdict.fixability == 0.90
+    assert "leading wildcard" in verdict.reason
+
+
+def test_a_join_product_is_classified_separately_from_a_missing_index() -> None:
+    verdict = assess_fixability(
+        hypothesis(
+            layer="database_query",
+            claim="the join between orders and order_line is slow",
+            mechanism="the join predicate is missing, so MySQL falls back "
+                      "to a block nested loop over both tables",
+            evidence=["EXPLAIN: Using join buffer (Block Nested Loop)"],
+        ),
+        endpoint_model(data_access=[]),
+    )
+    assert verdict.fixability == 0.85
+    assert "join predicate" in verdict.reason
+
+
+def test_a_prose_only_no_index_claim_still_falls_through_to_the_index_row(
+) -> None:
+    """A hypothesis that only SAYS "no index used", with no EXPLAIN-syntax
+    marker, must not be mistaken for a non-sargable predicate: without a
+    marker there is nothing to rewrite, so it still needs rule 5 (missing
+    index) to apply, unchanged."""
+    verdict = assess_fixability(
+        hypothesis(layer="database_query",
+                   claim="the filter query scans the table",
+                   mechanism="the plan reports no index used on order_line",
+                   evidence=["no_index_used=true, rows examined 1,120,858"]),
+        endpoint_model(data_access=[]),
+    )
+    assert "rewrite the predicate" not in verdict.reason
+
+
 def test_a_missing_index_is_the_most_fixable_thing_there_is() -> None:
     verdict = assess_fixability(
         hypothesis(layer="database_query",
@@ -279,7 +352,7 @@ def test_anything_else_is_neither_favoured_nor_excluded() -> None:
 def test_fixability_can_never_be_attributed_to_a_model() -> None:
     from pydantic import ValidationError
 
-    from perfagent.contracts import FixabilityAssessment
+    from senapathy.contracts import FixabilityAssessment
 
     verdict = assess_fixability(hypothesis(), endpoint_model())
     assert verdict.assessed_by == "code"
@@ -419,6 +492,185 @@ def test_a_legitimate_candidate_is_not_forbidden() -> None:
     ) is None
 
 
+def test_an_approach_needing_an_entity_file_is_refused_without_one() -> None:
+    """COL-04: candidate c2 described adding @SqlResultSetMapping while
+    scoping the patch to one repository interface. JPA only allows that
+    annotation on an entity class, so the candidate was unimplementable the
+    moment it was written."""
+    from senapathy.plan.risk import scope_mismatch_reason
+
+    reason = scope_mismatch_reason(
+        description="Replace the JPQL constructor projection with a native "
+                    "SQL query and map the result via @SqlResultSetMapping",
+        mechanism_changed="ORM hydration per row",
+        sql_change=None, files_to_touch=[SERVICE.replace("service", "repo")
+                                         .replace("Service", "Repository")],
+    )
+    assert reason is not None
+    assert "@SqlResultSetMapping" in reason
+    assert "entity file" in reason
+
+
+def test_an_approach_needing_an_entity_file_is_fine_when_one_is_listed() -> None:
+    from senapathy.plan.risk import scope_mismatch_reason
+
+    assert scope_mismatch_reason(
+        description="Add @SqlResultSetMapping on the Invoice entity for a "
+                    "native projection query",
+        mechanism_changed="ORM hydration per row", sql_change=None,
+        files_to_touch=["src/main/java/com/ex/repo/InvoiceRepository.java",
+                       "src/main/java/com/ex/domain/Invoice.java"],
+    ) is None
+
+
+def test_a_jpql_constructor_projection_needs_no_entity_file() -> None:
+    from senapathy.plan.risk import scope_mismatch_reason
+
+    assert scope_mismatch_reason(
+        description="Select a DTO projection via a JPQL constructor "
+                    "expression (SELECT NEW ...)",
+        mechanism_changed="SQL statements per request", sql_change=None,
+        files_to_touch=[SERVICE],
+    ) is None
+
+
+def test_call_path_files_lists_hops_in_order_deduplicated() -> None:
+    from senapathy.plan.risk import call_path_files
+
+    model = endpoint_model(call_chain=[
+        {"method": "OrderController.search", "file": CONTROLLER, "line": 12,
+         "does": "delegates"},
+        {"method": "OrderService.search", "file": SERVICE, "line": 5,
+         "does": "queries"},
+        {"method": "OrderService.search", "file": SERVICE, "line": 6,
+         "does": "queries again"},
+        {"method": "OrderRepository.findByFilter", "file": REPOSITORY,
+         "line": 3, "does": "runs SQL"},
+    ])
+    assert call_path_files(model) == [CONTROLLER, SERVICE, REPOSITORY]
+
+
+def test_derive_scope_adds_the_caller_on_the_same_traced_path() -> None:
+    """COL-06: a query_rewrite scoped to the repository method needed its
+    caller, the service, which was never in files_to_touch. The service is
+    one hop up the SAME traced call chain the repository sits on, so it is
+    added here instead of discovered by the patch agent mid-build."""
+    from senapathy.plan.risk import derive_scope
+
+    model = endpoint_model(call_chain=[
+        {"method": "OrderController.search", "file": CONTROLLER, "line": 12,
+         "does": "delegates"},
+        {"method": "OrderService.search", "file": SERVICE, "line": 5,
+         "does": "queries"},
+        {"method": "OrderRepository.findByFilter", "file": REPOSITORY,
+         "line": 3, "does": "runs SQL"},
+    ])
+    files, reasons = derive_scope([REPOSITORY], model)
+    assert files == [REPOSITORY, CONTROLLER, SERVICE]
+    assert REPOSITORY not in reasons   # never explains a file the model named
+    assert REPOSITORY in reasons[SERVICE]
+    assert REPOSITORY in reasons[CONTROLLER]
+
+
+def test_derive_scope_leaves_files_off_the_call_path_alone() -> None:
+    from senapathy.plan.risk import derive_scope
+
+    model = endpoint_model()   # default CONTROLLER -> SERVICE chain
+    migration = "src/main/resources/db/migration/V2__x.sql"
+    files, reasons = derive_scope([migration], model)
+    assert files == [migration]
+    assert reasons == {}
+
+
+def test_a_candidate_missing_its_own_caller_is_rescoped_not_abandoned(
+    root: SourceRoot
+) -> None:
+    """COL-06, end to end: a query_rewrite scoped to only the repository
+    method is rescoped to include its caller automatically, rather than
+    reaching the patch agent as a dead end it can only abandon."""
+    model = endpoint_model(call_chain=[
+        {"method": "OrderController.search", "file": CONTROLLER, "line": 12,
+         "does": "delegates"},
+        {"method": "OrderService.search", "file": SERVICE, "line": 5,
+         "does": "queries then maps each row"},
+        {"method": "OrderRepository.findByFilter", "file": REPOSITORY,
+         "line": 3, "does": "runs the JPQL query"},
+    ])
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink, model)(candidates=[
+        candidate_payload(
+            approach="query_rewrite",
+            description="widen the repository method's date comparison on "
+                        "the parameter side",
+            mechanism_changed="rows examined",
+            files_to_touch=[REPOSITORY],
+        ),
+        INDEX_CANDIDATE,
+    ])
+    rewritten = next(c for c in sink["plan"].candidates
+                     if c.approach == "query_rewrite")
+    assert rewritten.files_to_touch == [REPOSITORY, CONTROLLER, SERVICE]
+    assert rewritten.not_selectable_because is None
+    assert SERVICE in rewritten.scope_reasons
+    assert CONTROLLER in rewritten.scope_reasons
+
+
+# ──────────────  the typed mechanism field, validated at plan time  ──────
+
+
+def test_a_candidate_without_a_mechanism_is_refused(root: SourceRoot) -> None:
+    raw = candidate_payload()
+    del raw["mechanism"]
+    with pytest.raises(ToolError, match="must state `mechanism`"):
+        submit_handler(root, {})(candidates=[raw, INDEX_CANDIDATE])
+
+
+def test_a_mechanism_outside_the_enum_is_refused(root: SourceRoot) -> None:
+    with pytest.raises(ToolError, match="must state `mechanism`"):
+        submit_handler(root, {})(candidates=[
+            candidate_payload(mechanism="network_round_trips"), INDEX_CANDIDATE])
+
+
+def test_an_unmeasured_mechanism_is_not_selectable_not_rejected(
+    root: SourceRoot
+) -> None:
+    """A mechanism outside INSTRUMENTED_MECHANISMS is still a VALID, honest
+    answer -- 'serialization' is a real enum member -- it just cannot be
+    confirmed by MECHANISM_MATCH. That is a planning error, caught here,
+    not a schema violation and not left to fail the gate after a patch, a
+    verify and a measurement have been paid for."""
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        candidate_payload(
+            mechanism="serialization",
+            mechanism_changed="response serialization cost per row"),
+        INDEX_CANDIDATE,
+    ])
+    plan: Plan = sink["plan"]
+    unmeasured = next(c for c in plan.candidates if c.mechanism == "serialization")
+    assert unmeasured.not_selectable_because is not None
+    assert "does not instrument" in unmeasured.not_selectable_because
+    assert plan.selected_id != unmeasured.id
+
+
+def test_sql_count_and_rows_examined_are_selectable_mechanisms(
+    root: SourceRoot
+) -> None:
+    """Neither instrumented mechanism is itself a reason to rule a candidate
+    out — unlike INDEX_CANDIDATE, neither of these touches the schema."""
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        candidate_payload(),
+        candidate_payload(id="c2", approach="query_rewrite",
+                          mechanism="rows_examined",
+                          mechanism_changed="rows examined",
+                          description="push the date filter into the JPQL "
+                                      "query so the index covers it"),
+    ])
+    plan: Plan = sink["plan"]
+    assert all(c.not_selectable_because is None for c in plan.candidates)
+
+
 def test_selection_refuses_tier_three_and_byte_changers() -> None:
     def candidate(**overrides: Any) -> CandidateFix:
         base: dict[str, Any] = {
@@ -457,6 +709,7 @@ def candidate_payload(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "id": "c1", "targets_hypothesis": "h2", "approach": "fetch_join",
         "description": "replace the per-row sum with a join fetch",
+        "mechanism": "sql_count",
         "mechanism_changed": "SQL statements per request",
         "predicted_effect": "queries per request drop from 22 to 2",
         "files_to_touch": [SERVICE],
@@ -470,6 +723,7 @@ def candidate_payload(**overrides: Any) -> dict[str, Any]:
 INDEX_CANDIDATE = candidate_payload(
     id="c2", approach="add_index",
     description="index order_line on (order_id, status)",
+    mechanism="rows_examined",
     mechanism_changed="rows examined",
     predicted_effect="rows examined per request drop from 1.1M to 42",
     sql_change="CREATE INDEX idx_line_order_id_status ON order_line "
@@ -534,7 +788,7 @@ def test_an_index_cannot_be_proposed_without_a_measured_index_list(
 
 def test_get_schema_facts_beat_the_map(root: SourceRoot) -> None:
     """What the database said during THIS conversation wins."""
-    from perfagent.contracts import TableInfo
+    from senapathy.contracts import TableInfo
 
     blind = endpoint_model(tables=[
         {"table": "order_line", "columns_read": ["order_id"],
@@ -628,6 +882,33 @@ def test_a_new_migration_file_is_the_one_allowed_exception(
     assert sink["plan"].selected_id is not None
 
 
+def test_a_candidate_needing_an_entity_file_is_not_selectable_at_plan_time(
+    root: SourceRoot
+) -> None:
+    """COL-04, at the point it should have been caught: a candidate scoped
+    to one repository interface describing a technique JPA confines to an
+    entity class cannot be rescued by call-path expansion either — no entity
+    class is ever a hop on a traced call chain — so it is recorded but ruled
+    out here, in the same conversation, instead of reaching the patch agent."""
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        candidate_payload(
+            approach="query_rewrite",
+            description="Replace the JPQL constructor projection with a "
+                        "native SQL query and map the result via "
+                        "@SqlResultSetMapping",
+            mechanism_changed="ORM hydration per row",
+            files_to_touch=[SERVICE],
+        ),
+        INDEX_CANDIDATE,
+    ])
+    plan: Plan = sink["plan"]
+    mismatched = next(c for c in plan.candidates if c.approach == "query_rewrite")
+    assert mismatched.not_selectable_because is not None
+    assert "entity file" in mismatched.not_selectable_because
+    assert plan.selected_id != mismatched.id
+
+
 def test_a_test_file_in_the_allowlist_is_refused(root: SourceRoot) -> None:
     with pytest.raises(ToolError, match="immutable"):
         submit_handler(root, {})(candidates=[
@@ -637,7 +918,7 @@ def test_a_test_file_in_the_allowlist_is_refused(root: SourceRoot) -> None:
 
 
 def test_a_path_escape_in_the_allowlist_is_refused(root: SourceRoot) -> None:
-    from perfagent.errors import GuardrailError
+    from senapathy.errors import GuardrailError
 
     with pytest.raises(GuardrailError, match="outside the repository"):
         submit_handler(root, {})(candidates=[
@@ -697,7 +978,7 @@ def test_a_plan_where_nothing_is_selectable_says_so(root: SourceRoot) -> None:
 
 def test_risk_and_expected_value_are_not_in_the_tool_schema() -> None:
     """A model that could set its own tier would set it to LOW."""
-    from perfagent.plan.submit import CANDIDATE_SCHEMA
+    from senapathy.plan.submit import CANDIDATE_SCHEMA
 
     properties = set(CANDIDATE_SCHEMA["properties"])
     assert not properties & {"risk_tier", "requires_flag", "expected_value_ms"}
@@ -825,7 +1106,7 @@ def test_the_transcript_does_not_leave_the_phase(fixture_repo: Path,
 
 
 def test_the_phase_offers_no_tool_that_writes(fixture_repo: Path) -> None:
-    from perfagent.plan.agent import build_registry
+    from senapathy.plan.agent import build_registry
 
     hypotheses, model = recorded()
     ranked = rank_hypotheses(hypotheses, model)
@@ -845,8 +1126,8 @@ def test_the_phase_can_read_the_live_schema_when_a_target_exists(
     """get_schema is in the surface so a proposed index can be checked against
     the database rather than against the model's memory of it. Constructing a
     target opens no connection."""
-    from perfagent.measure.sql import MySQLTarget
-    from perfagent.plan.agent import build_registry
+    from senapathy.measure.sql import MySQLTarget
+    from senapathy.plan.agent import build_registry
 
     hypotheses, model = recorded()
     registry = build_registry(
@@ -854,7 +1135,8 @@ def test_the_phase_can_read_the_live_schema_when_a_target_exists(
         ranked=rank_hypotheses(hypotheses, model), considered=["h2", "h1"],
         endpoint="POST /api/orders/search",
         measured_total_ms=hypotheses.measured_total_ms,
-        mysql=MySQLTarget(),
+        mysql=MySQLTarget(host="127.0.0.1", port=3307, user="root",
+                          password="root", database="mini"),
     )
     assert "get_schema" in registry.names()
     # Order is part of the prompt whether you intended it or not.
@@ -864,27 +1146,28 @@ def test_the_phase_can_read_the_live_schema_when_a_target_exists(
 # ───────────────────────────  wiring and guards  ─────────────────────────
 
 
-def test_the_patch_phase_is_refused_without_a_plan(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_patch_phase_is_refused_without_a_plan(tmp_path: Path) -> None:
     """Acceptance 5. The guard reads the artifact, not the run state.
 
     This is a test of the PLAN guard specifically, so the oracle guard ahead
     of it must pass — with a minimal, hermetic oracle this test controls,
-    never the real `.perfagent/oracle.json` on whatever machine runs the
+    never the real `.senapathy/oracle.json` on whatever machine runs the
     suite. Depending on that file's state is exactly the kind of coupling
     that made this test collateral damage when the oracle's hash scheme
     changed under it.
     """
-    from perfagent import orchestrator as orch
-    from perfagent.contracts import BehaviourOracle, Phase, RunState, TolerancePolicy
-    from perfagent.oracle import record as oracle_record
+    from senapathy import orchestrator as orch
+    from senapathy.contracts import BehaviourOracle, Phase, RunState, TolerancePolicy
+    from senapathy.oracle import record as oracle_record
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "hypotheses.json").write_text("{}")
 
-    oracle_path = tmp_path / "oracle.json"
+    # THIS run's oracle, not the global default -- there is no such default
+    # any more, and depending on one is exactly the coupling that made this
+    # test collateral damage before.
+    oracle_path = run_dir / "oracle.json"
     fields = {
         "corpus_hash": "c", "recorded": [],
         "policy": TolerancePolicy().model_dump(mode="json"),
@@ -897,7 +1180,6 @@ def test_the_patch_phase_is_refused_without_a_plan(
         BehaviourOracle.model_validate({**fields, "hash": computed}),
         {}, path=oracle_path,
     )
-    monkeypatch.setattr(oracle_record, "ORACLE_PATH", oracle_path)
 
     ctx = orch.Context(run_id="r1", run_dir=run_dir, repo=tmp_path,
                        endpoint="POST /x", budget=orch.Budget(),
@@ -910,8 +1192,8 @@ def test_the_patch_phase_is_refused_without_a_plan(
 
 
 def test_the_plan_phase_is_refused_without_a_diagnosis(tmp_path: Path) -> None:
-    from perfagent import orchestrator as orch
-    from perfagent.contracts import Phase, RunState
+    from senapathy import orchestrator as orch
+    from senapathy.contracts import Phase, RunState
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -925,10 +1207,44 @@ def test_the_plan_phase_is_refused_without_a_diagnosis(tmp_path: Path) -> None:
     assert blocked is not None and "hypotheses.json" in blocked
 
 
+def test_write_plan_stamps_the_current_baseline_hash(tmp_path: Path) -> None:
+    """Resume's skip check compares this against the run's CURRENT
+    baseline.json -- a plan ranked against a baseline that has since been
+    re-measured is not evidence for the current one."""
+    from senapathy.measure.baseline import baseline_hash
+    from senapathy.plan.agent import write_plan
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    baseline_doc = {"derived": {"total_sql_statements": 3}}
+    (run_dir / "baseline.json").write_text(json.dumps(baseline_doc))
+
+    result = Plan(endpoint="POST /x", measured_total_ms=10.0, ranked=[],
+                 selection_reason="nothing cleared the bar")
+    path = write_plan(result, run_dir)
+
+    saved = json.loads(path.read_text())
+    assert saved["baseline_hash"] == baseline_hash(baseline_doc)
+
+
+def test_write_plan_stamps_nothing_when_there_is_no_baseline_yet(
+    tmp_path: Path
+) -> None:
+    from senapathy.plan.agent import write_plan
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    result = Plan(endpoint="POST /x", measured_total_ms=10.0, ranked=[],
+                 selection_reason="nothing cleared the bar")
+    path = write_plan(result, run_dir)
+
+    assert "baseline_hash" not in json.loads(path.read_text())
+
+
 def test_a_plan_with_no_selection_does_not_let_the_phase_be_skipped(
     tmp_path: Path
 ) -> None:
-    from perfagent import orchestrator as orch
+    from senapathy import orchestrator as orch
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -946,7 +1262,7 @@ def test_a_plan_with_no_selection_does_not_let_the_phase_be_skipped(
 def test_a_plan_for_another_endpoint_does_not_satisfy_this_run(
     fixture_repo: Path, tmp_path: Path
 ) -> None:
-    from perfagent import orchestrator as orch
+    from senapathy import orchestrator as orch
 
     result = run_phase(
         Scripted({"name": "submit_plan",
@@ -967,7 +1283,7 @@ def test_the_gate_reads_the_plan_artifact_and_refuses_to_invent_one(
     fixture_repo: Path, tmp_path: Path
 ) -> None:
     """`plan_from_patch` is gone: a plan derived from the patch proves nothing."""
-    import perfagent.ship as ship
+    import senapathy.ship as ship
 
     assert not hasattr(ship, "plan_from_patch")
 
@@ -981,7 +1297,9 @@ def test_the_gate_reads_the_plan_artifact_and_refuses_to_invent_one(
         fixture_repo, tmp_path,
     )
     candidate = ship.selected_plan(tmp_path / "run")
-    assert candidate.files_to_touch == [SERVICE]
+    # SERVICE is the file the candidate named; CONTROLLER is added because it
+    # is the caller before SERVICE on the endpoint's own traced call path.
+    assert candidate.files_to_touch == [SERVICE, CONTROLLER]
     assert candidate.risk_tier is RiskTier.LOW
 
 
@@ -989,10 +1307,10 @@ def test_the_gate_reads_the_plan_artifact_and_refuses_to_invent_one(
 #
 # The real artifacts from two runs on mini-spring:
 #
-#   .perfagent/runs/01M1P0WPGTMTQWPP00EQR1GGC2/endpoint_model.json
-#   .perfagent/runs/p16-full/hypotheses.json
+#   .senapathy/runs/01M1P0WPGTMTQWPP00EQR1GGC2/endpoint_model.json
+#   .senapathy/runs/p16-full/hypotheses.json
 #
-# `.perfagent/*` is gitignored, so verbatim copies live in tests/fixtures/plan/
+# `.senapathy/*` is gitignored, so verbatim copies live in tests/fixtures/plan/
 # as well: a regression test that silently skips when a file is missing is not
 # a regression test. The real file is preferred when it is present, so this
 # keeps testing the live artifact on the machine that produced it.
@@ -1007,8 +1325,8 @@ def test_the_gate_reads_the_plan_artifact_and_refuses_to_invent_one(
 FIXTURES = Path(__file__).parent / "fixtures" / "plan"
 RECORDED = {
     "endpoint_model.json":
-        Path(".perfagent/runs/01M1P0WPGTMTQWPP00EQR1GGC2/endpoint_model.json"),
-    "hypotheses.json": Path(".perfagent/runs/p16-full/hypotheses.json"),
+        Path(".senapathy/runs/01M1P0WPGTMTQWPP00EQR1GGC2/endpoint_model.json"),
+    "hypotheses.json": Path(".senapathy/runs/p16-full/hypotheses.json"),
 }
 
 
@@ -1157,7 +1475,7 @@ def test_an_unclassified_hypothesis_ranks_below_every_classified_one() -> None:
 
 
 def test_an_unclassified_entry_renders_as_a_placeholder_not_a_finding() -> None:
-    from perfagent.render.plan import render_ranking
+    from senapathy.render.plan import render_ranking
 
     hypotheses = HypothesisSet(
         measured_total_ms=2000.0, ranked_ids=["big", "net", "ser"],
@@ -1260,7 +1578,7 @@ def test_schema_change_not_blocked_when_the_repo_is_genuinely_isolated(
     comparison, not a hardcoded 'always block add_index'. `schema_change_
     blocked` imports `arms_share_one_schema` lazily from measure.isolation, so
     patching it on that module is what the call site actually sees."""
-    import perfagent.measure.isolation as isolation_mod
+    import senapathy.measure.isolation as isolation_mod
 
     monkeypatch.setattr(isolation_mod, "arms_share_one_schema",
                         lambda blue, green: None)   # pretend per-arm schemas exist
@@ -1333,7 +1651,7 @@ def test_the_blocked_candidate_is_not_deleted_from_the_plan(
 
 
 def test_it_is_visible_in_the_ranking_output(root: SourceRoot) -> None:
-    from perfagent.render.plan import render_plan
+    from senapathy.render.plan import render_plan
 
     sink: dict[str, Any] = {}
     submit_handler(root, sink)(candidates=[
@@ -1357,7 +1675,7 @@ def test_it_is_visible_in_the_pr_body_rejected_candidates_section() -> None:
     """ship.py's `_rejected_rows` reads `plan.not_selected` — the same list
     the ranking renders from — so no separate wiring is needed for the PR
     body; this proves that's actually true rather than assumed."""
-    from perfagent.ship import _rejected_rows
+    from senapathy.ship import _rejected_rows
 
     plan_payload = {
         "not_selected": [
@@ -1374,7 +1692,7 @@ def test_the_measure_time_guard_still_exists_as_a_backstop() -> None:
     """The plan-time check does not replace the measure-time one — the
     environment can change between plan and measure (a worktree rebuilt, a
     config edited). Both must independently be able to say no."""
-    from perfagent.measure.isolation import isolation_problem
+    from senapathy.measure.isolation import isolation_problem
 
     repo = Path("/tmp/does-not-need-to-exist-for-this-assertion")
-    assert isolation_problem.__module__ == "perfagent.measure.isolation"
+    assert isolation_problem.__module__ == "senapathy.measure.isolation"

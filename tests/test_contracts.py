@@ -1,7 +1,7 @@
 from __future__ import annotations
 import pytest
 from pydantic import ValidationError
-from perfagent.contracts import (
+from senapathy.contracts import (
     Citation, EndpointModel, HypothesisSet, Hypothesis,
     RiskTier, TerminalState, EquivalenceVerdict, RequestCorpus, RequestSpec,
 )
@@ -111,7 +111,7 @@ def test_table_info_carries_existing_indexes():
     """Session 3 must be able to tell a MISSING index from one that is already
     there, and must never propose a duplicate. It can only do that if this
     phase records what exists."""
-    from perfagent.contracts import IndexInfo, TableInfo
+    from senapathy.contracts import IndexInfo, TableInfo
 
     table = TableInfo(
         table="invoice",
@@ -130,7 +130,7 @@ def test_table_info_carries_existing_indexes():
 def test_index_columns_keep_their_order():
     """Order matters for a composite index: (a, b) and (b, a) are different
     indexes and only one of them answers a given query."""
-    from perfagent.contracts import IndexInfo
+    from senapathy.contracts import IndexInfo
 
     index = IndexInfo(name="idx", columns=["status", "due_date"], unique=False)
     assert index.columns == ["status", "due_date"]
@@ -146,7 +146,7 @@ def test_columns_read_is_what_makes_over_fetching_detectable():
     """An entity with thirty columns where the endpoint reads three is a
     projection opportunity, and nothing downstream can see it unless this
     phase records it."""
-    from perfagent.contracts import TableInfo
+    from senapathy.contracts import TableInfo
 
     table = TableInfo(table="customer", columns_read=["id", "name"],
                       all_columns=[f"c{n} varchar(255)" for n in range(30)])
@@ -189,7 +189,7 @@ def test_per_row_accesses_are_computed_never_counted_by_a_model():
 def test_data_access_must_declare_whether_it_runs_per_row():
     """'Does this run once, or once per row?' is the question the whole phase
     exists to answer, so it has no default."""
-    from perfagent.contracts import DataAccess
+    from senapathy.contracts import DataAccess
 
     with pytest.raises(ValidationError):
         DataAccess(trigger="t", kind="jpql_query", file="R.java", line=1)

@@ -325,7 +325,7 @@ The Session 1 standing bar applies. In addition:
   path changes.
 - Existing tests stay green. `EndpointModel` gains only optional fields and defaults, so
   every existing artifact must still load — add a test that loads the current
-  `.perfagent/endpoint_model.json` unchanged.
+  `.senapathy/endpoint_model.json` unchanged.
 - `docs/understand.md` updated with the new fields and what each is for.
 
 ---
@@ -354,7 +354,7 @@ The first is the session. The rest support it.
 
 7. The existing `endpoint_model.json` still loads under the new schema.
 
-8. `perfagent understand --verbose` renders the new sections, with the unbounded marker
+8. `senapathy understand --verbose` renders the new sections, with the unbounded marker
    visible.
 
 ## Report back

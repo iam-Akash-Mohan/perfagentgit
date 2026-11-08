@@ -13,13 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from perfagent.contracts import Phase, RunState, TerminalState
-from perfagent.errors import BudgetExhausted, ContractViolation, ToolError
-from perfagent import orchestrator as orch
-from perfagent.orchestrator import (BY_NAME, PIPELINE, Budget, Context,
+from senapathy.contracts import Phase, RunState, TerminalState
+from senapathy.errors import BudgetExhausted, ContractViolation, ToolError
+from senapathy import orchestrator as orch
+from senapathy.orchestrator import (BY_NAME, PIPELINE, Budget, Context,
                                     MeteredClient, PhaseOutcome, load_state,
                                     run_pipeline, save_state, state_path)
-from perfagent.trace import Trace
+from senapathy.trace import Trace
 
 
 # ──────────────────────────────  fixtures  ───────────────────────────────
@@ -37,8 +37,8 @@ def stub_pipeline(monkeypatch, *, fails: dict[str, Exception] | None = None,
 
     The runner is handed the PATCHED artifact resolver, not the original spec's.
     An earlier version closed over the original, so the stubs wrote to the real
-    `.perfagent/oracle.json`, `.perfagent/endpoint_model.json` and
-    `perfagent/measure/corpus.json` and destroyed them. `_assert_under_run_dir`
+    `.senapathy/oracle.json`, `.senapathy/endpoint_model.json` and
+    `senapathy/measure/corpus.json` and destroyed them. `_assert_under_run_dir`
     is the belt to that braces.
     """
     fails = fails or {}
@@ -149,6 +149,47 @@ def test_a_phase_with_a_valid_artifact_is_skipped(monkeypatch, runs: Path) -> No
     assert "baseline" in order
 
 
+def test_an_artifact_whose_input_hash_no_longer_matches_is_not_skipped(
+    monkeypatch, runs: Path
+) -> None:
+    """Artifacts built on a broken corpus must not be silently reusable: a
+    resume that only checks 'does the file exist and parse' would skip an
+    oracle recorded against a corpus this run no longer has."""
+    order = stub_pipeline(
+        monkeypatch, terminals={"ship": TerminalState.NO_SIGNIFICANT_IMPROVEMENT}
+    )
+    run_dir = runs / "r-stale"
+    run_dir.mkdir(parents=True)
+    (run_dir / "corpus.json").write_text(json.dumps({"hash": "current-corpus"}))
+    (run_dir / "oracle.json").write_text(
+        json.dumps({"corpus_hash": "an-old-corpus-this-run-no-longer-has"}))
+
+    run_pipeline(run_id="r-stale", runs_dir=runs)
+
+    # Not skipped: the stub re-ran it and overwrote the stale content.
+    assert "oracle" in order
+    assert json.loads((run_dir / "oracle.json").read_text()) == {"phase": "oracle"}
+
+
+def test_an_artifact_whose_input_hash_still_matches_is_skipped(
+    monkeypatch, runs: Path
+) -> None:
+    """The matching case, so the mismatch test above is proof of a check and
+    not a check that always fires."""
+    order = stub_pipeline(
+        monkeypatch, terminals={"ship": TerminalState.NO_SIGNIFICANT_IMPROVEMENT}
+    )
+    run_dir = runs / "r-fresh"
+    run_dir.mkdir(parents=True)
+    (run_dir / "corpus.json").write_text(json.dumps({"hash": "current-corpus"}))
+    (run_dir / "oracle.json").write_text(
+        json.dumps({"corpus_hash": "current-corpus"}))
+
+    run_pipeline(run_id="r-fresh", runs_dir=runs)
+
+    assert "oracle" not in order
+
+
 def test_resume_restarts_after_the_last_completed_phase(
     monkeypatch, runs: Path
 ) -> None:
@@ -175,6 +216,47 @@ def test_resume_restarts_after_the_last_completed_phase(
     assert "understand" not in second and "baseline" not in second
     assert second[0] == "diagnose"
     assert resumed.terminal == TerminalState.NO_SIGNIFICANT_IMPROVEMENT
+
+
+def test_a_completed_phase_whose_artifact_was_deleted_re_runs(
+    monkeypatch, runs: Path
+) -> None:
+    """`completed_phases` is a record of what happened, not evidence the
+    output still exists. Deleting an artifact after the phase that produced
+    it ran must be enough to force a re-run on resume -- the old condition
+    (`already or valid`) let `completed_phases` skip a phase forever
+    regardless of whether its artifact was still on disk."""
+    first = stub_pipeline(
+        monkeypatch,
+        fails={"diagnose": ToolError("provider fell over")},
+    )
+    state = run_pipeline(run_id="r-deleted", runs_dir=runs)
+    assert "oracle" in first
+    assert Phase.ORACLE in state.completed_phases
+
+    run_dir = runs / "r-deleted"
+    oracle_path = run_dir / "oracle.json"
+    assert oracle_path.exists()
+    oracle_path.unlink()
+
+    second: list[str] = []
+    stub_pipeline(
+        monkeypatch, order=second,
+        terminals={"ship": TerminalState.NO_SIGNIFICANT_IMPROVEMENT},
+    )
+    events: list[dict] = []
+    resumed = run_pipeline(runs_dir=runs, resume="r-deleted",
+                           on_event=events.append)
+
+    # Re-run, not skipped -- and the artifact exists again afterwards.
+    assert "oracle" in second
+    assert oracle_path.exists()
+    assert resumed.terminal == TerminalState.NO_SIGNIFICANT_IMPROVEMENT
+
+    missing_notes = [e for e in events if e["kind"] == "artifact_missing"]
+    assert any(e["phase"] == "oracle" for e in missing_notes), (
+        "the operator must be told WHY a 'completed' phase re-ran"
+    )
 
 
 def test_resume_keeps_the_original_run_id_and_endpoint(
@@ -226,32 +308,67 @@ def context_for(tmp_path: Path) -> Context:
     )
 
 
-def test_patch_is_refused_without_a_recorded_oracle(tmp_path: Path, monkeypatch) -> None:
+def write_oracle(run_dir: Path, *, endpoint: str = "") -> Path:
+    """A minimal, self-consistent oracle.json for THIS run_dir -- never the
+    global default, which no longer exists."""
+    from senapathy.contracts import BehaviourOracle, TolerancePolicy
+    from senapathy.oracle.record import oracle_hash, write_oracle as _write
+
+    policy = TolerancePolicy()
+    computed = oracle_hash(corpus_hash="c", recorded=[], policy=policy,
+                           base_commit="a" * 40, excluded_tables=[])
+    oracle = BehaviourOracle.model_validate({
+        "endpoint": endpoint, "corpus_hash": "c", "recorded": [],
+        "policy": policy.model_dump(mode="json"), "base_commit": "a" * 40,
+        "excluded_tables": [], "hash": computed,
+    })
+    return _write(oracle, {}, path=run_dir / "oracle.json")
+
+
+def test_patch_is_refused_without_a_recorded_oracle(tmp_path: Path) -> None:
     """The guard that matters most: a patch written before behaviour is frozen
-    has nothing to be checked against."""
+    has nothing to be checked against. No oracle.json in THIS run's directory
+    -- not a monkeypatched global -- is what must trigger the refusal."""
     (tmp_path / "hypotheses.json").write_text("{}")
-    monkeypatch.setattr(
-        "perfagent.oracle.record.ORACLE_PATH", tmp_path / "absent-oracle.json"
-    )
     reason = orch._preconditions(BY_NAME["patch"], context_for(tmp_path), None)
     assert reason is not None
     assert "without a recorded oracle" in reason
     assert "freeze the patch's own behaviour" in reason
 
 
-def test_patch_is_refused_without_a_diagnosis(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        "perfagent.oracle.record.load_oracle", lambda path=None: object()
-    )
+def test_patch_is_refused_without_a_diagnosis(tmp_path: Path) -> None:
+    write_oracle(tmp_path, endpoint="e")
     reason = orch._preconditions(BY_NAME["patch"], context_for(tmp_path), None)
     assert reason is not None and "without a diagnosis" in reason
+
+
+def test_patch_is_refused_when_the_oracle_is_for_a_different_endpoint(
+    tmp_path: Path
+) -> None:
+    """The real defect this phase guard exists to close: a recording of
+    POST /api/customers/search guarding a patch for a different endpoint.
+    Scoping the read to this run's own oracle.json is necessary but not
+    sufficient on its own -- the file in THIS run's directory could still
+    describe a different route, so the endpoint itself must be checked."""
+    (tmp_path / "hypotheses.json").write_text("{}")
+    write_oracle(tmp_path, endpoint="POST /api/customers/search")
+
+    ctx = Context(run_id="g", run_dir=tmp_path, repo=None,
+                 endpoint="GET /api/customers/{id}/invoices",
+                 budget=Budget(), trace=Trace(tmp_path, "g"))
+
+    reason = orch._preconditions(BY_NAME["patch"], ctx, None)
+
+    assert reason is not None
+    assert "POST /api/customers/search" in reason
+    assert "GET /api/customers/{id}/invoices" in reason
 
 
 def test_measure_is_refused_without_a_passing_verification(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(
-        "perfagent.measure.arms.existing_worktree",
+        "senapathy.measure.arms.existing_worktree",
         lambda path, repo=None: type("W", (), {"source_diff": lambda self: "d"})(),
     )
     reason = orch._preconditions(BY_NAME["measure"], context_for(tmp_path), None)
@@ -456,7 +573,7 @@ def test_every_terminal_state_is_reachable_from_the_orchestrator() -> None:
 def test_the_trace_renders_a_narrative_and_a_cost_table(
     monkeypatch, runs: Path
 ) -> None:
-    from perfagent.trace_view import render_trace
+    from senapathy.trace_view import render_trace
 
     stub_pipeline(
         monkeypatch, terminals={"ship": TerminalState.NO_SIGNIFICANT_IMPROVEMENT}
@@ -471,7 +588,7 @@ def test_the_trace_renders_a_narrative_and_a_cost_table(
 
 
 def test_the_trace_marks_skipped_phases(monkeypatch, runs: Path) -> None:
-    from perfagent.trace_view import render_trace
+    from senapathy.trace_view import render_trace
 
     stub_pipeline(monkeypatch, fails={"diagnose": ToolError("stop")})
     run_pipeline(run_id="r13", runs_dir=runs)
@@ -486,7 +603,7 @@ def test_the_trace_marks_skipped_phases(monkeypatch, runs: Path) -> None:
 
 
 def test_the_trace_says_when_dollars_are_not_priced(monkeypatch, runs: Path) -> None:
-    from perfagent.trace_view import render_trace
+    from senapathy.trace_view import render_trace
 
     stub_pipeline(monkeypatch, terminals={"ship": TerminalState.PR_OPENED})
     run_pipeline(run_id="r14", runs_dir=runs)
@@ -496,7 +613,7 @@ def test_the_trace_says_when_dollars_are_not_priced(monkeypatch, runs: Path) -> 
 
 
 def test_trace_of_a_missing_run_is_refused(runs: Path) -> None:
-    from perfagent.trace_view import render_trace
+    from senapathy.trace_view import render_trace
 
     runs.mkdir(parents=True)
     with pytest.raises(ContractViolation):

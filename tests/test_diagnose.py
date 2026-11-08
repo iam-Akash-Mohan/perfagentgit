@@ -13,10 +13,10 @@ from typing import Any
 import httpx
 import pytest
 
-from perfagent.contracts import HypothesisSet, Layer
-from perfagent.errors import ContractViolation, ToolError
-from perfagent.diagnose.agent import build_task
-from perfagent.diagnose.evidence import (
+from senapathy.contracts import HypothesisSet, Layer
+from senapathy.errors import ContractViolation, ToolError
+from senapathy.diagnose.agent import build_task
+from senapathy.diagnose.evidence import (
     app_digests,
     estimated_result_rows,
     latest_run_dir,
@@ -26,8 +26,8 @@ from perfagent.diagnose.evidence import (
     repeated_digests,
     unexplained_share_pct,
 )
-from perfagent.diagnose.probe import MAX_ITERATIONS, MAX_PAGE_SIZE, ProbeLog, make_run_probe
-from perfagent.diagnose.validate import ATTRIBUTION_TOLERANCE, validate_hypothesis_set
+from senapathy.diagnose.probe import MAX_ITERATIONS, MAX_PAGE_SIZE, ProbeLog, make_run_probe
+from senapathy.diagnose.validate import ATTRIBUTION_TOLERANCE, validate_hypothesis_set
 
 P50 = 1000.0
 
@@ -213,6 +213,64 @@ def test_attribution_exactly_at_the_tolerance_is_accepted() -> None:
     assert result.measured_total_ms == P50
 
 
+def test_attribution_far_below_measured_p50_is_rejected() -> None:
+    """COL-04: three hypotheses totalling 11 ms on a measured p50 of ~267 ms
+    (4%) passed the OLD check cleanly, because that check only ever caught
+    OVER-attribution. A diagnosis that explains a sliver of what was
+    measured has not found the cause."""
+    thin = [_h(1, 5.0, "orm_hydration"), _h(2, 4.0, "serialization"),
+           _h(3, 2.0, "application_logic")]
+    with pytest.raises(ToolError, match="only 1.1% of the measured p50"):
+        validate_hypothesis_set(_payload(hypotheses=thin), P50)
+
+
+def test_attribution_exactly_at_the_floor_is_accepted() -> None:
+    at_floor = [_h(1, 300, "orm_hydration"), _h(2, 100, "serialization"),
+               _h(3, 100, "application_logic")]
+    assert sum(h["attributed_ms"] for h in at_floor) == P50 * 0.5
+    result = validate_hypothesis_set(_payload(hypotheses=at_floor), P50)
+    assert result.measured_total_ms == P50
+
+
+def test_a_high_sql_share_with_no_database_hypothesis_is_rejected() -> None:
+    """COL-04: sql_share_of_latency_pct = 95.16, busiest digest doing a full
+    scan of the endpoint's own query -- and none of the three hypotheses
+    named the database_query layer. That is a contradiction between the
+    evidence and the diagnosis, not a competing theory."""
+    no_database = [_h(1, 300, "orm_hydration"), _h(2, 200, "serialization"),
+                  _h(3, 100, "application_logic")]
+    with pytest.raises(ToolError, match="none of your hypotheses names the "
+                       "database_query layer"):
+        validate_hypothesis_set(_payload(hypotheses=no_database), P50,
+                               sql_share_of_latency_pct=95.16)
+
+
+def test_a_high_sql_share_with_a_database_hypothesis_is_accepted() -> None:
+    result = validate_hypothesis_set(_payload(), P50,
+                                     sql_share_of_latency_pct=95.16)
+    assert result.measured_total_ms == P50
+
+
+def test_a_low_sql_share_with_a_dominant_database_hypothesis_is_rejected() -> None:
+    """The inverse contradiction: claiming the database dominates when the
+    measurement shows it barely runs at all."""
+    database_dominant = [_h(1, 600, "database_query"),
+                         _h(2, 200, "serialization"), _h(3, 100, "network")]
+    with pytest.raises(ToolError, match="the measurement shows it does not"):
+        validate_hypothesis_set(_payload(hypotheses=database_dominant), P50,
+                               sql_share_of_latency_pct=1.05)
+
+
+def test_sql_share_checks_are_skipped_when_not_supplied() -> None:
+    """A caller without a baseline handy -- a hand-built test, an older
+    artifact -- still gets every other check; this one just isn't reachable
+    without the evidence it reconciles against."""
+    no_database = [_h(1, 300, "orm_hydration"), _h(2, 200, "serialization"),
+                  _h(3, 100, "application_logic")]
+    result = validate_hypothesis_set(_payload(hypotheses=no_database), P50)
+    assert result.measured_total_ms == P50
+
+
 def test_ranked_ids_must_reference_real_hypotheses() -> None:
     with pytest.raises(ToolError, match="unknown hypothesis id\\(s\\): h9"):
         validate_hypothesis_set(_payload(ranked_ids=["h1", "h2", "h9"]), P50)
@@ -239,7 +297,10 @@ def test_probe_cannot_reference_an_unknown_hypothesis() -> None:
 
 
 def test_hypotheses_must_span_at_least_two_layers() -> None:
-    same = [_h(1, 100), _h(2, 100), _h(3, 100)]
+    # 200 each, not 100: the sum has to clear the attribution floor (2b) so
+    # this test reaches the layer-span check (5) it actually means to
+    # exercise, rather than being intercepted by a different, earlier one.
+    same = [_h(1, 200), _h(2, 200), _h(3, 200)]
     with pytest.raises(ToolError, match="same layer \\(database_query\\)"):
         validate_hypothesis_set(_payload(hypotheses=same), P50)
 
@@ -269,7 +330,7 @@ class _FakeTarget:
 
 
 def _probe_runner(monkeypatch: pytest.MonkeyPatch, handler, digests=None) -> tuple:
-    import perfagent.diagnose.probe as probe_mod
+    import senapathy.diagnose.probe as probe_mod
 
     monkeypatch.setattr(probe_mod, "reset_digests", lambda target: None)
     monkeypatch.setattr(probe_mod, "collect_digests", lambda target: digests or [])
@@ -324,7 +385,7 @@ def test_probe_is_read_only_and_cannot_choose_a_url_or_verb(
 def test_probe_reports_the_signals_the_agent_needs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from perfagent.contracts import SqlDigestStat
+    from senapathy.contracts import SqlDigestStat
 
     body = {"content": [{"id": i} for i in range(4)]}
 
@@ -360,7 +421,7 @@ def test_probe_rejects_non_integer_arguments(monkeypatch: pytest.MonkeyPatch) ->
 # ──────────────────────────────  loading  ───────────────────────────────
 
 def test_missing_baseline_is_an_actionable_contract_violation(tmp_path: Path) -> None:
-    with pytest.raises(ContractViolation, match="Run `perfagent baseline` first"):
+    with pytest.raises(ContractViolation, match="Run `senapathy baseline` first"):
         load_baseline(tmp_path / "baseline.json")
 
 
@@ -404,7 +465,7 @@ def test_an_accepted_diagnosis_survives_a_later_loop_crash(
     """P01 raises KeyError('choices') on any non-200 from the provider, so a
     rate limit ONE STEP AFTER a successful emit must not discard a diagnosis
     that already passed every check."""
-    import perfagent.diagnose.agent as agent_mod
+    import senapathy.diagnose.agent as agent_mod
 
     run = tmp_path / "20260101T000000Z"
     run.mkdir()
@@ -417,7 +478,16 @@ def test_an_accepted_diagnosis_survives_a_later_loop_crash(
         # function it stands in for fails when the real signature grows one,
         # which says nothing about the behaviour under test.
         handlers["run_probe"](page_size=5, name_filter="a", iterations=2)
-        handlers["emit_hypotheses"](**_payload())
+        # Not _payload()'s own default: that defaults h1 to database_query at
+        # 500 ms, which is exactly the inverse-sql-share contradiction (2c)
+        # against this fixture's sql_share_of_latency_pct of 1.05 -- a
+        # collision with THIS test's own fixtures, unrelated to what this
+        # test is actually about (survival of an accepted diagnosis past a
+        # later loop crash).
+        handlers["emit_hypotheses"](**_payload(hypotheses=[
+            _h(1, 100, "orm_hydration"), _h(2, 300, "serialization"),
+            _h(3, 100, "application_logic"),
+        ]))
         raise KeyError("choices")          # exactly what a 429 produces
 
     monkeypatch.setattr(agent_mod, "run_agent", fake_run_agent)
@@ -436,11 +506,18 @@ def test_an_accepted_diagnosis_survives_a_later_loop_crash(
     assert "KeyError" in saved["loop_error_after_acceptance"]
     assert hset.measured_total_ms == P50
 
+    # Resume's skip check compares this against the run's CURRENT
+    # baseline.json -- a diagnosis attributed against a baseline that has
+    # since been re-measured is not evidence for the current one.
+    from senapathy.measure.baseline import baseline_hash
+
+    assert saved["baseline_hash"] == baseline_hash(_baseline())
+
 
 def test_a_crash_before_any_acceptance_is_reported_not_swallowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import perfagent.diagnose.agent as agent_mod
+    import senapathy.diagnose.agent as agent_mod
 
     run = tmp_path / "20260101T000000Z"
     run.mkdir()

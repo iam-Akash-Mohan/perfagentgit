@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from perfagent.errors import GuardrailError, ToolError
-from perfagent.tools import SourceRoot, ToolRegistry, ToolSpec
-from perfagent.tools.routes import (build_route_table, find_matches,
+from senapathy.errors import GuardrailError, ToolError
+from senapathy.tools import SourceRoot, ToolRegistry, ToolSpec
+from senapathy.tools.routes import (build_route_table, find_matches,
                                     make_find_route, route_table)
-from perfagent.tools.source import (make_list_dir, make_read_file,
+from senapathy.tools.source import (make_list_dir, make_read_file,
                                     make_search_code, source_tools)
 
 

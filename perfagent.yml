@@ -1,9 +1,0 @@
-# Runtime configuration. Environment variables of the form PERFAGENT_LLM_*
-# override anything here; explicit CLI flags override both.
-llm:
-  provider: groq
-  model: openai/gpt-oss-120b  # llama-3.3-70b-versatile 404s: this account cannot see it
-  max_tokens: 8192            # well inside Groq's 32k completion ceiling for this model
-  timeout_s: 120
-  cassette_dir: .perfagent/cassettes
-  offline: false

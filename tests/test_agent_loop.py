@@ -8,11 +8,11 @@ from typing import Any
 
 import pytest
 
-from perfagent.agent import (DEFAULT_MAX_STEPS, LoopBudget, LoopOutcome,
+from senapathy.agent import (DEFAULT_MAX_STEPS, LoopBudget, LoopOutcome,
                              LoopStatus, run_agent)
-from perfagent.contracts import LLMResponse, Usage
-from perfagent.errors import GuardrailError, ToolError
-from perfagent.trace import Trace
+from senapathy.contracts import LLMResponse, Usage
+from senapathy.errors import GuardrailError, ToolError
+from senapathy.trace import Trace
 
 TOOLS = [{"name": "read_file", "description": "read", "parameters": {}},
          {"name": "submit", "description": "finish", "parameters": {}}]
@@ -331,7 +331,7 @@ def test_the_loop_emits_the_events_the_transcript_is_built_from(
 def test_there_is_no_sleep_left_in_the_loop() -> None:
     """~5.7 minutes of an 8-minute run went to an unconditional sleep(20)."""
     source = (Path(__file__).resolve().parent.parent
-              / "perfagent" / "agent.py").read_text()
+              / "senapathy" / "agent.py").read_text()
     assert "time.sleep" not in source
     assert "sleep(" not in source
 
@@ -350,7 +350,7 @@ def test_a_provider_rejected_tool_call_is_corrected_not_fatal() -> None:
     phase dies on a mistake the model could have fixed in one turn."""
     import json as _json
 
-    from perfagent.llm.base import LLMHTTPError
+    from senapathy.llm.base import LLMHTTPError
 
     body = _json.dumps({"error": {
         "code": "tool_use_failed",
@@ -378,7 +378,7 @@ def test_a_provider_rejected_tool_call_is_corrected_not_fatal() -> None:
                 raw_message={"role": "assistant", "tool_calls": [{"id": "t1"}]})
 
         def correction_for(self, error):
-            from perfagent.llm.base import TOOL_ERROR_CODES
+            from senapathy.llm.base import TOOL_ERROR_CODES
 
             payload = getattr(error, "payload", {})
             if str(payload.get("code")) not in TOOL_ERROR_CODES:
@@ -408,7 +408,7 @@ def test_a_provider_rejected_tool_call_is_corrected_not_fatal() -> None:
 def test_an_error_the_model_cannot_fix_still_ends_the_loop() -> None:
     """A 401 is not corrected by saying something different, and retrying it
     would spend the budget discovering that repeatedly."""
-    from perfagent.llm.base import LLMHTTPError
+    from senapathy.llm.base import LLMHTTPError
 
     class Unauthorised:
         calls = 0

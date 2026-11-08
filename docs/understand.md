@@ -1,4 +1,4 @@
-# `perfagent understand` — the comprehension phase
+# `senapathy understand` — the comprehension phase
 
 Takes one HTTP endpoint and a Spring Boot repository, and produces a validated
 `EndpointModel`: the execution path, every database access with a per-request /
@@ -43,14 +43,14 @@ There is no shell tool and nothing that could become one.
 ## Inputs
 
 ```
-perfagent understand --repo PATH --endpoint "POST /api/customers/search"
+senapathy understand --repo PATH --endpoint "POST /api/customers/search"
                      [--provider cerebras] [--model X]
                      [--max-usd 2.0] [--max-steps 30] [--max-wall S]
                      [--offline] [--verbose] [--json]
                      [--run-dir DIR] [--runs-dir DIR]
 ```
 
-Provider and model default to `perfagent.yml`:
+Provider and model default to `senapathy.yml`:
 
 ```yaml
 llm:
@@ -58,17 +58,17 @@ llm:
   model: gpt-oss-120b
   max_tokens: 8192
   timeout_s: 120
-  cassette_dir: .perfagent/cassettes
+  cassette_dir: .senapathy/cassettes
   offline: false
 ```
 
-Everything in that block can be overridden by `PERFAGENT_LLM_*` environment
+Everything in that block can be overridden by `SENAPATHY_LLM_*` environment
 variables, and those by explicit flags. Keys are per provider and resolved by
 the factory: `CEREBRAS_API_KEY`, `GROQ_API_KEY`, `ANTHROPIC_API_KEY`; Ollama
 needs none.
 
 The database connection is the same one `measure/sql.py` uses:
-`PERFAGENT_MYSQL_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_DATABASE`.
+`SENAPATHY_MYSQL_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_DATABASE`.
 
 ## Outputs
 
@@ -134,11 +134,11 @@ that names the missing hash.
 Record and replay one scenario into its own directory, not the shared one:
 
 ```
-PERFAGENT_LLM_CASSETTE_DIR=.perfagent/cassettes/search \
-  perfagent understand --repo ../mini-spring --endpoint "POST /api/customers/search"
+SENAPATHY_LLM_CASSETTE_DIR=.senapathy/cassettes/search \
+  senapathy understand --repo ../mini-spring --endpoint "POST /api/customers/search"
 
-PERFAGENT_LLM_CASSETTE_DIR=.perfagent/cassettes/search \
-  perfagent understand --repo ../mini-spring --endpoint "POST /api/customers/search" --offline
+SENAPATHY_LLM_CASSETTE_DIR=.senapathy/cassettes/search \
+  senapathy understand --repo ../mini-spring --endpoint "POST /api/customers/search" --offline
 ```
 
 A shared directory holding cassettes from several runs of a
@@ -171,7 +171,7 @@ The phase can still complete without it; `tables` will simply carry no
 measured facts. Start the database (`docker compose up -d mysql` in the target
 repo) and re-run.
 
-If no target can even be *described* — a garbled `PERFAGENT_MYSQL_PORT`, say —
+If no target can even be *described* — a garbled `SENAPATHY_MYSQL_PORT`, say —
 the tool is not registered at all, a note goes into the trace, and the phase
 runs without it. The phase does 90% of its job from source alone and must not
 die at the door.
@@ -190,11 +190,11 @@ after three in a row.
 
 ## Where it sits in the pipeline
 
-`perfagent run --endpoint "..."` runs this phase first. The phase is skipped
+`senapathy run --endpoint "..."` runs this phase first. The phase is skipped
 only if `<run-dir>/endpoint_model.json` exists **and its `route` matches the
 requested endpoint** — a cached model for a different route does not satisfy
 it. The diagnosis phase then reads that same file, not a global one.
 
-Note that the standalone `perfagent diagnose` command still defaults to
-`.perfagent/endpoint_model.json`; pass `--endpoint-model <run-dir>/endpoint_model.json`
+Note that the standalone `senapathy diagnose` command still defaults to
+`.senapathy/endpoint_model.json`; pass `--endpoint-model <run-dir>/endpoint_model.json`
 to point it at a specific run.

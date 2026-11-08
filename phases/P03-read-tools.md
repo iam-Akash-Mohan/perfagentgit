@@ -29,7 +29,7 @@ takes 3 steps or 18 depending on tool quality alone.
 ## 4. DELIVERABLES
 
 ```
-perfagent/tools/read.py
+senapathy/tools/read.py
 tests/test_read_tools.py           # from section 6
 tests/fixtures/mini-spring/        # tiny fake repo, see 5.6
 ```
@@ -139,8 +139,8 @@ by the eval suite, so build it properly now.
 from __future__ import annotations
 import pytest
 from pathlib import Path
-from perfagent.tools.read import SourceRoot, make_read_tools
-from perfagent.errors import ToolError
+from senapathy.tools.read import SourceRoot, make_read_tools
+from senapathy.errors import ToolError
 
 FIX = Path(__file__).parent / "fixtures" / "mini-spring"
 

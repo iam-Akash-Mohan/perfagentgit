@@ -12,11 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from perfagent.errors import ContractViolation
-from perfagent.patch import tools as patch_tools
-from perfagent.patch.tools import (MAX_BUILD_LINES, PatchTools, TestCounts,
+from senapathy.errors import ContractViolation
+from senapathy.patch import tools as patch_tools
+from senapathy.patch.tools import (MAX_BUILD_LINES, PatchTools, TestCounts,
                                    count_test_files, parse_test_counts)
-from perfagent.patch.worktree import GreenWorktree
+from senapathy.patch.worktree import GreenWorktree
 
 CONTROLLER = "src/main/java/com/ex/web/CustomerController.java"
 SERVICE = "src/main/java/com/ex/service/CustomerService.java"
@@ -104,10 +104,10 @@ def stub_maven(tools: PatchTools, returncode: int, output: str) -> None:
 
 def test_green_is_a_worktree_on_a_new_branch(green: GreenWorktree, blue: Path) -> None:
     assert green.path.exists()
-    assert green.branch == "perfagent/test-run"
+    assert green.branch == "senapathy/test-run"
     assert (green.path / SERVICE).exists()
-    branches = _git(blue, "branch", "--list", "perfagent/test-run")
-    assert "perfagent/test-run" in branches
+    branches = _git(blue, "branch", "--list", "senapathy/test-run")
+    assert "senapathy/test-run" in branches
 
 
 def test_blue_working_tree_is_never_written(green: GreenWorktree, blue: Path) -> None:
@@ -202,13 +202,13 @@ def test_source_diff_ignores_build_artifacts_dropped_into_the_tree(
     (green.path / SERVICE).write_text("class CustomerService { /* patched */ }\n")
     before = green.source_diff()
 
-    (green.path / "perfagent-classpath.txt").write_text("/some/jar:/another/jar\n")
+    (green.path / "senapathy-classpath.txt").write_text("/some/jar:/another/jar\n")
     (green.path / "generated-report.txt").write_text("noise\n")
 
     assert green.source_diff() == before, "a build artifact changed the patch identity"
     # ...while the unrestricted diff does see it, which is why identity uses
     # source_diff and not diff.
-    assert "perfagent-classpath.txt" in green.diff()
+    assert "senapathy-classpath.txt" in green.diff()
 
 
 def test_diff_stat_is_computed_not_reported(green: GreenWorktree) -> None:
@@ -312,6 +312,57 @@ def test_a_refusal_never_raises(green: GreenWorktree) -> None:
         (SERVICE, "not here", "x"),
     ):
         assert isinstance(tools.apply_patch(*args), str)
+
+
+def test_a_mismatched_old_text_shows_the_current_file_content(
+    green: GreenWorktree,
+) -> None:
+    """COL-05: repeated apply_patch failures with no way to see what the
+    file actually contained now. The refusal has to deliver the content it
+    was already pointing at, not just say it exists somewhere else."""
+    tools = make_tools(green)
+    result = tools.apply_patch(SERVICE, "not here", "x")
+    assert "REFUSED" in result
+    assert "class CustomerService {" in result
+    assert "void enrich() { outstanding(); }" in result
+    assert "1| class CustomerService {" in result.replace("    1|", "1|")
+
+
+# ─────────────────────────────  read_file (patch)  ─────────────────────────
+
+
+def test_the_patch_registry_exposes_a_read_only_read_file(
+    green: GreenWorktree,
+) -> None:
+    """COL-05 died reproducing old_text from memory; COL-03 hallucinated
+    print_tree reaching for the same capability. The registry needs a real,
+    read-only read_file -- scoped by the same containment rule the
+    comprehension tools use, not by the write allowlist, since reading is
+    not writing."""
+    from senapathy.patch.agent import READ_FILE_TOOL
+    from senapathy.tools import SourceRoot
+    from senapathy.tools.source import make_read_file
+
+    assert READ_FILE_TOOL["function"]["name"] == "read_file"
+
+    read_file = make_read_file(SourceRoot.of(green.path))
+    result = read_file(SERVICE)
+    assert "class CustomerService {" in result
+    assert "void enrich() { outstanding(); }" in result
+    # The write allowlist is unaffected: reading a file is not touching it.
+    assert not (green.path / SERVICE).read_text().startswith("REFUSED")
+
+
+def test_read_file_refuses_a_path_outside_the_source_root(
+    green: GreenWorktree,
+) -> None:
+    from senapathy.errors import GuardrailError
+    from senapathy.tools import SourceRoot
+    from senapathy.tools.source import make_read_file
+
+    read_file = make_read_file(SourceRoot.of(green.path))
+    with pytest.raises(GuardrailError, match="outside the repository"):
+        read_file("../../../../../../etc/passwd")
 
 
 # ──────────────────────────────  build output  ────────────────────────────
@@ -437,12 +488,26 @@ def test_failing_tests_return_the_output_verbatim(green: GreenWorktree) -> None:
 
 
 def test_the_iteration_budget_is_shared_and_enforced(green: GreenWorktree) -> None:
+    """Three DISTINCT edits, each followed by a build -- a repeat with no
+    edit between is now free (see the no-op-retry tests below), so this has
+    to exercise three real calls to prove the shared budget still counts
+    them."""
     tools = make_tools(green, max_iterations=3)
     stub_maven(tools, 0, "")
-    for _ in range(3):
+    edits = [
+        ("void enrich() { outstanding(); }", "void enrich() { outstanding(); } // 1"),
+        ("void other() { outstanding(); }", "void other() { outstanding(); } // 2"),
+        ("class CustomerService {", "class CustomerService { // 3"),
+    ]
+    for old, new in edits:
+        tools.apply_patch(SERVICE, old, new)
         tools.build()
     assert tools.iterations == 3
 
+    # One more edit, so this build is a real call and not a free repeat —
+    # the budget must still refuse it.
+    tools.apply_patch(SERVICE, "class CustomerService { // 3",
+                      "class CustomerService { // 4")
     result = tools.build()
     assert result.startswith("REFUSED")
     assert "budget of 3 iterations is exhausted" in result
@@ -473,10 +538,10 @@ def test_build_and_run_tests_take_no_model_supplied_arguments() -> None:
 
 def test_the_patch_agent_cannot_reach_the_oracle() -> None:
     """Invariant 2: the grader is not in the agent's tool surface."""
-    root = Path(__file__).resolve().parents[1] / "perfagent" / "patch"
+    root = Path(__file__).resolve().parents[1] / "senapathy" / "patch"
     for path in root.glob("*.py"):
         source = path.read_text(encoding="utf-8")
-        assert "perfagent.oracle" not in source and "from ..oracle" not in source
+        assert "senapathy.oracle" not in source and "from ..oracle" not in source
         assert "oracle.json" not in source
 
 
@@ -495,7 +560,7 @@ FIELD_AUTOWIRED_DIFF = """--- a/src/main/java/com/ex/service/CustomerService.jav
 
 
 def test_a_field_autowired_fails_the_lint_and_the_message_names_the_rule() -> None:
-    from perfagent.patch.standards import lint_diff, render_violations
+    from senapathy.patch.standards import lint_diff, render_violations
 
     violations = lint_diff(FIELD_AUTOWIRED_DIFF, managed_types=["InvoiceService"])
     assert len(violations) == 1
@@ -506,7 +571,7 @@ def test_a_field_autowired_fails_the_lint_and_the_message_names_the_rule() -> No
 
 
 def test_constructor_injection_passes_the_same_rule() -> None:
-    from perfagent.patch.standards import lint_diff
+    from senapathy.patch.standards import lint_diff
 
     diff = """--- a/src/main/java/com/ex/service/CustomerService.java
 +++ b/src/main/java/com/ex/service/CustomerService.java
@@ -519,7 +584,7 @@ def test_constructor_injection_passes_the_same_rule() -> None:
 
 
 def test_a_wildcard_import_fails_the_lint() -> None:
-    from perfagent.patch.standards import lint_diff
+    from senapathy.patch.standards import lint_diff
 
     diff = """--- a/src/main/java/com/ex/A.java
 +++ b/src/main/java/com/ex/A.java
@@ -534,7 +599,7 @@ def test_a_wildcard_import_fails_the_lint() -> None:
 def test_new_on_a_spring_bean_fails_the_lint(tmp_path) -> None:
     """Read from the source, not guessed from the name: a @Component called
     Clock is container-managed and `new Clock()` is a bug."""
-    from perfagent.patch.standards import lint_diff, spring_managed_types
+    from senapathy.patch.standards import lint_diff, spring_managed_types
 
     root = tmp_path / "repo" / "src/main/java/com/ex"
     root.mkdir(parents=True)
@@ -558,7 +623,7 @@ def test_new_on_a_spring_bean_fails_the_lint(tmp_path) -> None:
 
 
 def test_removing_a_controller_method_fails_the_lint() -> None:
-    from perfagent.patch.standards import lint_diff
+    from senapathy.patch.standards import lint_diff
 
     diff = """--- a/src/main/java/com/ex/web/CustomerController.java
 +++ b/src/main/java/com/ex/web/CustomerController.java
@@ -575,7 +640,7 @@ def test_removing_a_controller_method_fails_the_lint() -> None:
 def test_only_the_four_mechanical_rules_are_enforced() -> None:
     """The advisory half needs taste. A lint that rejects correct code is a
     lint someone switches off."""
-    from perfagent.patch.standards import lint_diff
+    from senapathy.patch.standards import lint_diff
 
     advisory = """--- a/src/main/java/com/ex/service/A.java
 +++ b/src/main/java/com/ex/service/A.java
@@ -587,7 +652,7 @@ def test_only_the_four_mechanical_rules_are_enforced() -> None:
 
 
 def test_the_standards_document_is_loaded_from_disk() -> None:
-    from perfagent.patch.standards import load_standards
+    from senapathy.patch.standards import load_standards
 
     text = load_standards()
     assert "Constructor injection only" in text
@@ -618,6 +683,97 @@ def test_a_migration_cannot_be_written_with_apply_patch(green) -> None:
         file="src/main/resources/db/migration/V2__x.sql",
         old_text="a", new_text="b")
     assert "add_migration" in refusal
+
+
+# ───────────────  COL-06: the bounded request_file_access escape  ────────
+
+
+def test_request_file_access_grants_a_file_on_the_call_path(green) -> None:
+    """COL-06: a query_rewrite scoped to SERVICE needed CONTROLLER, its
+    caller, to adjust the call when a signature changed. CONTROLLER is on
+    this endpoint's own traced call path, so it is granted."""
+    tools = PatchTools(
+        green=green, baseline=TestCounts(),
+        allowed_files=(SERVICE,), call_path_files=(SERVICE, CONTROLLER))
+
+    result = tools.request_file_access(CONTROLLER)
+    assert result.startswith("GRANTED")
+    assert tools.log[-1]["tool"] == "request_file_access"
+    assert tools.log[-1]["ok"] is True
+
+    # And CONTROLLER is now actually writable, on top of allowed_files.
+    outcome = tools.apply_patch(
+        file=CONTROLLER, old_text="class CustomerController {}",
+        new_text="class CustomerController { }")
+    assert outcome.startswith("OK")
+
+
+def test_request_file_access_refuses_a_file_off_the_call_path(green) -> None:
+    tools = PatchTools(
+        green=green, baseline=TestCounts(),
+        allowed_files=(SERVICE,), call_path_files=(SERVICE,))
+
+    result = tools.request_file_access(CONTROLLER)
+    assert result.startswith("REFUSED")
+    assert "not on this endpoint's own traced call path" in result
+    assert result in tools.refusals
+
+    # Refusal is final: it did not become writable.
+    outcome = tools.apply_patch(
+        file=CONTROLLER, old_text="x", new_text="y")
+    assert outcome.startswith("REFUSED")
+    assert "not in this plan's files_to_touch" in outcome
+
+
+def test_request_file_access_never_grants_a_test_file(green) -> None:
+    """Even if a call chain somehow named a test file, immutability wins —
+    this hard limit does not move for anything on the call path."""
+    tools = PatchTools(
+        green=green, baseline=TestCounts(),
+        allowed_files=(SERVICE,), call_path_files=(SERVICE, TEST_FILE))
+
+    result = tools.request_file_access(TEST_FILE)
+    assert result.startswith("REFUSED")
+    assert "immutable" in result
+
+
+def test_request_file_access_never_grants_a_schema_file_outside_migration(
+    green
+) -> None:
+    schema_file = "src/main/resources/schema.sql"
+    tools = PatchTools(
+        green=green, baseline=TestCounts(),
+        allowed_files=(SERVICE,), call_path_files=(SERVICE, schema_file))
+
+    result = tools.request_file_access(schema_file)
+    assert result.startswith("REFUSED")
+    assert "schema file" in result
+
+
+def test_request_file_access_never_grants_outside_the_source_root(green) -> None:
+    """A hard limit, independent of call-path membership: even a file the
+    call chain somehow named outside src/main/java is refused."""
+    resource = "src/main/resources/application.yml"
+    tools = PatchTools(
+        green=green, baseline=TestCounts(),
+        allowed_files=(SERVICE,), call_path_files=(SERVICE, resource))
+
+    result = tools.request_file_access(resource)
+    assert result.startswith("REFUSED")
+    assert "outside the detected source root" in result
+
+
+def test_request_file_access_refuses_an_absolute_path(green) -> None:
+    tools = PatchTools(green=green, baseline=TestCounts(),
+                       call_path_files=("/etc/passwd",))
+    result = tools.request_file_access("/etc/passwd")
+    assert result.startswith("REFUSED") and "absolute path" in result
+
+
+def test_request_file_access_refuses_a_path_escape(green) -> None:
+    tools = PatchTools(green=green, baseline=TestCounts())
+    result = tools.request_file_access("../../etc/passwd")
+    assert result.startswith("REFUSED") and "outside the repository" in result
 
 
 # ──────────────────────────  F3: add_migration  ──────────────────────────
@@ -684,7 +840,7 @@ def test_an_index_on_a_table_off_the_path_is_refused(green) -> None:
 
 
 def test_the_benchmark_delta_reaches_the_agent_when_tests_pass(green) -> None:
-    from perfagent.patch.bench import QuickResult
+    from senapathy.patch.bench import QuickResult
 
     tools = PatchTools(
         green=green, baseline=TestCounts(executed=1, files=1),
@@ -704,7 +860,7 @@ def test_the_benchmark_delta_reaches_the_agent_when_tests_pass(green) -> None:
 
 
 def test_a_regression_is_visible_to_the_agent_before_it_emits(green) -> None:
-    from perfagent.patch.bench import QuickResult
+    from senapathy.patch.bench import QuickResult
 
     tools = PatchTools(
         green=green, baseline=TestCounts(executed=1, files=1),
@@ -742,11 +898,11 @@ def test_a_benchmark_that_cannot_run_does_not_fail_the_phase(green) -> None:
 
 
 def test_the_patch_phase_refuses_to_start_without_a_plan(tmp_path) -> None:
-    from perfagent.errors import ContractViolation
-    from perfagent.patch.agent import load_plan_inputs
+    from senapathy.errors import ContractViolation
+    from senapathy.patch.agent import load_plan_inputs
 
     (tmp_path / "hypotheses.json").write_text("{}")
-    with pytest.raises(ContractViolation, match="Run `perfagent plan`"):
+    with pytest.raises(ContractViolation, match="Run `senapathy plan`"):
         load_plan_inputs(tmp_path)
 
 
@@ -758,8 +914,8 @@ def test_the_prompt_is_built_from_the_candidate_not_the_top_hypothesis(
     allowlist."""
     import json as _json
 
-    from perfagent.contracts import CandidateFix, EndpointModel, RiskTier
-    from perfagent.patch.agent import build_task
+    from senapathy.contracts import CandidateFix, EndpointModel, RiskTier
+    from senapathy.patch.agent import build_task
 
     green = tmp_path / "green"
     service = green / "src/main/java/com/ex/service/CustomerService.java"
@@ -829,3 +985,482 @@ def test_the_test_count_guardrail_fires_on_real_maven_output(green) -> None:
     assert "tests executed dropped from 1 to 0" in result
     assert tools.guardrail_violations, "the run is over, not warned about"
     assert tools.last_tests_ok is False
+
+
+# ──────────────────────  input-hash provenance  ───────────────────────────
+
+
+def test_persist_stamps_the_current_baseline_hash(tmp_path: Path) -> None:
+    """Resume's skip check compares this against the run's CURRENT
+    baseline.json -- a patch built against a baseline that has since been
+    re-measured is not evidence for the current one."""
+    import json as _json
+
+    from senapathy.measure.baseline import baseline_hash
+    from senapathy.patch.agent import _persist
+
+    directory = tmp_path / "run"
+    directory.mkdir()
+    baseline_doc = {"derived": {"total_sql_statements": 3}}
+    (directory / "baseline.json").write_text(_json.dumps(baseline_doc))
+
+    document = {"outcome": "PATCHED", "patch": {"diff": ""}}
+    _persist(directory, document, green=None)
+
+    saved = _json.loads((directory / "patch.json").read_text())
+    assert saved["baseline_hash"] == baseline_hash(baseline_doc)
+
+
+def test_build_document_targets_the_selected_candidates_hypothesis(
+) -> None:
+    """The exact bug found in run INV-03: plan selected candidate c1
+    (targeting h3), but patch.json recorded targets_hypothesis=h1 --
+    `ranked_ids[0]` is the DIAGNOSIS's own ranking by attributed
+    milliseconds, something this phase is specifically supposed to have
+    stopped trusting (see build_task's docstring). The selected candidate,
+    not the hypothesis ranking, is the source of truth here."""
+    from senapathy.contracts import CandidateFix, RiskTier
+    from senapathy.patch.agent import _build_document
+    from senapathy.patch.tools import TestCounts
+
+    candidate = CandidateFix(
+        id="c1", targets_hypothesis="h3", approach="dto_projection",
+        description="project a DTO instead of mapping the full entity",
+        files_to_touch=["src/main/java/com/ex/repo/InvoiceRepository.java"],
+        mechanism_changed="eliminates the per-row customer lookup",
+        predicted_effect="fewer statements per request",
+        what_could_break=[], preserves_response_bytes=True,
+        risk_tier=RiskTier.LOW,
+    )
+    hypotheses = {"ranked_ids": ["h1", "h2", "h3"]}  # h1 ranked highest
+
+    class FakeGreen:
+        path = Path("/green")
+        branch = "b"
+        base_commit = "a" * 40
+        carried_over: list[str] = []
+        skipped: list[str] = []
+        checkpoints: list[str] = []
+
+        def diff_stat(self):
+            return [], 0, 0
+
+        def diff(self):
+            return ""
+
+        def blue_status(self):
+            return "clean"
+
+    class FakeTools:
+        iterations = 1
+        max_iterations = 8
+        log: list[dict] = []
+        refusals: list[str] = []
+        guardrail_violations: list[str] = []
+        last_error = None
+
+    document = _build_document(
+        green=FakeGreen(), tools=FakeTools(), candidate=candidate,
+        baseline=TestCounts(), accepted={}, rejections=[],
+        loop_error=None, blue_status_before="clean",
+    )
+
+    assert document["targets_hypothesis"] == "h3"
+    assert document["patch"]["plan_id"] == "c1"
+    # Proof this is reading the candidate, not falling back to the ranking:
+    assert document["targets_hypothesis"] != hypotheses["ranked_ids"][0]
+
+
+# ──────────────────  surefire-read failures and no-op retries  ────────────
+
+
+def test_run_tests_failure_returns_failing_test_names_not_the_banner(
+    green: GreenWorktree,
+) -> None:
+    """The actual regression: three COL-03 patches each got back 40 lines of
+    `[INFO] Scanning for projects...` and no failing test name anywhere.
+    The detail has to come from surefire's XML, which is unaffected by a
+    head-of-output line budget."""
+    reports = green.path / "target" / "surefire-reports"
+    reports.mkdir(parents=True)
+    (reports / "TEST-com.ex.CustomerSearchIT.xml").write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.ex.CustomerSearchIT" tests="1" failures="1" errors="0" skipped="0">
+  <testcase name="searchReturnsOk" classname="com.ex.CustomerSearchIT" time="0.1">
+    <failure message="expected: &lt;200&gt; but was: &lt;500&gt;" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: expected: &lt;200&gt; but was: &lt;500&gt;
+	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:200)
+	at com.ex.CustomerSearchIT.searchReturnsOk(CustomerSearchIT.java:28)
+</failure>
+  </testcase>
+</testsuite>
+""")
+
+    banner = (
+        "[INFO] Scanning for projects...\n"
+        + "\n".join(f"[INFO] -----< some line {i} >-----" for i in range(50))
+        + "\n[INFO] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0\n"
+        "[INFO] BUILD FAILURE"
+    )
+    tools = make_tools(green, max_iterations=5)
+    tools.last_build_ok = True
+    stub_maven(tools, 1, banner)
+
+    result = tools.run_tests()
+
+    assert "TESTS FAILED" in result
+    assert "com.ex.CustomerSearchIT.searchReturnsOk" in result
+    assert "expected: <200> but was: <500>" in result
+    assert "CustomerSearchIT.java:28" in result
+    # The banner a 40-line head-of-output truncation would have shown
+    # instead is gone from the detail entirely.
+    assert "Scanning for projects" not in result
+    assert "searchReturnsOk" in tools.last_error
+
+
+def test_a_crash_before_any_report_falls_back_to_raw_output(
+    green: GreenWorktree,
+) -> None:
+    """No target/surefire-reports/ at all -- a JVM-level crash before any
+    test ran -- still has to produce something, via the old behaviour."""
+    tools = make_tools(green, max_iterations=5)
+    tools.last_build_ok = True
+    stub_maven(tools, 1, "[INFO] Scanning for projects...\nOutOfMemoryError")
+
+    result = tools.run_tests()
+    assert "TESTS FAILED" in result
+    assert "Scanning for projects" in result
+
+
+def test_a_repeated_build_with_no_edit_costs_no_iteration(
+    green: GreenWorktree,
+) -> None:
+    tools = make_tools(green, max_iterations=5)
+    stub_maven(tools, 0, "")
+
+    first = tools.build()
+    assert tools.iterations == 1
+
+    second = tools.build()
+    assert tools.iterations == 1, "a repeat with no edit must not spend an iteration"
+    assert "SAME AS LAST TIME" in second
+    assert "BUILD OK" in second
+
+
+def test_a_repeated_run_tests_with_no_edit_costs_no_iteration(
+    green: GreenWorktree,
+) -> None:
+    with_test = (
+        "[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, "
+        "Time elapsed: 0.1 s -- in com.ex.CustomerSearchIT\n"
+        "[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0\n"
+        "[INFO] BUILD SUCCESS"
+    )
+    tools = make_tools(green, max_iterations=5)
+    tools.last_build_ok = True
+    stub_maven(tools, 0, with_test)
+
+    first = tools.run_tests()
+    assert tools.iterations == 1
+    assert "TESTS OK" in first
+
+    second = tools.run_tests()
+    assert tools.iterations == 1, "a repeat with no edit must not spend an iteration"
+    assert "SAME AS LAST TIME" in second
+    assert "TESTS OK" in second
+
+
+def test_an_edit_between_calls_makes_the_next_one_real(
+    green: GreenWorktree,
+) -> None:
+    tools = make_tools(green, max_iterations=5)
+    stub_maven(tools, 0, "")
+
+    tools.build()
+    assert tools.iterations == 1
+
+    tools.apply_patch(SERVICE, "void other() { outstanding(); }",
+                      "void other() { outstanding(); } // changed")
+    result = tools.build()
+    assert tools.iterations == 2, "an edit between calls must make the next build real"
+    assert "SAME AS LAST TIME" not in result
+
+
+# ───────────────────────  trace wiring and abandonment  ───────────────────
+
+
+def test_abandon_patch_requires_a_reason() -> None:
+    """The schema is the enforcement: a provider that honours `required`
+    cannot generate a call missing it, and `emit_patch`'s own handler trusts
+    the same mechanism rather than re-checking its fields in Python."""
+    from senapathy.patch.agent import ABANDON_PATCH_TOOL
+
+    params = ABANDON_PATCH_TOOL["function"]["parameters"]
+    assert params["required"] == ["reason"]
+    assert "reason" in params["properties"]
+
+
+class _ScriptedLLM:
+    """A minimal scripted client: each call pops the next canned response,
+    in the same shape run_agent expects from a real provider."""
+
+    def __init__(self, *turns: tuple[str, dict]) -> None:
+        self._turns = list(turns)
+
+    def complete(self, **kwargs):
+        from senapathy.contracts import LLMResponse, Usage
+
+        if not self._turns:
+            return LLMResponse(
+                content=[{"type": "text", "text": "done"}],
+                stop_reason="end_turn", usage=Usage(), latency_ms=1.0,
+                raw_message={"role": "assistant", "content": "done"})
+        name, args = self._turns.pop(0)
+        return LLMResponse(
+            content=[{"type": "tool_use", "id": "c1", "name": name, "input": args}],
+            stop_reason="tool_use", usage=Usage(), latency_ms=1.0,
+            raw_message={"role": "assistant", "tool_calls": [{"id": "c1"}]})
+
+    def forced_tool_choice(self, name: str) -> dict:
+        return {"type": "function", "function": {"name": name}}
+
+    def tool_result_messages(self, results):
+        return [{"role": "tool", "tool_call_id": r.id, "content": r.content}
+                for r in results]
+
+
+def test_a_patch_run_traces_tool_call_and_tool_result_under_phase_patch(
+    blue: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The actual regression: patch wrote phase_start/phase_end and nothing
+    else, because run_patch never passed its trace handle into run_agent.
+    Driving one real apply_patch + build + abandon_patch through run_patch
+    must produce the same llm_request/llm_response/tool_call/tool_result
+    shape understand/plan/diagnose already get -- tagged phase="patch" --
+    plus a note for the build iteration, and an abandoned_reason in the
+    artifact naming the reason the model actually gave.
+    """
+    import json as _json
+
+    from senapathy.contracts import CandidateFix, EndpointModel, RiskTier
+    from senapathy.contracts.plan import Plan
+    from senapathy.patch import agent as patch_agent
+    from senapathy.trace import EventType, Trace
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    candidate = CandidateFix(
+        id="c1", targets_hypothesis="h1", approach="other",
+        description="rewrite enrich", mechanism_changed="fewer calls",
+        predicted_effect="latency drops",
+        files_to_touch=[SERVICE], what_could_break=[],
+        preserves_response_bytes=True, risk_tier=RiskTier.LOW,
+    )
+    plan = Plan(
+        endpoint="GET /x", measured_total_ms=100.0, ranked=[],
+        considered=["h1"], candidates=[candidate], selected_id="c1",
+        selection_reason="only candidate", base_commit="a" * 40,
+    )
+    (run_dir / "plan.json").write_text(_json.dumps(plan.model_dump(mode="json")))
+    (run_dir / "hypotheses.json").write_text(_json.dumps({
+        "measured_total_ms": 100.0, "ranked_ids": ["h1"],
+        "hypotheses": [{"id": "h1", "claim": "c", "mechanism": "m",
+                        "layer": "application_logic", "evidence": [],
+                        "attributed_ms": 50.0, "prediction": "p",
+                        "confidence": 0.8}],
+    }))
+    (run_dir / "endpoint_model.json").write_text(_json.dumps(
+        EndpointModel.model_validate({
+            "route": "GET /x",
+            "entry": {"file": "x", "line": 1}, "path": [{"file": "x", "line": 1}],
+            "tables": [], "uncertainties": [],
+        }).model_dump(mode="json")))
+
+    monkeypatch.setattr(
+        patch_agent, "_measure_baseline",
+        lambda green, java_home, profile=None: TestCounts(files=1))
+    monkeypatch.setattr(
+        PatchTools, "_maven",
+        lambda self, args, timeout_s: subprocess.CompletedProcess(
+            ["mvn", *args], returncode=0, stdout="BUILD SUCCESS", stderr=""))
+
+    client = _ScriptedLLM(
+        ("apply_patch", {"file": SERVICE,
+                         "old_text": "void enrich() { outstanding(); }",
+                         "new_text": "void enrich() { outstandingBatched(); }"}),
+        ("build", {}),
+        ("abandon_patch", {"reason": "run_tests keeps timing out in this sandbox"}),
+    )
+
+    trace = Trace(run_dir, "r1")
+    from senapathy.agent import LoopBudget
+
+    document = patch_agent.run_patch(
+        run_dir, run_id="r1", repo=blue, green_dir=tmp_path / "green-traced",
+        budget=LoopBudget(max_steps=10), client=client, trace=trace,
+        keep_worktree=False,
+    )
+
+    assert document["outcome"] == "ABANDONED"
+    assert "run_tests keeps timing out" in document["abandoned_reason"]
+
+    events = [
+        _json.loads(line)
+        for line in (run_dir / "trace.jsonl").read_text().splitlines()
+    ]
+    patch_events = [e for e in events if e["phase"] == "patch"]
+    kinds = {e["type"] for e in patch_events}
+    assert EventType.LLM_REQUEST.value in kinds
+    assert EventType.LLM_RESPONSE.value in kinds
+    assert EventType.TOOL_CALL.value in kinds
+    assert EventType.TOOL_RESULT.value in kinds
+
+    tool_calls = {e["tool"] for e in patch_events if e["type"] == "tool_call"}
+    assert tool_calls == {"apply_patch", "build", "abandon_patch"}
+
+    build_notes = [e for e in patch_events
+                  if e["type"] == "note" and "build iteration" in e.get("note", "")]
+    assert build_notes, "no per-build-iteration note was emitted"
+    assert "OK" in build_notes[0]["note"]
+
+
+def test_request_file_access_outcomes_both_reach_patch_json(
+    blue: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """COL-06, end to end: a candidate scoped to SERVICE requests CONTROLLER
+    (on the call path — granted) and an unrelated file (not on the call
+    path — refused). patch.json must show both, so the report can compare
+    the scope actually used against the scope the plan declared."""
+    import json as _json
+
+    from senapathy.agent import LoopBudget
+    from senapathy.contracts import CandidateFix, EndpointModel, RiskTier
+    from senapathy.contracts.plan import Plan
+    from senapathy.patch import agent as patch_agent
+    from senapathy.trace import Trace
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    candidate = CandidateFix(
+        id="c1", targets_hypothesis="h1", approach="query_rewrite",
+        description="widen the comparison on the parameter side",
+        mechanism_changed="rows examined", predicted_effect="latency drops",
+        files_to_touch=[SERVICE], what_could_break=[],
+        preserves_response_bytes=True, risk_tier=RiskTier.LOW,
+    )
+    plan = Plan(
+        endpoint="GET /x", measured_total_ms=100.0, ranked=[],
+        considered=["h1"], candidates=[candidate], selected_id="c1",
+        selection_reason="only candidate", base_commit="a" * 40,
+    )
+    (run_dir / "plan.json").write_text(_json.dumps(plan.model_dump(mode="json")))
+    (run_dir / "hypotheses.json").write_text(_json.dumps({
+        "measured_total_ms": 100.0, "ranked_ids": ["h1"],
+        "hypotheses": [{"id": "h1", "claim": "c", "mechanism": "m",
+                        "layer": "database_query", "evidence": [],
+                        "attributed_ms": 50.0, "prediction": "p",
+                        "confidence": 0.8}],
+    }))
+    (run_dir / "endpoint_model.json").write_text(_json.dumps(
+        EndpointModel.model_validate({
+            "route": "GET /x",
+            "entry": {"file": CONTROLLER, "line": 1},
+            "path": [{"file": CONTROLLER, "line": 1}],
+            "call_chain": [
+                {"method": "CustomerController.search", "file": CONTROLLER,
+                 "line": 1, "does": "delegates"},
+                {"method": "CustomerService.enrich", "file": SERVICE,
+                 "line": 2, "does": "runs the query"},
+            ],
+            "tables": [], "uncertainties": [],
+        }).model_dump(mode="json")))
+
+    monkeypatch.setattr(
+        patch_agent, "_measure_baseline",
+        lambda green, java_home, profile=None: TestCounts(files=1))
+    monkeypatch.setattr(
+        PatchTools, "_maven",
+        lambda self, args, timeout_s: subprocess.CompletedProcess(
+            ["mvn", *args], returncode=0, stdout="BUILD SUCCESS", stderr=""))
+
+    client = _ScriptedLLM(
+        ("request_file_access", {"file": CONTROLLER}),
+        ("request_file_access",
+         {"file": "src/main/java/com/ex/other/Unrelated.java"}),
+        ("apply_patch", {"file": CONTROLLER,
+                         "old_text": "class CustomerController {}",
+                         "new_text": "class CustomerController { }"}),
+        ("build", {}),
+        ("abandon_patch", {"reason": "stopping once the grant is proven"}),
+    )
+
+    document = patch_agent.run_patch(
+        run_dir, run_id="r1", repo=blue, green_dir=tmp_path / "green-access",
+        budget=LoopBudget(max_steps=10),
+        client=client, trace=Trace(run_dir, "r1"), keep_worktree=False,
+    )
+
+    requests = [e for e in document["tool_log"] if e["tool"] == "request_file_access"]
+    assert len(requests) == 2
+    granted = next(e for e in requests if e["args"]["file"] == CONTROLLER)
+    refused = next(e for e in requests
+                   if e["args"]["file"] == "src/main/java/com/ex/other/Unrelated.java")
+    assert granted["ok"] is True and "GRANTED" in granted["result"]
+    assert refused["ok"] is False and "REFUSED" in refused["result"]
+    assert any("not on this endpoint's own traced call path" in r
+              for r in document["refusals"])
+
+
+# ───────────────  COL-04: a prose abandonment must not vanish  ────────────
+
+
+def test_abandoned_reason_captures_the_models_own_final_words() -> None:
+    """COL-04: the model wrote a coherent, specific explanation as plain
+    text instead of calling abandon_patch (stop_reason end_turn, iteration
+    0). Before this fix, patch.json recorded only the generic "the model
+    stopped calling tools" and the actual explanation lived only in
+    trace.jsonl -- invisible to the person the report is for."""
+    from senapathy.patch.agent import _abandoned_reason
+
+    final_text = (
+        "Reason for abandonment: Implementing the proposed performance "
+        "improvement requires adding a @SqlResultSetMapping... The "
+        "repository file ... is the only file permitted for modification. "
+        "... the necessary mapping cannot be done within this single file."
+    )
+
+    class FakeTools:
+        guardrail_violations: list[str] = []
+        last_error = ""
+
+    reason = _abandoned_reason(
+        abandonment={}, loop_error=None, tools=FakeTools(),
+        loop_stopped_because="the model stopped calling tools",
+        loop_final_text=final_text,
+    )
+
+    assert "the necessary mapping cannot be done within this single file" in reason
+    assert reason != ("the agent loop stopped on its own: "
+                      "the model stopped calling tools")
+
+
+def test_abandoned_reason_ignores_final_text_from_an_unrelated_stop() -> None:
+    """final_text is only trustworthy as a stopping explanation when the
+    model's LAST turn genuinely had no tool call in it -- using it for a
+    budget-exhaustion or no-progress stop would surface stale content from
+    an earlier, unrelated turn."""
+    from senapathy.patch.agent import _abandoned_reason
+
+    class FakeTools:
+        guardrail_violations: list[str] = []
+        last_error = ""
+
+    reason = _abandoned_reason(
+        abandonment={}, loop_error=None, tools=FakeTools(),
+        loop_stopped_because="reached the step ceiling of 80",
+        loop_final_text="some stale text from three turns ago",
+    )
+
+    assert "stale text" not in reason
+    assert "reached the step ceiling of 80" in reason

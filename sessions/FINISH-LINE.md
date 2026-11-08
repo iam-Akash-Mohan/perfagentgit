@@ -1,4 +1,4 @@
-# PerfAgent — Finish Line
+# Senapathy — Finish Line
 
 Four sessions from here to a merged-quality PR. Run them in order. Each is one Claude
 Code prompt; paste it, let it finish, run the verification command at the end, move on.
@@ -50,7 +50,7 @@ The map now carries the facts needed to tell them apart —
 
 ## Build
 
-### 1 · `perfagent/plan/fixability.py` — deterministic, no model
+### 1 · `senapathy/plan/fixability.py` — deterministic, no model
 
 ```python
 def assess_fixability(hypothesis: Hypothesis,
@@ -100,7 +100,7 @@ h3  network                   100ms × 0.15 =  15ms
 
 h2 wins despite being seven times smaller. **That single reordering is the session.**
 
-### 3 · `perfagent/plan/agent.py` — the candidate generator
+### 3 · `senapathy/plan/agent.py` — the candidate generator
 
 One agent loop over the top 2 hypotheses by expected value. Tools: the existing read
 tools plus `get_schema`. Terminal tool `submit_plan`.
@@ -153,10 +153,10 @@ Pick the highest expected value whose risk tier is ≤ T2 and whose
 `preserves_response_bytes` is true. Record the full ranked list in the artifact — the
 alternatives that lost are part of the PR body later.
 
-### 6 · `perfagent/plan/cli.py` + wire into `cli.py` and the orchestrator
+### 6 · `senapathy/plan/cli.py` + wire into `cli.py` and the orchestrator
 
 ```
-perfagent plan [--run-dir DIR] [--provider X] [--model Y]
+senapathy plan [--run-dir DIR] [--provider X] [--model Y]
 ```
 
 Reads `hypotheses.json` and `endpoint_model.json`, writes `plan.json`. Add `plan` to the
@@ -168,30 +168,30 @@ because this phase didn't.
 
 ## Acceptance
 
-1. `perfagent plan` on the current artifacts ranks the ORM/per-row hypothesis **above**
+1. `senapathy plan` on the current artifacts ranks the ORM/per-row hypothesis **above**
    serialization, and prints the fixability reason for each.
 2. The serialization hypothesis shows `blocked_by` naming `tags` as an unbounded
    response collection.
 3. At least two candidates are produced, at least one of them `add_index` or a
    batching approach.
 4. No candidate proposes an index that already exists on `customer` or `invoice`.
-5. `perfagent patch` without a plan artifact is refused by the orchestrator guard.
+5. `senapathy patch` without a plan artifact is refused by the orchestrator guard.
 6. Existing tests stay green.
 
 ```bash
-perfagent plan && cat .perfagent/runs/*/plan.json | python -m json.tool | head -60
+senapathy plan && cat .senapathy/runs/*/plan.json | python -m json.tool | head -60
 ```
 
 ---
 
 # F2 — The database toolkit
 
-Read `CLAUDE.md` first. This is the capability that makes PerfAgent a database
+Read `CLAUDE.md` first. This is the capability that makes Senapathy a database
 optimizer rather than a Java refactorer.
 
 ## Build
 
-`perfagent/tools/db.py`, four tools. All read the MySQL connection from config, the same
+`senapathy/tools/db.py`, four tools. All read the MySQL connection from config, the same
 one `measure/sql.py` uses.
 
 ### `explain(sql: str, params: list[str] | None = None) -> str`
@@ -214,7 +214,7 @@ matters for composites and must be preserved in the output.
 1. Refuse if an existing index already covers these columns as a prefix — return which
    one, so the agent stops.
 2. `EXPLAIN ANALYZE` the statement; record rows examined and actual time.
-3. Create `perfagent_tmp_<hash>` on those columns. Time the creation.
+3. Create `senapathy_tmp_<hash>` on those columns. Time the creation.
 4. `EXPLAIN ANALYZE` again.
 5. **Drop the index in a `finally` block.** It must never survive the call, including on
    timeout or exception.
@@ -234,8 +234,8 @@ Guardrails, each enforced in code:
 
 - Additive indexes only. No `DROP`, no `ALTER` of existing indexes, no column changes.
 - Only tables present in `endpoint_model.tables` — pass that list into the tool factory.
-- Name prefix `perfagent_tmp_` always, so a leaked index is identifiable.
-- A startup sweep that drops any orphaned `perfagent_tmp_*` from a crashed run.
+- Name prefix `senapathy_tmp_` always, so a leaked index is identifiable.
+- A startup sweep that drops any orphaned `senapathy_tmp_*` from a crashed run.
 - Hard timeout; on timeout, still drop.
 - **Refuse entirely unless the connection is the configured measurement database.** This
   tool creates indexes on a live schema; it must be impossible to point at anything else.
@@ -249,7 +249,7 @@ timings for both.
 A rewrite that returns different rows is not a rewrite, and this is how the agent finds
 that out before the oracle does.
 
-### Migration generation — `perfagent/plan/migration.py`
+### Migration generation — `senapathy/plan/migration.py`
 
 ```python
 def write_index_migration(worktree: Path, table: str, columns: list[str],
@@ -259,7 +259,7 @@ def write_index_migration(worktree: Path, table: str, columns: list[str],
 Finds the Flyway migration directory, computes the next version number, writes:
 
 ```sql
--- PerfAgent: <rationale>
+-- Senapathy: <rationale>
 -- Evidence: rows examined 1,120,858 → 42 (see run <id>)
 CREATE INDEX idx_invoice_customer_id_status ON invoice (customer_id, status);
 ```
@@ -281,7 +281,7 @@ Conventional index naming. Idempotent — never overwrites an existing migration
    examined, and the index is gone afterwards — verify with `SHOW INDEX FROM invoice`.
 3. `index_benefit` on a column that is already indexed refuses and names the index.
 4. `index_benefit` on a table not in the endpoint model is refused.
-5. Killing the process mid-call leaves a `perfagent_tmp_*` index; the next call sweeps it.
+5. Killing the process mid-call leaves a `senapathy_tmp_*` index; the next call sweeps it.
 6. `query_equivalent` detects a deliberately wrong rewrite and names the difference.
 7. A generated migration file is valid SQL and Flyway applies it cleanly.
 
@@ -365,7 +365,7 @@ the integration test actually runs, and make the guardrail real.
 
 ## Acceptance
 
-1. `perfagent patch` implements the plan's selected candidate, not the top hypothesis.
+1. `senapathy patch` implements the plan's selected candidate, not the top hypothesis.
 2. An attempted write outside `files_to_touch` is refused and traced.
 3. A migration containing anything other than `CREATE INDEX` is refused.
 4. A patch with a field `@Autowired` fails the standards lint, and the message names the
@@ -404,7 +404,7 @@ Read `CLAUDE.md` first. No new capability — wiring, verification, and the run.
    p-value, the mechanism confirmation, and files changed. Every number from the
    evidence ledger.
 
-6. **Cost reporting** — set the real token prices in `pricing.py` so `perfagent trace`
+6. **Cost reporting** — set the real token prices in `pricing.py` so `senapathy trace`
    stops printing `$0.00`.
 
 ## Run it
@@ -413,8 +413,8 @@ Read `CLAUDE.md` first. No new capability — wiring, verification, and the run.
 cd ../mini-spring && docker compose up -d && mvn -q -DskipTests package
 java -jar target/*.jar --spring.profiles.active=perfagent &
 
-cd ../perfagent
-perfagent run --repo ../mini-spring --endpoint "POST /api/customers/search"
+cd ../senapathy
+senapathy run --repo ../mini-spring --endpoint "POST /api/customers/search"
 ```
 
 ## Acceptance
@@ -427,13 +427,13 @@ perfagent run --repo ../mini-spring --endpoint "POST /api/customers/search"
 5. The mechanism check confirms the predicted change — if the plan predicted fewer
    queries, SQL per request actually dropped.
 6. The PR body contains no number without an artifact behind it.
-7. `perfagent trace <run_id>` renders the whole run including the plan phase, with real
+7. `senapathy trace <run_id>` renders the whole run including the plan phase, with real
    dollar costs.
 
 ## Then — the second run, which is the other half of the pitch
 
 ```bash
-perfagent run --repo ../mini-spring --endpoint "GET /api/customers/{id}"
+senapathy run --repo ../mini-spring --endpoint "GET /api/customers/{id}"
 ```
 
 An endpoint with no real bottleneck should terminate `NO_BOTTLENECK_FOUND` and open

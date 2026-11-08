@@ -14,18 +14,18 @@ tools specified in Part C — the full symbol/call-graph index is a later sessio
 
 ## Part A — LLM client: provider abstraction
 
-`perfagent/llm.py` today is a class called `GroqClient` that posts to Cerebras, with a
+`senapathy/llm.py` today is a class called `GroqClient` that posts to Cerebras, with a
 hardcoded URL, no retries, and a `print()` on non-200 followed by parsing the error body
 as a completion. Replace it.
 
 **New layout:**
 
 ```
-perfagent/llm/__init__.py        make_client() factory, re-exports
-perfagent/llm/base.py            LLMClient protocol, shared retry/cost/cassette logic
-perfagent/llm/openai_compat.py   Cerebras, Groq, Ollama — all OpenAI-shaped
-perfagent/llm/anthropic.py       Anthropic Messages API
-perfagent/llm/pricing.py         per-model token prices
+senapathy/llm/__init__.py        make_client() factory, re-exports
+senapathy/llm/base.py            LLMClient protocol, shared retry/cost/cassette logic
+senapathy/llm/openai_compat.py   Cerebras, Groq, Ollama — all OpenAI-shaped
+senapathy/llm/anthropic.py       Anthropic Messages API
+senapathy/llm/pricing.py         per-model token prices
 ```
 
 **Requirements:**
@@ -34,21 +34,21 @@ perfagent/llm/pricing.py         per-model token prices
    ```python
    make_client(provider: str | None = None, model: str | None = None) -> LLMClient
    ```
-   Resolution order: explicit argument → `perfagent.yml` → environment → built-in
+   Resolution order: explicit argument → `senapathy.yml` → environment → built-in
    default. Provider names: `cerebras`, `groq`, `anthropic`, `ollama`.
 
 2. **Keys resolved by the factory, per provider.** `CEREBRAS_API_KEY`, `GROQ_API_KEY`,
    `ANTHROPIC_API_KEY`; Ollama needs none. A missing key raises a clear error naming the
    variable and the provider. No key or URL literal outside `llm/`.
 
-3. **Config.** Extend `perfagent/config.py`:
+3. **Config.** Extend `senapathy/config.py`:
    ```yaml
    llm:
      provider: cerebras
      model: qwen-3-coder-480b
      max_tokens: 4096
      timeout_s: 120
-     cassette_dir: .perfagent/cassettes
+     cassette_dir: .senapathy/cassettes
      offline: false
    ```
    Every phase may override the model — diagnosis and planning will want a stronger
@@ -72,7 +72,7 @@ perfagent/llm/pricing.py         per-model token prices
 
 6. **Non-200 must not be parsed as success.** Today it prints and then calls `r.json()`
    anyway, producing `KeyError: 'choices'`. A non-200 that survives retries raises
-   `PerfAgentError` carrying status and the response body.
+   `SenapathyError` carrying status and the response body.
 
 7. **Cost accounting.** Price table in `pricing.py`; per-call and cumulative
    `Usage.usd`. Anthropic's cache-read and cache-write tokens are priced separately.
@@ -101,7 +101,7 @@ Keep `GroqClient` as a deprecated alias for one release so nothing breaks mid-re
 
 ## Part B — Agent loop: make it reusable and safe
 
-`perfagent/agent.py` has four problems. Fix all four while keeping its shape — this is
+`senapathy/agent.py` has four problems. Fix all four while keeping its shape — this is
 the file the human wrote and understands, so favour clarity over cleverness.
 
 1. **`time.sleep(20)` on line 112 — delete it.** It was a Groq free-tier workaround and
@@ -149,7 +149,7 @@ the file the human wrote and understands, so favour clarity over cleverness.
   dispatches in a row ends the loop with `NO_PROGRESS`.
 - **Trace events instead of print.** `LLM_REQUEST`, `LLM_RESPONSE`, `TOOL_CALL`,
   `TOOL_RESULT`, `GUARDRAIL_TRIGGERED`, with tokens, cost, duration and result size.
-  Move the transcript rendering out of `agent.py` into `perfagent/render/transcript.py`,
+  Move the transcript rendering out of `agent.py` into `senapathy/render/transcript.py`,
   driven by trace events and enabled by `--verbose`. The pretty output is genuinely
   useful for learning — keep it, just don't put it in library code.
 - **Guardrail events are distinct from errors.** A `ToolError` raised by a *containment*
@@ -160,15 +160,15 @@ the file the human wrote and understands, so favour clarity over cleverness.
 
 ## Part C — Tools
 
-`perfagent/tools.py` becomes a package. `REPO_ROOT` as a module constant is the single
+`senapathy/tools.py` becomes a package. `REPO_ROOT` as a module constant is the single
 reason the product cannot run on another repo.
 
 ```
-perfagent/tools/__init__.py      registry, ToolSpec
-perfagent/tools/source.py        read_file, search_code, list_dir
-perfagent/tools/routes.py        find_route          ← new
-perfagent/tools/schema.py        get_schema          ← new
-perfagent/tools/submit.py        submit_endpoint_analysis
+senapathy/tools/__init__.py      registry, ToolSpec
+senapathy/tools/source.py        read_file, search_code, list_dir
+senapathy/tools/routes.py        find_route          ← new
+senapathy/tools/schema.py        get_schema          ← new
+senapathy/tools/submit.py        submit_endpoint_analysis
 ```
 
 **1. Inject the root.** A `SourceRoot` object constructed per run and passed to the tool
@@ -236,7 +236,7 @@ The handler must:
    One retry should be able to fix everything.
 4. On success, store the validated model and return a short confirmation.
 
-Add `perfagent/understand/validate.py` with `validate_citations(model, root) ->
+Add `senapathy/understand/validate.py` with `validate_citations(model, root) ->
 list[CitationProblem]`, tested independently of any model call.
 
 ---
@@ -250,7 +250,7 @@ prompts/understand.system.md
 prompts/understand.user.md
 ```
 
-Loader in `perfagent/prompts.py`: reads the file, substitutes `{placeholders}`, and
+Loader in `senapathy/prompts.py`: reads the file, substitutes `{placeholders}`, and
 **records the prompt file's content hash in the trace**, so a run is reproducible and you
 can tell which prompt version produced which artifact. A missing placeholder is an error,
 not a silent blank.
@@ -373,10 +373,10 @@ Keep everything else in `EndpointModel` as it is. Update `tests/test_contracts.p
 ## Part F — The phase itself
 
 ```
-perfagent/understand/__init__.py
-perfagent/understand/agent.py     the agent: builds tools, runs the loop
-perfagent/understand/validate.py  citation validation
-perfagent/understand/cli.py       the understand command
+senapathy/understand/__init__.py
+senapathy/understand/agent.py     the agent: builds tools, runs the loop
+senapathy/understand/validate.py  citation validation
+senapathy/understand/cli.py       the understand command
 ```
 
 **1. The runner:**
@@ -404,7 +404,7 @@ the same way `baseline` is registered — as an imported function, not defined i
 Standardise on that pattern; this session moves one command, later sessions move theirs.
 
 ```
-perfagent understand --repo PATH --endpoint "POST /api/customers/search"
+senapathy understand --repo PATH --endpoint "POST /api/customers/search"
                      [--provider cerebras] [--model X] [--max-usd 2.0]
                      [--max-steps 30] [--offline] [--verbose] [--json]
 ```
@@ -414,7 +414,7 @@ called out, tables with their existing indexes, uncertainties listed plainly. `-
 dumps the artifact.
 
 **3. Wire the orchestrator.** This is the bug that made the whole flag decorative:
-`perfagent run --endpoint "..."` accepts the value, the orchestrator carries it, and the
+`senapathy run --endpoint "..."` accepts the value, the orchestrator carries it, and the
 understand phase never receives it — it only checks whether an artifact file exists and
 skips.
 
@@ -428,10 +428,10 @@ parseability-only validator.
 
 ## Part G — Cleanup
 
-- Delete `perfagent/tryllm.py`, `perfagent/test.py`, `perfagent/Untitled`
+- Delete `senapathy/tryllm.py`, `senapathy/test.py`, `senapathy/Untitled`
 - Move the transcript printing out of `agent.py` per Part B
-- `.perfagent/endpoint_model.json` carries a `PROVENANCE_WARNING` from a hand-rebuild.
-  Once `perfagent understand` works, regenerate it for real and drop the warning.
+- `.senapathy/endpoint_model.json` carries a `PROVENANCE_WARNING` from a hand-rebuild.
+  Once `senapathy understand` works, regenerate it for real and drop the warning.
 
 ---
 
@@ -454,7 +454,7 @@ parseability-only validator.
 
 Verify each yourself and show me the evidence.
 
-1. `perfagent understand --repo ../mini-spring --endpoint "POST /api/customers/search"`
+1. `senapathy understand --repo ../mini-spring --endpoint "POST /api/customers/search"`
    produces a validated `EndpointModel` including `tables` with existing indexes.
 2. The same command with a **different** endpoint in mini-spring also works — proving the
    endpoint genuinely flows from the CLI and nothing is hardcoded.
@@ -469,7 +469,7 @@ Verify each yourself and show me the evidence.
 7. Switching provider changes nothing but config: run once against `cerebras`, once
    against `ollama` (or a cassette-backed `anthropic`), with no code edit.
 8. `--offline` runs entirely from cassettes with no network.
-9. `perfagent run --endpoint "..."` reaches the understand phase **with that endpoint**,
+9. `senapathy run --endpoint "..."` reaches the understand phase **with that endpoint**,
    and does not skip on a cached artifact for a different route.
 10. `time.sleep` no longer appears in `agent.py`, and a run that previously took ~8
     minutes is materially faster. Report the before and after wall clock.

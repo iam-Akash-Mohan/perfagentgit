@@ -15,18 +15,19 @@ from typing import Any, Iterator
 
 import pytest
 
-from perfagent.contracts import IndexInfo
-from perfagent.errors import GuardrailError, ToolError
-from perfagent.measure.sql import MySQLTarget
-from perfagent.plan.migration import (existing_migration_for,
+from senapathy.contracts import IndexInfo
+from senapathy.errors import GuardrailError, ToolError
+from senapathy.measure.sql import MySQLTarget
+from senapathy.plan.migration import (existing_migration_for,
                                       find_migration_dir, index_name,
                                       next_version, uses_flyway,
                                       write_index_migration)
-from perfagent.tools import db as dbmod
-from perfagent.tools.db import (DIAGNOSE_TOOLS, PATCH_TOOLS, PLAN_TOOLS,
-                                TEMP_PREFIX, DbToolbox, covering_index,
-                                db_tools, is_select, optional_db_tools,
-                                parse_tree, require_select)
+from senapathy.tools import db as dbmod
+from senapathy.tools.db import (DIAGNOSE_TOOLS, LEGACY_TEMP_PREFIX,
+                                PATCH_TOOLS, PLAN_TOOLS, TEMP_PREFIX,
+                                DbToolbox, covering_index, db_tools,
+                                is_select, optional_db_tools, parse_tree,
+                                require_select)
 
 TREE = """-> Aggregate: sum(i.amount)  (cost=2446 rows=1) (actual time=176..176 rows=1 loops=1)
     -> Filter: (i.`status` = 'OPEN')  (cost=2420 rows=265) (actual time=11.4..176 rows=571 loops=1)
@@ -34,10 +35,18 @@ TREE = """-> Aggregate: sum(i.amount)  (cost=2446 rows=1) (actual time=176..176 
 """
 
 FAST_TREE = """-> Aggregate: sum(i.amount)  (cost=10 rows=1) (actual time=0.9..0.9 rows=1 loops=1)
-    -> Index lookup on i using perfagent_tmp_x  (cost=8 rows=571) (actual time=0.1..0.8 rows=571 loops=1)
+    -> Index lookup on i using senapathy_tmp_x  (cost=8 rows=571) (actual time=0.1..0.8 rows=571 loops=1)
 """
 
 SQL = "select sum(amount) from invoice where customer_id = %s and status = 'OPEN'"
+
+
+def _target() -> MySQLTarget:
+    """`connect` is always faked in this file, so no field here is ever used
+    to open a socket -- MySQLTarget just no longer fills one in by itself."""
+    return MySQLTarget(host="127.0.0.1", port=3307, user="root",
+                       password="root", database="mini")
+
 
 EXPLAIN_COLUMNS = ("id", "select_type", "table", "type", "possible_keys",
                    "key", "rows", "filtered", "Extra")
@@ -140,7 +149,7 @@ def connected(monkeypatch):
 def toolbox(server: FakeServer, connected, **kwargs: Any) -> DbToolbox:
     connected(server)
     kwargs.setdefault("sweep_on_start", False)
-    return DbToolbox(MySQLTarget.from_env(), ["customer", "invoice"], **kwargs)
+    return DbToolbox(_target(), ["customer", "invoice"], **kwargs)
 
 
 # ───────────────────────────  statement guards  ──────────────────────────
@@ -229,7 +238,7 @@ def test_a_composite_covers_its_own_prefix() -> None:
 def test_the_plan_phase_and_the_toolkit_share_one_definition() -> None:
     """Two copies of this rule would eventually disagree, and the
     disagreement would be a duplicate index in production."""
-    from perfagent.plan import fixability
+    from senapathy.plan import fixability
 
     assert fixability.covering_index.__module__.endswith("fixability")
     assert covering_index is dbmod.covering_index
@@ -352,12 +361,19 @@ def test_index_benefit_refuses_a_database_that_is_not_the_configured_one(
     connected, monkeypatch
 ) -> None:
     """This tool creates indexes. Pointing it anywhere else is impossible,
-    not merely discouraged."""
+    not merely discouraged. `from_env()` is an explicit override, so the
+    guard only has something to check against once an operator has set one."""
+    monkeypatch.setenv("SENAPATHY_MYSQL_HOST", "127.0.0.1")
+    monkeypatch.setenv("SENAPATHY_MYSQL_PORT", "3307")
+    monkeypatch.setenv("SENAPATHY_MYSQL_USER", "root")
+    monkeypatch.setenv("SENAPATHY_MYSQL_PASSWORD", "root")
+    monkeypatch.setenv("SENAPATHY_MYSQL_DATABASE", "mini")
     connected(script())
-    elsewhere = MySQLTarget(host="prod.internal", port=3306, database="live")
+    elsewhere = MySQLTarget(host="prod.internal", port=3306, user="root",
+                            password="root", database="live")
     box = DbToolbox(elsewhere, ["invoice"], sweep_on_start=False)
 
-    with pytest.raises(GuardrailError, match="configured measurement database"):
+    with pytest.raises(GuardrailError, match="SENAPATHY_MYSQL_\\* names"):
         box.index_benefit("invoice", ["status"], SQL)
 
 
@@ -380,7 +396,7 @@ def test_the_temporary_name_always_carries_the_prefix() -> None:
 def test_construction_sweeps_what_a_crashed_run_left(connected) -> None:
     server = script(orphans=[("invoice", f"{TEMP_PREFIX}abc123")])
     connected(server)
-    box = DbToolbox(MySQLTarget.from_env(), ["customer", "invoice"])
+    box = DbToolbox(_target(), ["customer", "invoice"])
 
     assert box.swept == [f"invoice.{TEMP_PREFIX}abc123"]
     assert server.ran("DROP INDEX")
@@ -390,10 +406,46 @@ def test_construction_sweeps_what_a_crashed_run_left(connected) -> None:
 def test_the_sweep_only_ever_looks_for_the_prefix(connected) -> None:
     server = script(orphans=[])
     connected(server)
-    DbToolbox(MySQLTarget.from_env(), ["invoice"])
+    DbToolbox(_target(), ["invoice"])
     lookup = server.ran("INDEX_NAME LIKE")
     assert lookup, "the sweep must query for orphans"
     assert not server.ran("DROP INDEX"), "nothing to drop, nothing dropped"
+
+
+def test_the_sweep_query_checks_both_the_current_and_legacy_prefix(
+    connected
+) -> None:
+    """The product was renamed; a run that crashed BEFORE the rename could
+    have left an index named `perfagent_tmp_*`. The WHERE clause has to ask
+    for both patterns, not just the current one -- a sweep that only
+    recognised the new name would orphan that index forever."""
+    server = script(orphans=[])
+    connected(server)
+    DbToolbox(_target(), ["invoice"])
+    lookup = server.ran("INDEX_NAME LIKE")
+    assert lookup, "the sweep must query for orphans"
+    assert "OR INDEX_NAME LIKE" in lookup[0], (
+        "the query must check a second pattern, not just TEMP_PREFIX"
+    )
+
+
+def test_the_sweep_drops_an_index_left_under_the_products_former_name(
+    connected
+) -> None:
+    server = script(orphans=[("invoice", f"{LEGACY_TEMP_PREFIX}abc123"),
+                            ("invoice", f"{TEMP_PREFIX}def456")])
+    connected(server)
+    box = DbToolbox(_target(), ["customer", "invoice"])
+
+    assert set(box.swept) == {f"invoice.{LEGACY_TEMP_PREFIX}abc123",
+                              f"invoice.{TEMP_PREFIX}def456"}
+    dropped_sql = server.ran("DROP INDEX")
+    assert any(LEGACY_TEMP_PREFIX in sql for sql in dropped_sql), (
+        "an index under the OLD prefix must still be dropped"
+    )
+    assert any(TEMP_PREFIX in sql for sql in dropped_sql), (
+        "an index under the CURRENT prefix must still be dropped"
+    )
 
 
 # ───────────────────────────  query_equivalent  ──────────────────────────
@@ -472,7 +524,7 @@ def test_query_equivalent_refuses_anything_that_is_not_a_select(connected) -> No
 
 def test_each_phase_gets_the_tools_its_job_needs(connected) -> None:
     connected(script())
-    target = MySQLTarget.from_env()
+    target = _target()
     box = DbToolbox(target, ["invoice"], sweep_on_start=False)
 
     names = lambda wanted: [s.name for s in db_tools(   # noqa: E731
@@ -499,7 +551,7 @@ def test_an_unreachable_database_degrades_instead_of_killing_the_phase(
 
     monkeypatch.setattr(dbmod, "connect", explode)
     notes: list[str] = []
-    assert optional_db_tools(MySQLTarget.from_env(), ["invoice"],
+    assert optional_db_tools(_target(), ["invoice"],
                              names=PLAN_TOOLS, on_error=notes.append) == []
     assert notes and "unavailable" in notes[0]
     assert optional_db_tools(None, ["invoice"], names=PLAN_TOOLS) == []
@@ -509,7 +561,7 @@ def test_diagnosis_is_wired_without_index_benefit() -> None:
     """Wiring, not prose: the subset is named in code."""
     import inspect
 
-    from perfagent.diagnose import agent as diagnose
+    from senapathy.diagnose import agent as diagnose
 
     source = inspect.getsource(diagnose.run_diagnosis)
     assert "DIAGNOSE_TOOLS" in source
@@ -537,7 +589,7 @@ def test_a_migration_is_written_with_the_next_version(flyway_repo: Path) -> None
 
     assert path.name == "V2__add_invoice_customer_id_status_index.sql"
     body = path.read_text()
-    assert "-- PerfAgent: the aggregate filters on both columns" in body
+    assert "-- Senapathy: the aggregate filters on both columns" in body
     assert "-- Evidence: rows examined 2,645 -> 571 (see run run-1)" in body
     assert ("CREATE INDEX idx_invoice_customer_id_status ON invoice "
             "(customer_id, status);") in body

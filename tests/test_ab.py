@@ -13,17 +13,17 @@ from pathlib import Path
 import httpx
 import pytest
 
-from perfagent.contracts import (EquivalenceVerdict, RequestCorpus, RequestSpec,
+from senapathy.contracts import (EquivalenceVerdict, RequestCorpus, RequestSpec,
                                  SqlDigestStat)
-from perfagent.errors import ContractViolation, ToolError
-from perfagent.measure.ab import (ArmSql, Pair, build_report, delta_pct,
+from senapathy.errors import ContractViolation, ToolError
+from senapathy.measure.ab import (ArmSql, Pair, build_report, delta_pct,
                                   mann_whitney_p, mechanism_verdict,
                                   run_interleaved, wilcoxon_p)
-from perfagent.measure.arms import (JVM_FLAGS, Arm, arm_argv,
+from senapathy.measure.arms import (JVM_FLAGS, Arm, arm_argv,
                                     assert_build_current,
                                     assert_flags_identical)
-from perfagent.measure.corpus import corpus_hash
-from perfagent.measure.verify import (patch_identity, path_shape,
+from senapathy.measure.corpus import corpus_hash
+from senapathy.measure.verify import (patch_identity, path_shape,
                                       require_verified, render_verdict,
                                       summarise_diffs)
 
@@ -211,7 +211,7 @@ def test_any_other_flag_difference_is_refused(mutation) -> None:
 def _profile() -> "RepoProfile":
     """A minimal detected profile. arm_argv needs one: the entrypoint and the
     classes directory are properties of the repo, not constants."""
-    from perfagent.contracts.repo import RepoProfile
+    from senapathy.contracts.repo import RepoProfile
     return RepoProfile.model_validate({
         "repo": "/tmp/x",
         "build": {"tool": "maven", "invocation": ["mvn"], "build_args": [],
@@ -253,7 +253,7 @@ def test_arm_argv_takes_the_entrypoint_and_profile_from_the_repo_profile(
 
 def test_free_port_pair_returns_two_distinct_usable_ports() -> None:
     """Replaces the 18080/8081 literals: ports are chosen at runtime."""
-    from perfagent.measure.arms import free_port_pair, port_is_free
+    from senapathy.measure.arms import free_port_pair, port_is_free
     first, second = free_port_pair()
     assert first != second
     assert port_is_free(first) and port_is_free(second)
@@ -382,7 +382,7 @@ def test_the_report_computes_every_number_from_samples() -> None:
 def test_perf_report_cannot_claim_it_was_sequential() -> None:
     from pydantic import ValidationError
 
-    from perfagent.contracts import LatencyStats, PerfReport
+    from senapathy.contracts import LatencyStats, PerfReport
     stats = LatencyStats(n=1, p50_ms=1, p95_ms=1, p99_ms=1, mean_ms=1, stdev_ms=0)
     with pytest.raises(ValidationError, match="interleaved"):
         PerfReport(
@@ -419,7 +419,8 @@ def verification_doc(tmp_path: Path, **overrides) -> Path:
 
 def test_measure_is_refused_when_no_verification_exists(tmp_path: Path) -> None:
     with pytest.raises(ContractViolation, match="no verification"):
-        require_verified(tmp_path, green_diff="the diff")
+        require_verified(tmp_path, green_diff="the diff",
+                         oracle_path=tmp_path / "oracle.json")
 
 
 def test_measure_is_refused_when_verification_failed(tmp_path: Path) -> None:
@@ -436,7 +437,8 @@ def test_measure_is_refused_when_verification_failed(tmp_path: Path) -> None:
                       "example_before": "overdue", "example_after": "OVERDUE"}],
     )
     with pytest.raises(ContractViolation) as caught:
-        require_verified(directory, green_diff="the diff")
+        require_verified(directory, green_diff="the diff",
+                         oracle_path=directory / "oracle.json")
 
     message = str(caught.value)
     assert "verification FAILED" in message
@@ -452,7 +454,7 @@ def test_measure_is_refused_when_the_patch_changed_after_verification(
     old verdict."""
     directory = verification_doc(tmp_path)
 
-    import perfagent.measure.verify as verify_module
+    import senapathy.measure.verify as verify_module
 
     monkeypatch.setattr(
         verify_module, "load_oracle",
@@ -463,28 +465,34 @@ def test_measure_is_refused_when_the_patch_changed_after_verification(
         lambda path=None: type("C", (), {"hash": "cor"})(),
     )
 
+    oracle_path = directory / "oracle.json"
+
     # Unchanged patch: accepted.
-    assert require_verified(directory, green_diff="the diff")["oracle_hash"] == "orc"
+    assert require_verified(
+        directory, green_diff="the diff", oracle_path=oracle_path
+    )["oracle_hash"] == "orc"
 
     with pytest.raises(ContractViolation, match="changed since it was verified"):
-        require_verified(directory, green_diff="a DIFFERENT diff")
+        require_verified(directory, green_diff="a DIFFERENT diff",
+                         oracle_path=oracle_path)
 
 
 def test_measure_is_refused_when_the_oracle_changed(tmp_path: Path, monkeypatch) -> None:
     directory = verification_doc(tmp_path)
 
-    import perfagent.measure.verify as verify_module
+    import senapathy.measure.verify as verify_module
 
     monkeypatch.setattr(
         verify_module, "load_oracle",
         lambda path=None: type("O", (), {"hash": "a-different-oracle"})(),
     )
     with pytest.raises(ContractViolation, match="oracle"):
-        require_verified(directory, green_diff="the diff")
+        require_verified(directory, green_diff="the diff",
+                         oracle_path=directory / "oracle.json")
 
 
 def test_a_failing_verdict_renders_every_differing_path() -> None:
-    from perfagent.contracts import FieldDiff
+    from senapathy.contracts import FieldDiff
 
     verdict = EquivalenceVerdict(
         passed=False, compared=12, identical=10,
@@ -516,7 +524,7 @@ def test_leaf_diffs_collapse_to_path_shapes() -> None:
     """One changed string inside a per-row loop produced 111,407 leaf diffs of a
     single shape. The shape is the actionable fact; the leaves are noise, and
     they do not fit in a model's context."""
-    from perfagent.contracts import FieldDiff
+    from senapathy.contracts import FieldDiff
 
     diffs = [
         FieldDiff(request_id=f"req-{r}", path=f"$.content[{r}].tags[{i}]",
@@ -538,7 +546,7 @@ def test_path_shape_normalises_indices() -> None:
 
 
 def test_shapes_are_ordered_commonest_first() -> None:
-    from perfagent.contracts import FieldDiff
+    from senapathy.contracts import FieldDiff
 
     diffs = [FieldDiff(request_id="r", path="$.rare", before=1, after=2)]
     diffs += [
@@ -550,7 +558,7 @@ def test_shapes_are_ordered_commonest_first() -> None:
 
 
 def test_a_huge_diff_set_does_not_print_every_leaf() -> None:
-    from perfagent.contracts import EquivalenceVerdict, FieldDiff
+    from senapathy.contracts import EquivalenceVerdict, FieldDiff
 
     diffs = [
         FieldDiff(request_id="r", path=f"$.content[{i}].tags[0]",

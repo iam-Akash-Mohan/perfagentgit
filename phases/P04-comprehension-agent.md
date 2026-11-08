@@ -8,7 +8,7 @@ plumbing · **Est:** 4h · **Preconditions:** P00–P03 complete
 ## 1. GOAL
 
 The first real agent: given a route string, explore a repo and emit a validated
-`EndpointModel`. Ship it as `perfagent understand`.
+`EndpointModel`. Ship it as `senapathy understand`.
 
 ## 2. WHY THIS PHASE
 
@@ -27,10 +27,10 @@ P02 loop, P03 read tools, `EndpointModel` in contracts, mini-spring fixture.
 ## 4. DELIVERABLES
 
 ```
-perfagent/agents/__init__.py
-perfagent/agents/comprehend.py          # prompt, emit tool, runner
-perfagent/validate.py                   # citation validation
-perfagent/cli.py                        # implement `understand`
+senapathy/agents/__init__.py
+senapathy/agents/comprehend.py          # prompt, emit tool, runner
+senapathy/validate.py                   # citation validation
+senapathy/cli.py                        # implement `understand`
 tests/test_citation_validation.py       # from section 6
 tests/test_comprehend.py                # from section 6
 tests/cassettes/comprehend_mini/        # recorded, committed
@@ -122,10 +122,10 @@ Note what the runner does *not* do: it does not pass the transcript onward. The
 `EndpointModel` artifact is the entire output. The exploration may have cost 100k
 tokens; the next phase receives ~800.
 
-### 5.5 `perfagent understand`
+### 5.5 `senapathy understand`
 
 ```
-perfagent understand --repo PATH --endpoint "POST /api/customers/search"
+senapathy understand --repo PATH --endpoint "POST /api/customers/search"
                      [--max-usd 2.0] [--json] [--offline]
 ```
 
@@ -143,9 +143,9 @@ hallucination.
 ```python
 from __future__ import annotations
 from pathlib import Path
-from perfagent.contracts import Citation, EndpointModel
-from perfagent.tools.read import SourceRoot
-from perfagent.validate import validate_citations
+from senapathy.contracts import Citation, EndpointModel
+from senapathy.tools.read import SourceRoot
+from senapathy.validate import validate_citations
 
 FIX = Path(__file__).parent / "fixtures" / "mini-spring"
 ROOT = SourceRoot(FIX)
@@ -217,10 +217,10 @@ free. Record the cassettes once with a live run, then commit them.
 from __future__ import annotations
 import pytest
 from pathlib import Path
-from perfagent.llm import AnthropicClient
-from perfagent.agents.comprehend import comprehend
-from perfagent.agent import LoopBudget
-from perfagent.trace import Trace
+from senapathy.llm import AnthropicClient
+from senapathy.agents.comprehend import comprehend
+from senapathy.agent import LoopBudget
+from senapathy.trace import Trace
 
 FIX = Path(__file__).parent / "fixtures" / "mini-spring"
 CASS = Path(__file__).parent / "cassettes" / "comprehend_mini"
@@ -261,8 +261,8 @@ def test_comprehend_finds_sql_sources(offline_llm, tmp_path):
 
 def test_every_citation_in_the_output_is_real(offline_llm, tmp_path):
     """The artifact contract: an accepted EndpointModel has zero bad citations."""
-    from perfagent.validate import validate_citations
-    from perfagent.tools.read import SourceRoot
+    from senapathy.validate import validate_citations
+    from senapathy.tools.read import SourceRoot
     m = comprehend(repo=FIX, endpoint="POST /api/customers/search",
                    llm=offline_llm, trace=Trace(tmp_path, "t"),
                    budget=LoopBudget(max_steps=25))
@@ -301,14 +301,14 @@ transcript out of the runner.
 ## 8. DEMO
 
 ```bash
-perfagent understand --repo tests/fixtures/mini-spring \
+senapathy understand --repo tests/fixtures/mini-spring \
                      --endpoint "POST /api/customers/search"
 ```
 
 Then the real thing:
 
 ```bash
-perfagent understand --repo ../crm-service \
+senapathy understand --repo ../crm-service \
                      --endpoint "POST /api/customers/search" --max-usd 3
 ```
 
@@ -382,7 +382,7 @@ eval suite are for.
 ## Milestone A complete
 
 You have an agent you wrote yourself that reads an unfamiliar codebase and produces a
-verified structural model of an endpoint. Ship `perfagent understand` to your team.
+verified structural model of an endpoint. Ship `senapathy understand` to your team.
 
 Next: **Milestone B — evidence, with zero AI in it.** Environment, workload,
 benchmark harness. You cannot evaluate an agent's diagnosis without a trustworthy

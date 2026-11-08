@@ -12,16 +12,16 @@ from typing import Any
 
 import pytest
 
-from perfagent.agent import LoopBudget
-from perfagent.contracts import (Citation, EndpointModel, IndexInfo,
+from senapathy.agent import LoopBudget
+from senapathy.contracts import (Citation, EndpointModel, IndexInfo,
                                  LLMResponse, TableInfo, Usage)
-from perfagent.errors import ContractViolation, ToolError
-from perfagent.prompts import load_prompt
-from perfagent.tools import SourceRoot
-from perfagent.tools.submit import make_submit_endpoint_analysis
-from perfagent.trace import Trace
-from perfagent.understand.agent import understand
-from perfagent.understand.validate import validate_citations
+from senapathy.errors import ContractViolation, ToolError
+from senapathy.prompts import load_prompt
+from senapathy.tools import SourceRoot
+from senapathy.tools.submit import make_submit_endpoint_analysis
+from senapathy.trace import Trace
+from senapathy.understand.agent import understand
+from senapathy.understand.validate import validate_citations
 
 # Lines in the fixture's OrderController.java:
 #   12  public Page<OrderDto> search(@RequestBody SearchRequest req) {
@@ -60,6 +60,7 @@ def payload(**overrides: Any) -> dict[str, Any]:
                            "fields_returned": ["id", "lineCount"],
                            "computed_fields": ["lineCount"],
                            "unbounded_collections": []},
+        "request_shape": {"parameters": []},
         "uncertainties": ["how many rows a page holds by default"],
     }
     base.update(overrides)
@@ -429,7 +430,7 @@ def _model(**overrides: Any) -> EndpointModel:
 
 
 def test_offset_pagination_with_no_order_by_at_all_is_flagged() -> None:
-    from perfagent.understand.validate import completeness_warnings
+    from senapathy.understand.validate import completeness_warnings
 
     model = _model(
         data_access=[{"trigger": "repo.findByFilter", "kind": "jpql_query",
@@ -444,7 +445,7 @@ def test_offset_pagination_with_no_order_by_at_all_is_flagged() -> None:
 
 
 def test_an_order_by_on_a_unique_column_clears_it() -> None:
-    from perfagent.understand.validate import completeness_warnings
+    from senapathy.understand.validate import completeness_warnings
 
     model = _model(
         data_access=[{"trigger": "repo.findByFilter", "kind": "jpql_query",
@@ -465,7 +466,7 @@ def test_an_order_by_on_a_unique_column_clears_it() -> None:
 def test_an_order_by_on_a_non_unique_column_is_not_a_total_order() -> None:
     """Ties on a non-unique sort column are the same hazard as no ORDER BY at
     all: the planner is free to break them differently between two calls."""
-    from perfagent.understand.validate import completeness_warnings
+    from senapathy.understand.validate import completeness_warnings
 
     model = _model(
         data_access=[{"trigger": "repo.findByFilter", "kind": "jpql_query",
@@ -486,7 +487,7 @@ def test_an_order_by_on_a_non_unique_column_is_not_a_total_order() -> None:
 def test_a_per_row_query_is_not_mistaken_for_the_paginated_one() -> None:
     """A lazy collection load inside enrich() has no business being judged for
     pagination ordering — it is not what produced the page."""
-    from perfagent.understand.validate import completeness_warnings
+    from senapathy.understand.validate import completeness_warnings
 
     model = _model(
         data_access=[
@@ -508,7 +509,7 @@ def test_a_per_row_query_is_not_mistaken_for_the_paginated_one() -> None:
 
 @pytest.mark.parametrize("mechanism", ["keyset", "none", "unbounded"])
 def test_non_offset_pagination_is_never_flagged(mechanism: str) -> None:
-    from perfagent.understand.validate import completeness_warnings
+    from senapathy.understand.validate import completeness_warnings
 
     model = _model(
         data_access=[{"trigger": "repo.findByFilter", "kind": "jpql_query",
@@ -521,7 +522,7 @@ def test_non_offset_pagination_is_never_flagged(mechanism: str) -> None:
 
 
 def test_no_pagination_declared_is_never_flagged() -> None:
-    from perfagent.understand.validate import completeness_warnings
+    from senapathy.understand.validate import completeness_warnings
 
     model = _model(pagination=None)
     assert not any("CORRECTNESS RISK" in w for w in completeness_warnings(model))
@@ -531,7 +532,7 @@ def test_it_fires_on_the_real_mini_spring_map() -> None:
     """The actual finding from the F4 investigation, read off a real recorded
     artifact: no ORDER BY anywhere, which is exactly what findByFilter's JPQL
     looks like on disk."""
-    from perfagent.understand.validate import completeness_warnings
+    from senapathy.understand.validate import completeness_warnings
 
     fixture = Path(__file__).parent / "fixtures" / "plan" / "endpoint_model.json"
     model = EndpointModel.model_validate(json.loads(fixture.read_text()))

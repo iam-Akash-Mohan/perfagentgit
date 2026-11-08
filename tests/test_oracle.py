@@ -19,13 +19,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-from perfagent.contracts import (BehaviourOracle, RecordedResponse,
+from senapathy.contracts import (BehaviourOracle, RecordedResponse,
                                  RequestCorpus, RequestSpec, TolerancePolicy)
-from perfagent.errors import ContractViolation, ToolError
-from perfagent.measure.corpus import corpus_hash
-from perfagent.oracle import canonicalise as canon
-from perfagent.oracle import record as rec
-from perfagent.oracle.compare import (MISSING, align, compare, diff_bodies,
+from senapathy.errors import ContractViolation, ToolError
+from senapathy.measure.corpus import corpus_hash
+from senapathy.oracle import canonicalise as canon
+from senapathy.oracle import record as rec
+from senapathy.oracle.compare import (MISSING, align, compare, diff_bodies,
                                       resolve_policy, verify_corpus)
 
 EMPTY_POLICY = TolerancePolicy()
@@ -95,6 +95,18 @@ def test_base_commit_marks_a_dirty_worktree(git_repo: Path) -> None:
 def test_base_commit_refuses_a_non_repo(tmp_path: Path) -> None:
     with pytest.raises(ContractViolation, match="not a git repository"):
         rec.base_commit(tmp_path)
+
+
+def test_load_oracle_with_no_path_refuses() -> None:
+    """No default path any more: a call site with nothing to pass is a
+    refusal, not a fallback to whatever `.senapathy/oracle.json` happens to
+    hold. An omitted argument is a TypeError -- Python's own refusal; an
+    explicit None is this module's own, named one."""
+    with pytest.raises(TypeError):
+        rec.load_oracle()  # type: ignore[call-arg]
+
+    with pytest.raises(ContractViolation, match="no oracle path"):
+        rec.load_oracle(None)
 
 
 def test_record_fires_every_corpus_request_once_and_in_order(
@@ -188,6 +200,67 @@ def test_non_json_and_empty_bodies_round_trip(tmp_path: Path, git_repo: Path) ->
     )
     bodies = [r["body"] for r in bundle["recorded"]]
     assert bodies == [None, "plain", "{not json"]
+
+
+# ───────────────────  substance checks: did it actually run?  ────────────
+
+
+def test_record_oracle_refuses_an_all_error_recording(
+    tmp_path: Path, git_repo: Path
+) -> None:
+    """The real defect: nothing noticed the endpoint never ran. A recording
+    that is entirely 400s must be refused by status distribution and first
+    response body, never sealed as if it had worked."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "status is required"},
+                              headers={"content-type": "application/json"})
+
+    out = tmp_path / "oracle.json"
+    with pytest.raises(ContractViolation) as exc:
+        rec.record_oracle(
+            "http://app", make_corpus(3, 1),
+            policy=EMPTY_POLICY, repo_path=git_repo, capture_db=False,
+            path=out, client=mock_client(handler),
+        )
+    message = str(exc.value)
+    assert "no request succeeded" in message
+    assert "400" in message
+    assert "status is required" in message
+    assert not out.exists()
+
+
+def test_record_oracle_accepts_a_mix_with_at_least_one_success(
+    tmp_path: Path, git_repo: Path
+) -> None:
+    """Not 'no 4xx' -- a deliberate error-path request is legitimate
+    alongside ones that succeed."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = json.loads(request.content)["page"]
+        status = 404 if page == 0 else 200
+        return httpx.Response(status, json={"page": page},
+                              headers={"content-type": "application/json"})
+
+    bundle = rec.record_oracle(
+        "http://app", make_corpus(3, 0),
+        policy=EMPTY_POLICY, repo_path=git_repo, capture_db=False,
+        path=tmp_path / "oracle.json", client=mock_client(handler),
+    )
+    assert bundle["status_counts"] == {"200": 2, "404": 1}
+
+
+def test_record_oracle_seals_the_status_distribution(
+    tmp_path: Path, git_repo: Path
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True},
+                              headers={"content-type": "application/json"})
+
+    bundle = rec.record_oracle(
+        "http://app", make_corpus(2, 1),
+        policy=EMPTY_POLICY, repo_path=git_repo, capture_db=False,
+        path=tmp_path / "oracle.json", client=mock_client(handler),
+    )
+    assert bundle["status_counts"] == {"200": 3}
 
 
 # ────────────────────────────  freezing / hash  ──────────────────────────
@@ -511,13 +584,13 @@ def test_missing_sentinel_is_distinct_from_none() -> None:
 
 def test_the_oracle_is_not_in_any_agent_tool_surface() -> None:
     """CLAUDE.md invariant 2, enforced mechanically rather than by review."""
-    root = Path(__file__).resolve().parents[1] / "perfagent"
+    root = Path(__file__).resolve().parents[1] / "senapathy"
     agent_facing = [root / "tools.py", *(root / "diagnose").glob("*.py")]
     for path in agent_facing:
         if not path.exists():
             continue
         source = path.read_text(encoding="utf-8")
-        assert "perfagent.oracle" not in source and "from .oracle" not in source, (
+        assert "senapathy.oracle" not in source and "from .oracle" not in source, (
             f"{path.name} imports the oracle. No agent-facing module may reach "
             "the recording, or the grader becomes something the agent can touch."
         )
@@ -946,7 +1019,7 @@ def test_passed_cannot_be_set_by_anything_but_this_module() -> None:
     # The contract itself refuses any other author of the verdict.
     from pydantic import ValidationError
 
-    from perfagent.contracts import EquivalenceVerdict
+    from senapathy.contracts import EquivalenceVerdict
     with pytest.raises(ValidationError, match="decided_by"):
         EquivalenceVerdict(
             passed=True, compared=1, identical=1, db_state_matched=True,
@@ -1034,9 +1107,11 @@ def test_db_table_snapshot_excludes_bookkeeping_from_the_hashed_state(
         yield type("Conn", (), {"cursor": lambda self: cursor})()
 
     monkeypatch.setattr(rec, "connect", fake_connect)
-    from perfagent.measure.sql import MySQLTarget
+    from senapathy.measure.sql import MySQLTarget
 
-    snapshot, excluded = rec.db_table_snapshot(MySQLTarget())
+    snapshot, excluded = rec.db_table_snapshot(
+        MySQLTarget(host="127.0.0.1", port=3307, user="root",
+                   password="root", database="mini"))
     assert excluded == ["flyway_schema_history"]
     assert set(snapshot) == {"customer", "invoice"}
     assert "flyway_schema_history" not in snapshot

@@ -1,6 +1,6 @@
 """The orchestrator's half of the endpoint flag.
 
-`perfagent run --endpoint "..."` accepted the value, the orchestrator carried
+`senapathy run --endpoint "..."` accepted the value, the orchestrator carried
 it, and the comprehension phase never received it — it only checked whether an
 artifact file existed and skipped. These tests are the guard on that.
 """
@@ -13,10 +13,10 @@ from typing import Any
 
 import pytest
 
-import perfagent.orchestrator as orch
-from perfagent.contracts import Phase
-from perfagent.orchestrator import Budget, Context, _valid_endpoint_model
-from perfagent.trace import Trace
+import senapathy.orchestrator as orch
+from senapathy.contracts import Phase
+from senapathy.orchestrator import Budget, Context, _valid_endpoint_model
+from senapathy.trace import Trace
 
 MODEL = {
     "route": "POST /api/customers/search",
@@ -116,10 +116,11 @@ def test_the_runner_passes_the_run_s_endpoint_to_the_phase(
             json.dumps({**MODEL, "route": kwargs["endpoint"]}))
         return Model()
 
-    import perfagent.understand.agent as understand_mod
+    import senapathy.understand.agent as understand_mod
 
     monkeypatch.setattr(understand_mod, "understand", fake_understand)
     monkeypatch.setattr(orch, "_metered_llm", lambda ctx, phase: object())
+    monkeypatch.setattr(orch, "_mysql_target", lambda ctx, phase: None)
 
     ctx = context(tmp_path, "GET /api/customers/{id}")
     ctx.repo = tmp_path
@@ -131,7 +132,7 @@ def test_the_runner_passes_the_run_s_endpoint_to_the_phase(
 
 
 def test_the_phase_refuses_without_a_repository(tmp_path: Path) -> None:
-    from perfagent.errors import ContractViolation
+    from senapathy.errors import ContractViolation
 
     ctx = context(tmp_path, "POST /x")
     with pytest.raises(ContractViolation, match="target repository"):
@@ -141,5 +142,5 @@ def test_the_phase_refuses_without_a_repository(tmp_path: Path) -> None:
 def test_diagnose_reads_this_run_s_comprehension_artifact() -> None:
     """Not a global file that may describe a different endpoint entirely."""
     source = (Path(__file__).resolve().parent.parent
-              / "perfagent" / "orchestrator.py").read_text()
+              / "senapathy" / "orchestrator.py").read_text()
     assert 'endpoint_model_path=ctx.run_dir / "endpoint_model.json"' in source

@@ -13,7 +13,7 @@ to put the `CREATE INDEX`. An index applied by hand to a database, with nothing
 in the diff, produces the exact failure this product exists to prevent: a PR
 whose measured improvement cannot be reproduced from the code it contains.
 
-So `perfagent/plan/migration.py::write_index_migration` refuses when it finds
+So `senapathy/plan/migration.py::write_index_migration` refuses when it finds
 no Flyway directory and no Flyway in the build file, and names what it looked
 for. The patch agent surfaces that refusal rather than working around it.
 
@@ -62,7 +62,7 @@ genuinely worth 23×.
 
 It refuses to measure, and says so in its own terminal state.
 
-Before the measure phase starts, `perfagent/measure/isolation.py` asks two
+Before the measure phase starts, `senapathy/measure/isolation.py` asks two
 questions. Does this patch touch the schema — because the plan chose
 `add_index`, or because the diff contains a migration, or because the patch
 reports one among its changed files? And do the two arms' resolved JDBC URLs

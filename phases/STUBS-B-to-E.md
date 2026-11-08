@@ -15,8 +15,8 @@ Phases marked ⭐ are on the thin thread to a first working version.
 **Goal:** two git worktrees, both apps built and running on separate ports, health
 checked.
 
-**Deliverables:** `perfagent/env/worktree.py`, `perfagent/env/runner.py`,
-`perfagent/env/health.py`, `tests/test_worktree.py`.
+**Deliverables:** `senapathy/env/worktree.py`, `senapathy/env/runner.py`,
+`senapathy/env/health.py`, `tests/test_worktree.py`.
 
 **Spec highlights:** `blue/` pinned at base commit and **never written to**; `green/`
 for the agent. Build via a fixed command (no shell tool — an argv list). Identical JVM
@@ -37,7 +37,7 @@ environment is a *capability you hand out*, not a place the agent lives.
 **Goal:** make the endpoint genuinely slow, and define the request corpus.
 
 **Deliverables:** `seed/seed_<domain>.py` (hand-written for the first repo),
-`perfagent/workload/corpus.py`, `tests/test_corpus.py`.
+`senapathy/workload/corpus.py`, `tests/test_corpus.py`.
 
 **Spec highlights:** fixed random seed — byte-identical data every run, or before/after
 numbers are meaningless. Skewed FK distribution (Zipf), not uniform — uniform hides
@@ -55,8 +55,8 @@ than volume.
 **Goal:** trustworthy latency and SQL evidence. **The highest-risk phase in the
 project.**
 
-**Deliverables:** `perfagent/measure/bench.py`, `perfagent/measure/sql.py`,
-`perfagent/measure/variance.py`, `tests/test_bench.py`.
+**Deliverables:** `senapathy/measure/bench.py`, `senapathy/measure/sql.py`,
+`senapathy/measure/variance.py`, `tests/test_bench.py`.
 
 **Spec highlights:** warmup pass, discarded. Percentiles from raw samples, not
 averages of averages. SQL via MySQL `performance_schema.events_statements_summary_by_digest`
@@ -78,7 +78,7 @@ failing.
 
 **Goal:** turn 12,000 lines of raw evidence into the ~40 lines a model will see.
 
-**Deliverables:** `perfagent/measure/evidence.py`, `EvidenceBundle.render_for_model()`,
+**Deliverables:** `senapathy/measure/evidence.py`, `EvidenceBundle.render_for_model()`,
 `tests/test_red_flags.py`.
 
 **Spec highlights:** every `RedFlagKind` computed in Python with an explicit threshold
@@ -100,8 +100,8 @@ version inside P09 — extract it properly right after.
 
 **Goal:** ranked, cited, falsifiable hypotheses about the real bottleneck.
 
-**Deliverables:** `perfagent/agents/diagnose.py`, `emit_hypotheses` terminal tool,
-`perfagent/validate.py` extension for evidence refs, `tests/test_diagnose.py`.
+**Deliverables:** `senapathy/agents/diagnose.py`, `emit_hypotheses` terminal tool,
+`senapathy/validate.py` extension for evidence refs, `tests/test_diagnose.py`.
 
 **Spec highlights:** `min_length=3` on hypotheses is already in the contract. Validate:
 every evidence ref resolves to a real artifact, and `attribution_valid()` holds — if
@@ -149,8 +149,8 @@ decides what's allowed.
 
 **Goal:** the agent writes a diff that builds and passes tests.
 
-**Deliverables:** `perfagent/tools/write.py` (`apply_patch`, `build`, `run_tests`),
-`perfagent/agents/implement.py`, `tests/test_apply_patch.py`.
+**Deliverables:** `senapathy/tools/write.py` (`apply_patch`, `build`, `run_tests`),
+`senapathy/agents/implement.py`, `tests/test_apply_patch.py`.
 
 **Spec highlights:** writes confined to the plan's `files_to_touch`. `src/test/**`
 **write-denied** — enforced in code, not prompt. Test count may not decrease. Per-
@@ -173,7 +173,7 @@ context.
 
 **Goal:** prove behaviour didn't change. **The trust boundary of the product.**
 
-**Deliverables:** `perfagent/oracle/record.py`, `canonicalise.py`, `compare.py`,
+**Deliverables:** `senapathy/oracle/record.py`, `canonicalise.py`, `compare.py`,
 `tests/test_oracle.py`.
 
 **Spec highlights:** record against unmodified code, content-hash, **not in any
@@ -229,12 +229,12 @@ backing artifact and **assert it raises.** That test is the evidence ledger.
 
 ### ⭐ P16 — Orchestrator + trace viewer · mixed · ~4h
 
-**Goal:** `perfagent run` end to end, resumable.
+**Goal:** `senapathy run` end to end, resumable.
 
 **Spec highlights:** extract the FSM from the `run.py` you've been growing — now that
 you know the real shape. Persist `RunState` at every phase boundary; resume from any
 completed phase. All eight terminal states reachable and reported honestly.
-`perfagent trace <run_id>` renders the run as the narrative in design doc §10.3.
+`senapathy trace <run_id>` renders the run as the narrative in design doc §10.3.
 
 **Learning:** workflow vs agent, made concrete. You'll see exactly why this wasn't
 P00 — the abstraction you'd have written then would be wrong.
@@ -298,7 +298,7 @@ in the image tag.
 
 **Spec highlights:** Claude infers the `RepoProfile` from README/compose/CI/pom;
 **code verifies every field by executing it** — build, boot, health-check, one test,
-DB connect. Cache as `.perfagent/profile.yml`, invalidate on build-file change.
+DB connect. Cache as `.senapathy/profile.yml`, invalidate on build-file change.
 Feasibility gate reports blockers *before* spending money. `StackPack` protocol with
 exactly one implementation behind it.
 

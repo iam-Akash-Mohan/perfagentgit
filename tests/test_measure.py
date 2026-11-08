@@ -12,11 +12,11 @@ from pathlib import Path
 import httpx
 import pytest
 
-from perfagent.contracts import RequestCorpus, RequestSpec, SqlDigestStat
-from perfagent.errors import ContractViolation, ToolError
-from perfagent.measure.baseline import derive_facts, is_session_control, render_summary
-from perfagent.measure.bench import latency_stats, percentile, run_benchmark
-from perfagent.measure.corpus import corpus_hash, load_corpus, save_corpus
+from senapathy.contracts import RequestCorpus, RequestSpec, SqlDigestStat
+from senapathy.errors import ContractViolation, ToolError
+from senapathy.measure.baseline import derive_facts, is_session_control, render_summary
+from senapathy.measure.bench import latency_stats, percentile, run_benchmark
+from senapathy.measure.corpus import corpus_hash, load_corpus, save_corpus
 
 
 # ────────────────────────────  percentiles  ─────────────────────────────
@@ -67,16 +67,16 @@ def _spec(request_id: str, **body: object) -> RequestSpec:
 def test_there_is_no_shipped_corpus_to_fall_back_to() -> None:
     """The deliberate inversion of the two tests that used to live here.
 
-    `perfagent/measure/corpus.json` held 12 hand-written requests against
+    `senapathy/measure/corpus.json` held 12 hand-written requests against
     one endpoint of one repo and was the DEFAULT for every run, so a run
     against any other endpoint silently baselined and gated that one. The
     corpus is per-run evidence now; the absence of a default is the feature.
     """
-    from perfagent.measure.corpus import DEFAULT_CORPUS_PATH
+    from senapathy.measure.corpus import DEFAULT_CORPUS_PATH
 
     assert DEFAULT_CORPUS_PATH is None
     assert not (Path(__file__).resolve().parent.parent
-                / "perfagent/measure/corpus.json").exists()
+                / "senapathy/measure/corpus.json").exists()
 
 
 def test_loading_a_corpus_with_no_path_refuses_loudly() -> None:

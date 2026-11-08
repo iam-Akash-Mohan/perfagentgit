@@ -5,12 +5,12 @@ __pycache__/
 scratch.py
 .cass/
 # Recordings and run artifacts are machine- and dataset-specific.
-.perfagent/*
+.senapathy/*
 # ...but the tolerance policy is NOT. It decides what counts as a behaviour
 # change, so it has to be version-controlled and reviewed like any other
 # change. An untracked policy file can be widened with no review trail, which
 # is exactly the failure P13 exists to prevent.
-!.perfagent/tolerance.json
+!.senapathy/tolerance.json
 .env
 
 # Transcripts of Claude sessions. Working notes, not source.

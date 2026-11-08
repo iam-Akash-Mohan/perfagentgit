@@ -28,14 +28,14 @@ Python 3.12 available. Nothing else.
 ```
 pyproject.toml
 CLAUDE.md                          # already provided — do not modify
-perfagent/__init__.py
-perfagent/contracts.py             # ← the whole point of this phase
-perfagent/config.py
-perfagent/ids.py
-perfagent/artifacts.py
-perfagent/trace.py
-perfagent/errors.py
-perfagent/cli.py
+senapathy/__init__.py
+senapathy/contracts.py             # ← the whole point of this phase
+senapathy/config.py
+senapathy/ids.py
+senapathy/artifacts.py
+senapathy/trace.py
+senapathy/errors.py
+senapathy/cli.py
 tests/__init__.py
 tests/test_contracts.py            # from section 6
 tests/test_artifacts.py            # from section 6
@@ -45,36 +45,36 @@ tests/test_artifacts.py            # from section 6
 
 ### 5.1 `pyproject.toml`
 
-Package `perfagent`. Deps: `pydantic>=2.7`, `typer>=0.12`, `httpx>=0.27`,
+Package `senapathy`. Deps: `pydantic>=2.7`, `typer>=0.12`, `httpx>=0.27`,
 `python-ulid`, `numpy`, `scipy`, `pyyaml`, `mysql-connector-python`.
-Dev deps: `pytest`, `pytest-cov`. Console script `perfagent = perfagent.cli:app`.
+Dev deps: `pytest`, `pytest-cov`. Console script `senapathy = senapathy.cli:app`.
 
-### 5.2 `perfagent/errors.py`
+### 5.2 `senapathy/errors.py`
 
 ```python
-class PerfAgentError(Exception): ...
-class ToolError(PerfAgentError):
+class SenapathyError(Exception): ...
+class ToolError(SenapathyError):
     """Expected tool failure. The agent loop turns this into an is_error
     tool_result and continues. Message must be actionable for the model."""
     def __init__(self, message: str, suggestion: str | None = None): ...
-class BudgetExhausted(PerfAgentError): ...
-class ContractViolation(PerfAgentError):
+class BudgetExhausted(SenapathyError): ...
+class ContractViolation(SenapathyError):
     """An artifact failed validation, or a guardrail was breached."""
 ```
 
-### 5.3 `perfagent/ids.py`
+### 5.3 `senapathy/ids.py`
 
 `new_run_id() -> str` returning a ULID string. `content_hash(obj) -> str` returning
 `sha256` of canonical JSON (sorted keys, no whitespace), first 16 hex chars.
 
-### 5.4 `perfagent/config.py`
+### 5.4 `senapathy/config.py`
 
-Pydantic `Settings` loaded from env then optional `perfagent.yml`:
+Pydantic `Settings` loaded from env then optional `senapathy.yml`:
 `anthropic_api_key`, `model` (default `claude-opus-4-5`), `cheap_model`,
-`runs_dir` (default `.perfagent/runs`), `cassette_dir`, `max_usd_per_run` (default
+`runs_dir` (default `.senapathy/runs`), `cassette_dir`, `max_usd_per_run` (default
 `5.0`), `offline` (bool — when true, LLM calls must hit a cassette or raise).
 
-### 5.5 `perfagent/contracts.py`
+### 5.5 `senapathy/contracts.py`
 
 **This is the deliverable.** Write it exactly as given below. Later phases import
 from here and must never redefine these shapes.
@@ -500,7 +500,7 @@ class StackPack(Protocol):
     def run_cmd(self, port: int) -> list[str]: ...
 ```
 
-### 5.6 `perfagent/artifacts.py`
+### 5.6 `senapathy/artifacts.py`
 
 ```python
 class ArtifactStore:
@@ -514,7 +514,7 @@ class ArtifactStore:
     def exists(self, kind: str) -> bool: ...
 ```
 
-### 5.7 `perfagent/trace.py`
+### 5.7 `senapathy/trace.py`
 
 ```python
 class EventType(str, Enum):
@@ -531,7 +531,7 @@ class Trace:
     def cost_by_phase(self) -> dict[str, float]: ...
 ```
 
-### 5.8 `perfagent/cli.py`
+### 5.8 `senapathy/cli.py`
 
 Typer app with subcommands registered but each raising
 `NotImplementedError("phase Pnn")`: `understand`, `baseline`, `diagnose`, `patch`,
@@ -545,7 +545,7 @@ Create `tests/test_contracts.py`:
 from __future__ import annotations
 import pytest
 from pydantic import ValidationError
-from perfagent.contracts import (
+from senapathy.contracts import (
     Citation, EndpointModel, HypothesisSet, Hypothesis,
     RiskTier, TerminalState, EquivalenceVerdict, RequestCorpus, RequestSpec,
 )
@@ -624,10 +624,10 @@ Create `tests/test_artifacts.py`:
 ```python
 from __future__ import annotations
 import pytest
-from perfagent.artifacts import ArtifactStore
-from perfagent.trace import Trace, EventType
-from perfagent.contracts import Citation, EndpointModel
-from perfagent.errors import ContractViolation
+from senapathy.artifacts import ArtifactStore
+from senapathy.trace import Trace, EventType
+from senapathy.contracts import Citation, EndpointModel
+from senapathy.errors import ContractViolation
 
 
 def _model():
@@ -702,8 +702,8 @@ raises `NotImplementedError` — that belongs to P08.
 
 ```bash
 pytest tests/ -q                 # all green
-perfagent --help                 # subcommands listed
-perfagent understand --help      # exists, raises NotImplementedError when run
+senapathy --help                 # subcommands listed
+senapathy understand --help      # exists, raises NotImplementedError when run
 ```
 
 ## 9. LEARNING

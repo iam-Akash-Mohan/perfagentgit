@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from perfagent.contracts.repo import (BuildTool, DatabaseKind, Layout,
+from senapathy.contracts.repo import (BuildTool, DatabaseKind, Layout,
                                       MigrationTool, RepoProfile)
-from perfagent.onboard import (OnboardingRefusal, assert_instrumentable,
+from senapathy.onboard import (OnboardingRefusal, assert_instrumentable,
                                load_profile, onboard, save_profile)
 
 APP = """package com.example.demo;

@@ -17,19 +17,19 @@ from typing import Any
 
 import pytest
 
-from perfagent.agent import LoopBudget
-from perfagent.contracts import (CacheInfo, Citation, EndpointModel,
+from senapathy.agent import LoopBudget
+from senapathy.contracts import (CacheInfo, Citation, EndpointModel,
                                  EntityRelation, HiddenQueryTrigger,
                                  LLMResponse, PaginationInfo, PerRowWork,
                                  ResponseShape, Usage)
-from perfagent.errors import ToolError
-from perfagent.prompts import load_prompt
-from perfagent.tools import SourceRoot
-from perfagent.tools.submit import (SUBMIT_PARAMETERS, git_head,
+from senapathy.errors import ToolError
+from senapathy.prompts import load_prompt
+from senapathy.tools import SourceRoot
+from senapathy.tools.submit import (SUBMIT_PARAMETERS, git_head,
                                     make_submit_endpoint_analysis)
-from perfagent.trace import Trace
-from perfagent.understand.agent import PROMPT_ORDER, build_registry, understand
-from perfagent.understand.validate import (completeness_warnings,
+from senapathy.trace import Trace
+from senapathy.understand.agent import PROMPT_ORDER, build_registry, understand
+from senapathy.understand.validate import (completeness_warnings,
                                            validate_citations, validate_claims)
 
 CONTROLLER = "src/main/java/com/ex/web/OrderController.java"
@@ -60,6 +60,7 @@ def payload(**overrides: Any) -> dict[str, Any]:
             "computed_fields": ["lineCount"],
             "unbounded_collections": ["tags"],
         },
+        "request_shape": {"parameters": []},
         "uncertainties": [],
     }
     base.update(overrides)
@@ -161,7 +162,7 @@ def test_all_citations_covers_the_new_shapes() -> None:
 
 
 def test_the_import_path_did_not_change_when_contracts_was_split() -> None:
-    import perfagent.contracts as contracts
+    import senapathy.contracts as contracts
 
     for name in ("Citation", "EndpointModel", "PerRowWork", "ResponseShape",
                  "PaginationInfo", "CacheInfo", "HiddenQueryTrigger",
@@ -171,7 +172,7 @@ def test_the_import_path_did_not_change_when_contracts_was_split() -> None:
 
 def test_the_existing_artifact_still_loads_under_the_new_schema() -> None:
     """EndpointModel gained only optional fields with defaults."""
-    path = Path(__file__).resolve().parent.parent / ".perfagent" / "endpoint_model.json"
+    path = Path(__file__).resolve().parent.parent / ".senapathy" / "endpoint_model.json"
     if not path.exists():
         pytest.skip("no committed artifact to check")
     model = EndpointModel.model_validate(json.loads(path.read_text()))
@@ -427,7 +428,7 @@ def test_the_phase_runs_with_no_database_configured(
 ) -> None:
     """The phase can do 90% of its job without a database and must not die at
     the door. `from_env()` validates, so a garbled port raised right there."""
-    monkeypatch.setenv("PERFAGENT_MYSQL_PORT", "not-a-port")
+    monkeypatch.setenv("SENAPATHY_MYSQL_PORT", "not-a-port")
     trace = Trace(tmp_path / "run", "r1")
 
     model = understand(
@@ -451,7 +452,7 @@ def test_get_schema_is_offered_when_a_target_exists(fixture_repo: Path,
 
 
 def test_max_steps_is_deprecated_loudly() -> None:
-    from perfagent.agent import run_agent
+    from senapathy.agent import run_agent
 
     with pytest.deprecated_call(match="max_steps"):
         run_agent(client=Scripted("done"), task="go", tools=[], handlers={},
@@ -481,7 +482,7 @@ def unbounded_model() -> EndpointModel:
 
 
 def test_the_unbounded_marker_is_the_point_of_the_session() -> None:
-    from perfagent.render.endpoint import render_endpoint_model
+    from senapathy.render.endpoint import render_endpoint_model
 
     out = render_endpoint_model(unbounded_model())
     assert "⚠ UNBOUNDED" in out
@@ -491,7 +492,7 @@ def test_the_unbounded_marker_is_the_point_of_the_session() -> None:
 
 
 def test_the_render_shows_the_new_sections() -> None:
-    from perfagent.render.endpoint import render_endpoint_model
+    from senapathy.render.endpoint import render_endpoint_model
 
     out = render_endpoint_model(unbounded_model())
     assert "base a3f91c2" in out
@@ -502,7 +503,7 @@ def test_the_render_shows_the_new_sections() -> None:
 
 
 def test_an_absent_response_shape_says_so_rather_than_printing_nothing() -> None:
-    from perfagent.render.endpoint import render_endpoint_model
+    from senapathy.render.endpoint import render_endpoint_model
 
     model = unbounded_model()
     model.response_shape = None
@@ -513,7 +514,7 @@ def test_an_absent_response_shape_says_so_rather_than_printing_nothing() -> None
 
 
 def test_an_empty_per_row_work_is_called_suspect_in_the_render() -> None:
-    from perfagent.render.endpoint import render_endpoint_model
+    from senapathy.render.endpoint import render_endpoint_model
 
     model = unbounded_model()
     model.per_row_work = []
@@ -565,9 +566,13 @@ def test_an_unreachable_database_is_an_error_the_model_can_read(
     """A target that can be DESCRIBED but not CONNECTED to must fail inside
     get_schema, where the model can read the message and carry on — not at the
     door, where it would abort a phase that can still do most of its job."""
-    from perfagent.measure.sql import MySQLTarget
+    from senapathy.measure.sql import MySQLTarget
 
-    monkeypatch.setenv("PERFAGENT_MYSQL_PORT", "1")   # nothing listens here
+    monkeypatch.setenv("SENAPATHY_MYSQL_HOST", "127.0.0.1")
+    monkeypatch.setenv("SENAPATHY_MYSQL_PORT", "1")   # nothing listens here
+    monkeypatch.setenv("SENAPATHY_MYSQL_USER", "root")
+    monkeypatch.setenv("SENAPATHY_MYSQL_PASSWORD", "root")
+    monkeypatch.setenv("SENAPATHY_MYSQL_DATABASE", "mini")
     trace = Trace(tmp_path / "run", "r1")
     seen: list[str] = []
 
@@ -598,7 +603,7 @@ def test_a_table_nobody_introspected_is_not_reported_as_having_no_indexes(
     """'NO INDEXES' and 'nobody looked' are different facts and only one of
     them is a finding. A run where the model skipped get_schema printed the
     first when the second was true."""
-    from perfagent.render.endpoint import render_endpoint_model
+    from senapathy.render.endpoint import render_endpoint_model
 
     model = EndpointModel.model_validate(payload(
         tables=[{"table": "orders", "columns_read": ["id"]}]))
@@ -608,8 +613,8 @@ def test_a_table_nobody_introspected_is_not_reported_as_having_no_indexes(
 
 
 def test_a_table_that_really_has_no_indexes_still_says_so() -> None:
-    from perfagent.contracts import TableInfo
-    from perfagent.render.endpoint import render_endpoint_model
+    from senapathy.contracts import TableInfo
+    from senapathy.render.endpoint import render_endpoint_model
 
     model = EndpointModel.model_validate(payload(tables=[TableInfo(
         table="orders", columns_read=["id"], all_columns=["id bigint NOT NULL"],
@@ -630,7 +635,7 @@ def test_a_table_with_no_measured_facts_is_flagged(root: SourceRoot) -> None:
 
 
 def test_measured_tables_are_not_flagged(root: SourceRoot) -> None:
-    from perfagent.contracts import TableInfo
+    from senapathy.contracts import TableInfo
 
     measured = {"orders": TableInfo(table="orders", approx_rows=10,
                                     all_columns=["id bigint NOT NULL"])}

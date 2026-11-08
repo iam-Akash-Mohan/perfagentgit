@@ -29,8 +29,8 @@ capability scoping, budget caps, no-progress detection, and tool errors as conte
 ## 4. DELIVERABLES
 
 ```
-perfagent/tools/__init__.py        # ToolSpec, ToolRegistry
-perfagent/agent.py                 # LoopBudget, AgentLoop, LoopOutcome
+senapathy/tools/__init__.py        # ToolSpec, ToolRegistry
+senapathy/agent.py                 # LoopBudget, AgentLoop, LoopOutcome
 tests/test_agent_loop.py           # from section 6
 ```
 
@@ -164,11 +164,11 @@ agent development tractable.
 ```python
 from __future__ import annotations
 import pytest
-from perfagent.contracts import Usage, LLMResponse
-from perfagent.agent import AgentLoop, LoopBudget, LoopStatus
-from perfagent.tools import ToolSpec, ToolRegistry
-from perfagent.trace import Trace, EventType
-from perfagent.errors import ToolError
+from senapathy.contracts import Usage, LLMResponse
+from senapathy.agent import AgentLoop, LoopBudget, LoopStatus
+from senapathy.tools import ToolSpec, ToolRegistry
+from senapathy.trace import Trace, EventType
+from senapathy.errors import ToolError
 
 
 class ScriptedLLM:

@@ -11,20 +11,20 @@ from pathlib import Path
 
 import pytest
 
-from perfagent.contracts import (ArtifactRef, CandidatePlan, EquivalenceVerdict,
+from senapathy.contracts import (ArtifactRef, CandidatePlan, EquivalenceVerdict,
                                  FieldDiff, GateName, Hypothesis, Layer,
                                  LatencyStats, Patch, PerfReport, RiskTier,
                                  TerminalState)
-from perfagent.errors import ContractViolation
-from perfagent.gate.rules import (MAX_CHANGED_LINES, MAX_P_VALUE,
+from senapathy.errors import ContractViolation
+from senapathy.gate.rules import (MAX_CHANGED_LINES, MAX_P_VALUE,
                                   P95_IMPROVEMENT_PCT, classify_mechanism,
-                                  evaluate_gates, mapping_paths,
-                                  record_signatures, terminal_state_for,
-                                  touched_files)
-from perfagent.ids import content_hash
-from perfagent.report.narrative import (find_violations, strip_measurements,
+                                  confidence_band_for, evaluate_gates,
+                                  mapping_paths, record_signatures,
+                                  terminal_state_for, touched_files)
+from senapathy.ids import content_hash
+from senapathy.report.narrative import (find_violations, strip_measurements,
                                         write_narrative)
-from perfagent.report.render import Backed, EvidenceLedger
+from senapathy.report.render import Backed, EvidenceLedger
 
 
 # ──────────────────────────────  fixtures  ───────────────────────────────
@@ -74,7 +74,7 @@ DIFF = """diff --git a/src/main/java/com/ex/dto/CustomerDto.java b/src/main/java
 
 def patch(diff: str = DIFF, added: int = 22, removed: int = 0) -> Patch:
     return Patch(
-        plan_id="h1", branch="perfagent/p12-004", diff=diff,
+        plan_id="h1", branch="senapathy/p12-004", diff=diff,
         files_changed=["src/main/java/com/ex/dto/CustomerDto.java"],
         lines_added=added, lines_removed=removed, build_iterations=4,
         tests_passed=0, tests_before=0,
@@ -230,6 +230,48 @@ def test_a_large_diff_fails_minimality() -> None:
     assert "not a minimal fix" in result.detail
 
 
+def test_a_typed_mechanism_is_used_directly_never_classified() -> None:
+    typed = CandidatePlan(
+        id="c1", targets_hypothesis="h1", description="anything",
+        mechanism="rows_examined", mechanism_changed="rows examined",
+        predicted_effect="fewer rows", files_to_touch=["x"],
+        risk_tier=RiskTier.MEDIUM, what_could_break=[],
+    )
+    assert classify_mechanism(typed) == "rows_examined"
+
+
+def test_mechanism_changed_alone_classifies_despite_a_sql_heavy_description() -> None:
+    """COL-06: mechanism_changed='rows examined' was classified sql_count
+    because `description` also mentioned a query -- true of nearly every
+    candidate's description. This plan predates the typed `mechanism`
+    field (None), so classify_mechanism falls back to text -- and must read
+    mechanism_changed ALONE, never description."""
+    col06_shaped = CandidatePlan(
+        id="c1", targets_hypothesis="h1",
+        description="Replace FUNCTION('DATE', p.paidOn) with a direct "
+                    "datetime comparison in the JPQL query of "
+                    "PaymentAllocationRepository, a query rewrite that lets "
+                    "it use the existing index.",
+        mechanism_changed="rows examined",
+        predicted_effect="rows examined drop from ~1,500,000 to ~63,000",
+        files_to_touch=["x"], risk_tier=RiskTier.MEDIUM, what_could_break=[],
+    )
+    assert classify_mechanism(col06_shaped) == "rows_examined"
+
+
+def test_several_matching_kinds_is_ambiguous_not_the_first_in_order() -> None:
+    ambiguous = plan(mechanism="fewer queries and less rows examined")
+    kind = classify_mechanism(ambiguous)
+    assert kind.startswith("ambiguous:")
+    assert "sql_count" in kind and "rows_examined" in kind
+
+    decision = evaluate_gates(
+        verdict(), perf(), patch(), ambiguous, paired_p_value=0.001)
+    mechanism = result_for(decision, GateName.MECHANISM_MATCH)
+    assert mechanism.passed is False
+    assert "ambiguity" in mechanism.detail
+
+
 def test_a_predicted_query_reduction_must_actually_reduce_queries() -> None:
     """Right answer, wrong reason: latency fell but the query count did not."""
     sql_plan = plan(mechanism="two queries per row replaced by one fetch join")
@@ -345,7 +387,7 @@ def test_no_argument_can_make_a_failing_gate_pass() -> None:
 def test_gate_decision_cannot_claim_a_model_decided() -> None:
     from pydantic import ValidationError
 
-    from perfagent.contracts import GateDecision
+    from senapathy.contracts import GateDecision
     with pytest.raises(ValidationError, match="decided_by"):
         GateDecision(results=[], passed=True, decided_by="model")
 
@@ -369,6 +411,89 @@ def test_all_passing_gates_yield_pr_opened_only_when_actually_shipped() -> None:
 def test_diff_helpers_read_the_diff_not_the_claim() -> None:
     assert touched_files(DIFF) == ["src/main/java/com/ex/dto/CustomerDto.java"]
     assert mapping_paths(['@PostMapping("/search")']) == {"/search"}
+
+
+# ──────────────────────────  confidence band  ─────────────────────────────
+
+
+def _passing_decision(p95_after: float = 900.0):
+    return evaluate_gates(
+        verdict(), perf(p95_after=p95_after, sql_after=2), patch(),
+        plan(mechanism="one fetch join replaces the per-row query"),
+        paired_p_value=0.0001,
+    )
+
+
+def test_a_failed_gate_is_always_a_low_band_regardless_of_everything_else() -> None:
+    decision = evaluate_gates(
+        verdict(), perf(p95_after=1400.0), patch(), plan(),
+        paired_p_value=0.0001,
+    )
+    assert decision.passed is False
+    band = confidence_band_for(
+        decision, verdict=verdict(), perf=perf(p95_after=1400.0),
+        risk_tier=1, diff_lines=5, held_back_count=4,
+        selected_fixability_classified=True, tests_executed=10,
+    )
+    assert band["level"] == "LOW"
+    assert "gate did not pass" in band["reason"]
+
+
+def test_zero_unknowns_and_low_risk_is_a_high_band() -> None:
+    decision = _passing_decision()
+    band = confidence_band_for(
+        decision, verdict=verdict(), perf=perf(p95_after=900.0),
+        risk_tier=1, diff_lines=10, held_back_count=20,
+        selected_fixability_classified=True, tests_executed=5,
+    )
+    assert band["level"] == "HIGH"
+    assert "nothing" in band["would_raise"].lower()
+
+
+def test_two_unknowns_is_a_medium_band_and_names_both() -> None:
+    """The documented example: an unclassified selected hypothesis plus an
+    unexecuted test suite, on an otherwise clean pass, is MEDIUM -- not LOW,
+    and not a silent HIGH either."""
+    decision = _passing_decision()
+    band = confidence_band_for(
+        decision, verdict=verdict(), perf=perf(p95_after=900.0),
+        risk_tier=2, diff_lines=32, held_back_count=48,
+        selected_fixability_classified=False, tests_executed=0,
+    )
+    assert band["level"] == "MEDIUM"
+    assert "placeholder" in band["reason"]
+    assert "test suite executed zero" in band["reason"]
+    assert "fixability" in band["would_raise"]
+    assert "test suite" in band["would_raise"]
+
+
+def test_a_high_risk_tier_caps_the_band_at_low_even_with_no_unknowns() -> None:
+    decision = _passing_decision()
+    band = confidence_band_for(
+        decision, verdict=verdict(), perf=perf(p95_after=900.0),
+        risk_tier=3, diff_lines=10, held_back_count=20,
+        selected_fixability_classified=True, tests_executed=10,
+    )
+    assert band["level"] == "LOW"
+    assert "risk tier T3" in band["reason"]
+
+
+def test_confidence_inputs_name_behaviour_p_mechanism_risk_and_diff_size() -> None:
+    decision = _passing_decision()
+    perf_with_paired_p = perf(p95_after=900.0).model_copy(
+        update={"p_value_paired": 0.0001})
+    band = confidence_band_for(
+        decision, verdict=verdict(), perf=perf_with_paired_p,
+        risk_tier=2, diff_lines=32, held_back_count=48,
+        selected_fixability_classified=False, tests_executed=0,
+    )
+    joined = " ".join(band["inputs"])
+    assert "12/12 identical" in joined
+    assert "48 held back" in joined
+    assert "0.0001" in joined
+    assert "CONFIRMED" in joined
+    assert "T2" in joined
+    assert "32 line" in joined
 
 
 # ────────────────────  the evidence ledger — THE test  ───────────────────
@@ -451,6 +576,20 @@ def test_terminal_state_must_be_backed_by_the_gate_decision_ref(
     assert ledger.get("terminal_state").value == "READY_TO_SHIP"
 
 
+def test_confidence_band_keys_must_also_be_backed_by_the_gate_decision_ref(
+    backed_ref: ArtifactRef,
+) -> None:
+    """Same requirement as terminal_state, same reason: the band is computed
+    from the gate's own results by a fixed rule table, so it may only point
+    back at the decision that produced it -- never at the perf report or any
+    other artifact lying around."""
+    ledger = EvidenceLedger()
+    for key in ("confidence_level", "confidence_reason",
+               "confidence_inputs", "confidence_would_raise"):
+        with pytest.raises(ContractViolation, match="gate_decision"):
+            ledger.record(key, "MEDIUM", backed_ref)
+
+
 def test_digits_inside_identifiers_are_allowed(backed_ref: ArtifactRef) -> None:
     """`p95` and `h1` are labels, not claims."""
     ledger = EvidenceLedger()
@@ -483,7 +622,7 @@ def test_provenance_lists_every_claim_with_its_artifact(
 
 def test_the_shipped_report_template_has_no_literal_numbers() -> None:
     """The template is where a hardcoded figure would hide most easily."""
-    from perfagent.report.render import _HEADER, _SLOT, _BARE_NUMERAL
+    from senapathy.report.render import _HEADER, _SLOT, _BARE_NUMERAL
 
     literal = _SLOT.sub("", _HEADER)
     offenders = [l for l in literal.splitlines() if _BARE_NUMERAL.search(l)]
@@ -626,7 +765,7 @@ def test_strip_removes_percent_signs_cleanly() -> None:
 
 
 def test_pre_existing_rows_renders_every_uncertainty() -> None:
-    from perfagent.ship import _pre_existing_rows
+    from senapathy.ship import _pre_existing_rows
 
     rendered = _pre_existing_rows([
         "AUTOMATED CHECK: pagination is offset-based and no ORDER BY was found.",
@@ -638,6 +777,6 @@ def test_pre_existing_rows_renders_every_uncertainty() -> None:
 
 
 def test_pre_existing_rows_says_so_when_there_are_none() -> None:
-    from perfagent.ship import _pre_existing_rows
+    from senapathy.ship import _pre_existing_rows
 
     assert _pre_existing_rows([]) == "- (none recorded)"

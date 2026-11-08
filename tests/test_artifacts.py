@@ -1,9 +1,9 @@
 from __future__ import annotations
 import pytest
-from perfagent.artifacts import ArtifactStore
-from perfagent.trace import Trace, EventType
-from perfagent.contracts import Citation, EndpointModel
-from perfagent.errors import ContractViolation
+from senapathy.artifacts import ArtifactStore
+from senapathy.trace import Trace, EventType
+from senapathy.contracts import Citation, EndpointModel
+from senapathy.errors import ContractViolation
 
 
 def _model():

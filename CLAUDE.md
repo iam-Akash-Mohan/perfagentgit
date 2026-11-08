@@ -1,7 +1,7 @@
-# PerfAgent — invariants for every Claude session in this repo
+# Senapathy — invariants for every Claude session in this repo
 
 Read this before writing any code. These rules are not suggestions; they are the
-product. `PERFAGENT.md` is the full design doc — read it if you need context beyond
+product. `SENAPATHY.md` is the full design doc — read it if you need context beyond
 the current phase.
 
 ## What this project is
@@ -41,7 +41,7 @@ change, measures the improvement, and opens a PR.
 ## Code conventions
 
 - Python 3.12, `pydantic` v2 for every artifact, `typer` for CLI, `httpx` for HTTP.
-- Every artifact is a Pydantic model in `perfagent/contracts.py`. **Never redefine a
+- Every artifact is a Pydantic model in `senapathy/contracts.py`. **Never redefine a
   shape inline** — import it. If a phase needs a new field, say so; don't invent one.
 - Type hints everywhere. `from __future__ import annotations` at the top of modules.
 - No `print()` in library code. Emit trace events; the CLI renders them.

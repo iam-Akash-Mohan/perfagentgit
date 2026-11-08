@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from perfagent.contracts import EndpointModel, IndexInfo, TableInfo
-from perfagent.render.endpoint import render_endpoint_model
-from perfagent.render.transcript import TranscriptRenderer, attach_transcript
-from perfagent.trace import EventType, Trace
+from senapathy.contracts import EndpointModel, IndexInfo, TableInfo
+from senapathy.render.endpoint import render_endpoint_model
+from senapathy.render.transcript import TranscriptRenderer, attach_transcript
+from senapathy.trace import EventType, Trace
 
 MODEL = EndpointModel.model_validate({
     "route": "POST /api/customers/search",
@@ -140,5 +140,5 @@ def test_a_broken_renderer_cannot_kill_a_run(tmp_path: Path) -> None:
 def test_there_is_no_print_left_in_the_agent_loop() -> None:
     """The transcript moved to render/; library code emits events."""
     source = (Path(__file__).resolve().parent.parent
-              / "perfagent" / "agent.py").read_text()
+              / "senapathy" / "agent.py").read_text()
     assert "print(" not in source
