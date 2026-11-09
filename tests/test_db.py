@@ -25,9 +25,9 @@ from senapathy.plan.migration import (existing_migration_for,
 from senapathy.tools import db as dbmod
 from senapathy.tools.db import (DIAGNOSE_TOOLS, LEGACY_TEMP_PREFIX,
                                 PATCH_TOOLS, PLAN_TOOLS, TEMP_PREFIX,
-                                DbToolbox, covering_index, db_tools,
-                                is_select, optional_db_tools, parse_tree,
-                                require_select)
+                                DbToolbox, bind_params, covering_index,
+                                db_tools, is_select, optional_db_tools,
+                                parse_tree, require_select)
 
 TREE = """-> Aggregate: sum(i.amount)  (cost=2446 rows=1) (actual time=176..176 rows=1 loops=1)
     -> Filter: (i.`status` = 'OPEN')  (cost=2420 rows=265) (actual time=11.4..176 rows=571 loops=1)
@@ -189,6 +189,46 @@ def test_explain_refuses_ddl_before_it_reaches_the_server(connected) -> None:
     assert server.executed == [], "nothing may reach the server"
 
 
+# ───────────────────────────────  bind_params  ───────────────────────────
+#
+# SER-01: "LIMIT %s OFFSET %s" with params=['50', '0'] raised MySQL 1064 --
+# "near ''50' OFFSET '0''" -- because every tool-schema param arrives typed
+# as a string, and the connector renders a Python str as a QUOTED literal no
+# matter where it lands. Correct for a WHERE-clause comparison; a syntax
+# error for LIMIT/OFFSET, which MySQL's grammar accepts only bare.
+
+
+def test_pure_integer_strings_become_ints() -> None:
+    assert bind_params(["50", "0"]) == (50, 0)
+    assert bind_params(["-1"]) == (-1,)
+
+
+def test_genuine_strings_are_left_quoted() -> None:
+    assert bind_params(["ACH", "2023-06-01"]) == ("ACH", "2023-06-01")
+
+
+def test_a_mix_is_handled_param_by_param() -> None:
+    assert bind_params(["ACH", "50", "0"]) == ("ACH", 50, 0)
+
+
+def test_no_params_is_an_empty_tuple() -> None:
+    assert bind_params(None) == ()
+    assert bind_params([]) == ()
+
+
+def test_a_limit_offset_query_reaches_the_server(connected) -> None:
+    """The exact shape SER-01 hit live: LIMIT %s OFFSET %s with string
+    params. The fake server never renders params into SQL text itself (that
+    is the real driver's job, exercised by test_pure_integer_strings_
+    become_ints in isolation) -- this proves explain() reaches EXPLAIN
+    ANALYZE for this statement shape at all, instead of raising first."""
+    server = script()
+    box = toolbox(server, connected)
+    box.explain("SELECT id FROM invoice ORDER BY id LIMIT %s OFFSET %s",
+               ["50", "0"])
+    assert server.ran("EXPLAIN ANALYZE")
+
+
 # ──────────────────────────────  plan reading  ───────────────────────────
 
 
@@ -215,6 +255,63 @@ def test_explain_reports_what_the_server_said(connected) -> None:
     assert "actual time   176.0 ms" in rendered
     assert "index used    yes" in rendered
     assert "type=ref" in rendered
+
+
+# ──────────────────────────────  plan_delta  ──────────────────────────────
+#
+# The plan phase's own verification of a candidate's sql_before/sql_after
+# claim (BATCH-01) — two EXPLAIN ANALYZE calls on one connection, nothing
+# created, nothing to drop.
+
+
+def test_plan_delta_reports_both_sides(connected) -> None:
+    server = script()
+    box = toolbox(server, connected)
+
+    calls = {"n": 0}
+    original = FakeCursor.execute
+
+    def counting(self, sql, params=()):
+        if "EXPLAIN ANALYZE" in sql:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                self.server.rows["EXPLAIN ANALYZE"] = [(FAST_TREE,)]
+        return original(self, sql, params)
+
+    FakeCursor.execute = counting                      # type: ignore[assignment]
+    try:
+        before, after = box.plan_delta(SQL, SQL.replace("amount)", "amount) "),
+                                       ["42"])
+    finally:
+        FakeCursor.execute = original                  # type: ignore[assignment]
+
+    assert before.rows_examined == 2645
+    assert after.rows_examined == 571
+    assert calls["n"] == 2
+
+
+def test_plan_delta_creates_and_drops_nothing(connected) -> None:
+    server = script()
+    box = toolbox(server, connected)
+    box.plan_delta(SQL, SQL, ["42"])
+    assert not server.ran("CREATE INDEX")
+    assert not server.ran("DROP INDEX")
+
+
+def test_plan_delta_refuses_anything_that_is_not_a_select(connected) -> None:
+    box = toolbox(script(), connected)
+    with pytest.raises(ToolError, match="sql_before"):
+        box.plan_delta("DELETE FROM invoice", SQL, ["42"])
+    with pytest.raises(ToolError, match="sql_after"):
+        box.plan_delta(SQL, "DELETE FROM invoice", ["42"])
+
+
+def test_plan_delta_surfaces_a_failure_on_either_side(connected) -> None:
+    server = script()
+    server.errors["EXPLAIN ANALYZE"] = RuntimeError("server went away")
+    box = toolbox(server, connected)
+    with pytest.raises(ToolError):
+        box.plan_delta(SQL, SQL, ["42"])
 
 
 # ────────────────────────────  covering index  ───────────────────────────

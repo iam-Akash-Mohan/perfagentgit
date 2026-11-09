@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any, Callable
 
 import httpx
 
-from ..contracts import SqlDigestStat
-from ..errors import ToolError
+from ..contracts import RequestCorpus, RequestSpec, SqlDigestStat
+from ..errors import ContractViolation, ToolError
 from ..measure.baseline import is_session_control
 from ..measure.bench import latency_stats
 from ..measure.sql import MySQLTarget, collect_digests, reset_digests
@@ -16,10 +17,11 @@ from ..measure.sql import MySQLTarget, collect_digests, reset_digests
 # page_size=100000 against a 50k-row table with a per-row query is a denial of
 # service against the thing we are trying to measure.
 MAX_ITERATIONS = 20
-MAX_PAGE_SIZE = 100
+DEFAULT_MAX_PAGE_SIZE = 100
 PROBE_WARMUP = 1
 PROBE_TIMEOUT_S = 180.0
-MAX_NAME_FILTER = 200
+
+_SIZE_QUERY_RE = re.compile(r"([?&]size=)(\d+)")
 
 
 class ProbeLog:
@@ -32,8 +34,12 @@ class ProbeLog:
     def __init__(self) -> None:
         self.entries: list[dict[str, Any]] = []
 
-    def record(self, args: dict[str, Any], summary: str) -> None:
-        self.entries.append({"tool": "run_probe", "args": args, "result": summary})
+    def record(self, args: dict[str, Any], summary: str, *,
+              method: str | None = None, url: str | None = None) -> None:
+        entry: dict[str, Any] = {"tool": "run_probe", "args": args, "result": summary}
+        if method is not None and url is not None:
+            entry["endpoint_called"] = f"{method} {url}"
+        self.entries.append(entry)
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -45,52 +51,175 @@ def _app_sql(digests: list[SqlDigestStat]) -> tuple[int, float]:
     return sum(d.calls for d in app), sum(d.total_ms for d in app)
 
 
+def _unbounded_collection_name(endpoint_model: dict[str, Any]) -> str | None:
+    shape = endpoint_model.get("response_shape") or {}
+    fields = shape.get("unbounded_collections") or []
+    for entry in fields:
+        name = str(entry).split("(")[0].strip().strip("`'\" ")
+        if name:
+            return name
+    return None
+
+
+def _count_rows(body: bytes, endpoint_model: dict[str, Any]) -> int | None:
+    """Result rows in a probe response, by shape — not by this one
+    endpoint's convention. Tried in order:
+
+    1. the whole body is a JSON array
+    2. a Spring `Page<>` response: a dict with a `content` list (the
+       convention this app's paginated GET endpoints already use)
+    3. the endpoint's own declared unbounded response field (from
+       response_shape.unbounded_collections), if the body has it as a list
+
+    None — not 0 — when nothing matches, so a probe against a response shape
+    this cannot read is reported honestly as unparsed rather than silently
+    scored as zero rows.
+    """
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(parsed, list):
+        return len(parsed)
+    if isinstance(parsed, dict):
+        content = parsed.get("content")
+        if isinstance(content, list):
+            return len(content)
+        field = _unbounded_collection_name(endpoint_model)
+        if field and isinstance(parsed.get(field), list):
+            return len(parsed[field])
+    return None
+
+
+class ProbeCatalog:
+    """What `run_probe` is allowed to fire, derived from THIS run's own
+    endpoint model and corpus — never a fixed route.
+
+    Built once, at diagnose setup, so a run against an endpoint this cannot
+    build a probe for fails LOUDLY and immediately (`ContractViolation`),
+    rather than silently measuring a different endpoint instead. That
+    silent fallback is exactly what made every diagnosis in Scenarios 7 and
+    8 describe `POST /api/customers/search` — a real, correctly-measured
+    N+1 on an endpoint nobody asked about — while reporting it as if it
+    described the endpoint actually under test.
+    """
+
+    def __init__(self, base_url: str, endpoint_model: dict[str, Any],
+                corpus: RequestCorpus) -> None:
+        requests = list(corpus.benchmark)
+        if not requests:
+            raise ContractViolation(
+                "the corpus has no benchmark requests to probe — diagnosis "
+                "cannot build an experiment for an endpoint with nothing to "
+                "replay."
+            )
+        non_get = [r for r in requests if r.method.upper() != "GET"]
+        if non_get:
+            raise ContractViolation(
+                f"{len(non_get)} corpus request(s) are not GET "
+                f"(e.g. {non_get[0].method} {non_get[0].path}) — run_probe "
+                f"only knows how to replay a GET request with no body, "
+                f"the only shape this project's corpus generator produces. "
+                f"A POST/PUT/DELETE endpoint has no probe support yet."
+            )
+
+        self.base_url = base_url.rstrip("/")
+        self.endpoint_model = endpoint_model
+        self.by_id: dict[str, RequestSpec] = {r.id: r for r in requests}
+
+        pagination = endpoint_model.get("pagination") or {}
+        mechanism = pagination.get("mechanism")
+        # Sanity check the derived axis against reality: pagination exists
+        # in the model AND at least one request actually carries a size=
+        # parameter (the one convention this project's own corpus generator
+        # uses for every paginating endpoint — see workload.py's
+        # _PAGINATION_PARAM_NAMES). Either alone, without the other, means
+        # the two disagree and the size axis is not trustworthy.
+        has_size_param = any(_SIZE_QUERY_RE.search(r.path) for r in requests)
+        self.paginates = (mechanism in ("offset", "keyset") and has_size_param)
+        self.max_page_size = pagination.get("max_page_size") or DEFAULT_MAX_PAGE_SIZE
+
+    def describe_requests(self) -> str:
+        lines = []
+        for request_id, spec in self.by_id.items():
+            note = f" — {spec.note}" if spec.note else ""
+            lines.append(f"  {request_id}: {spec.method} {spec.path}{note}")
+        return "\n".join(lines)
+
+    def build(self, request_id: str, page_size: int | None) -> tuple[str, str]:
+        """(method, url) for one probe call, or raises ToolError naming why."""
+        spec = self.by_id.get(request_id)
+        if spec is None:
+            raise ToolError(
+                f"{request_id!r} is not one of this run's own corpus "
+                f"requests. Available ids:\n{self.describe_requests()}",
+                suggestion="Pick a request_id from the list above.",
+            )
+        if page_size is not None and not self.paginates:
+            raise ToolError(
+                f"this endpoint has no size parameter to vary "
+                f"(pagination mechanism: "
+                f"{(self.endpoint_model.get('pagination') or {}).get('mechanism', 'none')}) "
+                f"— page_size must be omitted.",
+                suggestion="Omit page_size. Vary request_id instead to probe "
+                           "a different magnitude (see the ids and their "
+                           "notes you were given).",
+            )
+        path = spec.path
+        if page_size is not None:
+            bounded = max(1, min(int(page_size), self.max_page_size))
+            path, count = _SIZE_QUERY_RE.subn(
+                lambda m: f"{m.group(1)}{bounded}", path)
+            if count == 0:
+                raise ToolError(
+                    f"request {request_id!r} has no size= parameter to "
+                    f"override even though this endpoint paginates — its "
+                    f"own path is {spec.path!r}.",
+                )
+        return spec.method, self.base_url + path
+
+
 def make_run_probe(
     base_url: str,
     target: MySQLTarget,
     *,
-    path: str = "/api/customers/search",
+    endpoint_model: dict[str, Any],
+    corpus: RequestCorpus,
     log: ProbeLog | None = None,
+    catalog: ProbeCatalog | None = None,
 ) -> Callable[..., str]:
-    """Build the `run_probe` handler.
+    """Build the `run_probe` handler for THIS run's own endpoint.
 
-    The endpoint, the HTTP method and the request shape are fixed HERE, by
-    construction. The agent cannot choose a URL, a verb, a header or a body
-    field — only a page size, a name filter and an iteration count, all
-    bounded. That is what makes this tool safe to hand to a model under
-    invariant 1: it is not a shell, it is one parameterised read.
+    The route, method and request shape come from `endpoint_model`/`corpus` —
+    the same comprehension model and generated corpus every other phase
+    already uses — never a fixed path. The only thing the agent can still
+    choose is WHICH of this endpoint's own corpus requests to fire
+    (`request_id`, varying magnitude the same way the benchmark/held-back
+    split already does) and, when this endpoint paginates, a `page_size`
+    override (clamped, same discipline as before).
 
-    The only write it performs is TRUNCATE on
-    performance_schema.events_statements_summary_by_digest, which is a
-    diagnostic counter table, never application data.
+    Raises at construction (not at the first tool call) when no probe can
+    be built for this endpoint at all — see `ProbeCatalog`. Pass an
+    already-built `catalog` (the caller needs one anyway, to build
+    `run_probe_tool`'s schema, before the handler) rather than validating
+    the same corpus twice.
     """
+    catalog = catalog or ProbeCatalog(base_url, endpoint_model, corpus)
     probe_log = log if log is not None else ProbeLog()
 
-    def run_probe(page_size: int, name_filter: str, iterations: int = 10) -> str:
-        # Clamp rather than reject: a refused probe costs the agent a turn and
-        # teaches it nothing. A clamped probe still produces evidence, and the
-        # summary says plainly what was changed.
+    def run_probe(request_id: str, iterations: int = 10,
+                 page_size: int | None = None) -> str:
         try:
-            page_size = int(page_size)
             iterations = int(iterations)
         except (TypeError, ValueError) as exc:
-            raise ToolError(
-                f"page_size and iterations must be integers: {exc}",
-                suggestion="Example: run_probe(page_size=5, name_filter='a', iterations=10)",
-            ) from exc
-
-        if not isinstance(name_filter, str):
-            raise ToolError("name_filter must be a string")
-        if len(name_filter) > MAX_NAME_FILTER:
-            raise ToolError(f"name_filter must be at most {MAX_NAME_FILTER} characters")
+            raise ToolError(f"iterations must be an integer: {exc}") from exc
+        if page_size is not None:
+            try:
+                page_size = int(page_size)
+            except (TypeError, ValueError) as exc:
+                raise ToolError(f"page_size must be an integer: {exc}") from exc
 
         notes: list[str] = []
-        if page_size > MAX_PAGE_SIZE:
-            notes.append(f"page_size clamped from {page_size} to {MAX_PAGE_SIZE}")
-            page_size = MAX_PAGE_SIZE
-        if page_size < 1:
-            notes.append(f"page_size raised from {page_size} to 1")
-            page_size = 1
         if iterations > MAX_ITERATIONS:
             notes.append(f"iterations clamped from {iterations} to {MAX_ITERATIONS}")
             iterations = MAX_ITERATIONS
@@ -98,8 +227,7 @@ def make_run_probe(
             notes.append(f"iterations raised from {iterations} to 1")
             iterations = 1
 
-        body = {"name": name_filter, "page": 0, "size": page_size}
-        url = base_url.rstrip("/") + path
+        method, url = catalog.build(request_id, page_size)
 
         samples_ms: list[float] = []
         body_sizes: list[int] = []
@@ -109,7 +237,7 @@ def make_run_probe(
         try:
             with httpx.Client(timeout=httpx.Timeout(PROBE_TIMEOUT_S)) as client:
                 for _ in range(PROBE_WARMUP):
-                    client.post(url, json=body).read()
+                    client.request(method, url).read()
 
                 # Reset AFTER warmup, immediately before the measured requests,
                 # so the digests describe exactly these `iterations` calls.
@@ -117,7 +245,7 @@ def make_run_probe(
 
                 for _ in range(iterations):
                     started = time.perf_counter()
-                    response = client.post(url, json=body)
+                    response = client.request(method, url)
                     content = response.content
                     samples_ms.append((time.perf_counter() - started) * 1000.0)
                     body_sizes.append(len(content))
@@ -134,16 +262,7 @@ def make_run_probe(
         statements, sql_ms = _app_sql(digests)
         stats = latency_stats(samples_ms)
         median_body = sorted(body_sizes)[len(body_sizes) // 2]
-
-        # Rows actually returned — parsed ONCE, after the timed loop, so
-        # parsing never lands inside a latency sample.
-        rows: int | None = None
-        try:
-            parsed = json.loads(last_body)
-            if isinstance(parsed, dict) and isinstance(parsed.get("content"), list):
-                rows = len(parsed["content"])
-        except (ValueError, TypeError):
-            rows = None
+        rows = _count_rows(last_body, catalog.endpoint_model)
 
         status_counts: dict[str, int] = {}
         for code in statuses:
@@ -154,8 +273,9 @@ def make_run_probe(
 
         out: list[str] = []
         out.append(
-            f"probe: page_size={page_size} name_filter={name_filter!r} "
-            f"iterations={iterations} ({PROBE_WARMUP} warmup discarded)"
+            f"probe: {method} {url}  (request_id={request_id!r}"
+            + (f", page_size={page_size}" if page_size is not None else "")
+            + f") iterations={iterations} ({PROBE_WARMUP} warmup discarded)"
         )
         for note in notes:
             out.append(f"  NOTE: {note}")
@@ -176,58 +296,73 @@ def make_run_probe(
             out.append(f"  body bytes per result row    : {median_body // rows}")
         summary = "\n".join(out)
 
-        probe_log.record(
-            {"page_size": page_size, "name_filter": name_filter, "iterations": iterations},
-            summary,
-        )
+        args: dict[str, Any] = {"request_id": request_id, "iterations": iterations}
+        if page_size is not None:
+            args["page_size"] = page_size
+        probe_log.record(args, summary, method=method, url=url)
         return summary
 
     return run_probe
 
 
-RUN_PROBE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "run_probe",
-        "description": (
-            "Run a live experiment against the endpoint and measure what happens. "
-            "Fires the search request `iterations` times, resets and re-reads "
-            "performance_schema around the measured calls, and reports p50 latency, "
-            "application SQL statements per request, server-side SQL ms per request, "
-            "result row count and response body size.\n\n"
-            "This is READ-ONLY: it can only call the search endpoint with a different "
-            "page size and name filter. It cannot change code, data or configuration.\n\n"
-            f"Caps: page_size at most {MAX_PAGE_SIZE}, iterations at most {MAX_ITERATIONS} "
-            "(values above the cap are clamped, not rejected).\n\n"
-            "COST WARNING: a probe costs page_size x per-row latency x iterations. "
-            "For page_size 20 or more, use iterations=3 to 5 — the point is the shape "
-            "of the curve, not a tight confidence interval."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "page_size": {
-                    "type": "integer",
-                    "description": (
-                        "Rows requested per page. This is the main experimental knob: "
-                        "sweep it to find out whether cost scales with the number of "
-                        "result rows."
-                    ),
-                },
-                "name_filter": {
-                    "type": "string",
-                    "description": (
-                        "The `name` filter sent to the endpoint. 'a' matches broadly; "
-                        "'zzzz-no-such-customer' matches nothing, which isolates the "
-                        "filter query from all per-row work."
-                    ),
-                },
-                "iterations": {
-                    "type": "integer",
-                    "description": "Measured requests, default 10, maximum 20.",
-                },
-            },
-            "required": ["page_size", "name_filter"],
+def run_probe_tool(catalog_description: str, *, paginates: bool,
+                   max_page_size: int) -> dict[str, Any]:
+    """RUN_PROBE_TOOL's schema, parameterised by what THIS endpoint actually
+    supports — an endpoint with no size parameter is not offered one."""
+    properties: dict[str, Any] = {
+        "request_id": {
+            "type": "string",
+            "description": (
+                "Which of this endpoint's own corpus requests to fire, "
+                "repeatedly. Each id varies this endpoint's own real "
+                "magnitude (a denser or sparser path parameter, a deeper "
+                "page) — the same requests the benchmark phase itself "
+                "uses, not an invented one. Available ids and what they "
+                f"are:\n{catalog_description}"
+            ),
         },
-    },
-}
+        "iterations": {
+            "type": "integer",
+            "description": f"Measured requests, default 10, maximum {MAX_ITERATIONS}.",
+        },
+    }
+    required = ["request_id"]
+    if paginates:
+        properties["page_size"] = {
+            "type": "integer",
+            "description": (
+                f"Override this request's own page size, 1 to "
+                f"{max_page_size}. Sweep it to find out whether cost "
+                f"scales with the number of result rows. Omit to use the "
+                f"request's own recorded size unchanged."
+            ),
+        }
+    return {
+        "type": "function",
+        "function": {
+            "name": "run_probe",
+            "description": (
+                "Run a live experiment against THIS RUN'S OWN ENDPOINT and "
+                "measure what happens. Fires one of this endpoint's own "
+                "corpus requests `iterations` times, resets and re-reads "
+                "performance_schema around the measured calls, and reports "
+                "p50 latency, application SQL statements per request, "
+                "server-side SQL ms per request, result row count and "
+                "response body size.\n\n"
+                "This is READ-ONLY and cannot call any other endpoint, "
+                "verb or body shape — only the requests this run's own "
+                "corpus already generated for the endpoint under test.\n\n"
+                f"Caps: iterations at most {MAX_ITERATIONS} (clamped, not "
+                "rejected)."
+                + (f" page_size at most {max_page_size} (clamped)."
+                   if paginates else
+                   " This endpoint does not paginate — vary request_id "
+                   "instead to probe a different magnitude.")
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        },
+    }

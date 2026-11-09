@@ -190,6 +190,44 @@ def test_an_artifact_whose_input_hash_still_matches_is_skipped(
     assert "oracle" not in order
 
 
+def test_a_plan_phase_crash_is_internal_error_not_bottleneck_not_fixable(
+    monkeypatch, runs: Path
+) -> None:
+    """UNB-01: a forced tool_choice Groq rejected server-side crashed the
+    plan agent's loop before it ever reached submit_plan, and the OLD
+    _failure_state mapped every such crash to BOTTLENECK_NOT_FIXABLE --
+    the same terminal state a genuine 'nothing is shippable' refusal gets.
+    A crash is 'I could not run', not 'I ran and found nothing shippable',
+    and the two must not look alike without opening the trace. A real
+    refusal never reaches _failure_state at all -- it is _run_plan's own
+    NORMAL return when selected() is None, already separately labelled
+    BOTTLENECK_NOT_FIXABLE on its own terms; this test is about the OTHER
+    path, where the phase's own runner raised instead of completing."""
+    stub_pipeline(monkeypatch, fails={
+        "plan": ContractViolation(
+            "the plan agent stopped with status error: forced tool_choice "
+            "rejected"),
+    })
+    state = run_pipeline(run_id="r-plan-crash", runs_dir=runs)
+    assert state.terminal == TerminalState.INTERNAL_ERROR
+    assert state.terminal != TerminalState.BOTTLENECK_NOT_FIXABLE
+
+
+def test_a_patch_phase_crash_is_internal_error_not_bottleneck_not_fixable(
+    monkeypatch, runs: Path
+) -> None:
+    """Same bug, same fix, the other phase _failure_state used to special-
+    case: a patch-phase crash (run_patch itself raising, not the normal
+    'ABANDONED after N iterations' return _run_patch already labels
+    correctly) must not read as a refusal either."""
+    stub_pipeline(monkeypatch, fails={
+        "patch": ContractViolation("the patch agent crashed before writing anything"),
+    })
+    state = run_pipeline(run_id="r-patch-crash", runs_dir=runs)
+    assert state.terminal == TerminalState.INTERNAL_ERROR
+    assert state.terminal != TerminalState.BOTTLENECK_NOT_FIXABLE
+
+
 def test_resume_restarts_after_the_last_completed_phase(
     monkeypatch, runs: Path
 ) -> None:

@@ -1,0 +1,439 @@
+{
+  "benchmark": [
+    {
+      "id": "dense-id1-p0-s20",
+      "method": "GET",
+      "path": "/api/customers/1/statement?page=0&size=20",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model; page depth 0, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id1-p2-s20",
+      "method": "GET",
+      "path": "/api/customers/1/statement?page=2&size=20",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model; page depth 2, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id8334-p0-s20",
+      "method": "GET",
+      "path": "/api/customers/8334/statement?page=0&size=20",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model; page depth 0, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id8334-p2-s20",
+      "method": "GET",
+      "path": "/api/customers/8334/statement?page=2&size=20",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model; page depth 2, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id16667-p0-s20",
+      "method": "GET",
+      "path": "/api/customers/16667/statement?page=0&size=20",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model; page depth 0, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id16667-p2-s20",
+      "method": "GET",
+      "path": "/api/customers/16667/statement?page=2&size=20",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model; page depth 2, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id25000-p0-s20",
+      "method": "GET",
+      "path": "/api/customers/25000/statement?page=0&size=20",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model; page depth 0, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id25000-p2-s20",
+      "method": "GET",
+      "path": "/api/customers/25000/statement?page=2&size=20",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model; page depth 2, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id33333-p0-s20",
+      "method": "GET",
+      "path": "/api/customers/33333/statement?page=0&size=20",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model; page depth 0, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id33333-p2-s20",
+      "method": "GET",
+      "path": "/api/customers/33333/statement?page=2&size=20",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model; page depth 2, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id41666-p0-s20",
+      "method": "GET",
+      "path": "/api/customers/41666/statement?page=0&size=20",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model; page depth 0, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id41666-p2-s20",
+      "method": "GET",
+      "path": "/api/customers/41666/statement?page=2&size=20",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model; page depth 2, page size 20",
+      "expected_status": 200
+    }
+  ],
+  "held_back": [
+    {
+      "id": "sparse-id1-p0-s1",
+      "method": "GET",
+      "path": "/api/customers/1/statement?page=0&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id1-p2-s1",
+      "method": "GET",
+      "path": "/api/customers/1/statement?page=2&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id1-p0-s10",
+      "method": "GET",
+      "path": "/api/customers/1/statement?page=0&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id1-p2-s10",
+      "method": "GET",
+      "path": "/api/customers/1/statement?page=2&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id1-p0-s20",
+      "method": "GET",
+      "path": "/api/customers/1/statement?page=0&size=20",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id1-p2-s20",
+      "method": "GET",
+      "path": "/api/customers/1/statement?page=2&size=20",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id8334-p0-s1",
+      "method": "GET",
+      "path": "/api/customers/8334/statement?page=0&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id8334-p2-s1",
+      "method": "GET",
+      "path": "/api/customers/8334/statement?page=2&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id8334-p0-s10",
+      "method": "GET",
+      "path": "/api/customers/8334/statement?page=0&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id8334-p2-s10",
+      "method": "GET",
+      "path": "/api/customers/8334/statement?page=2&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id8334-p0-s20",
+      "method": "GET",
+      "path": "/api/customers/8334/statement?page=0&size=20",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id8334-p2-s20",
+      "method": "GET",
+      "path": "/api/customers/8334/statement?page=2&size=20",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id16667-p0-s1",
+      "method": "GET",
+      "path": "/api/customers/16667/statement?page=0&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id16667-p2-s1",
+      "method": "GET",
+      "path": "/api/customers/16667/statement?page=2&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id16667-p0-s10",
+      "method": "GET",
+      "path": "/api/customers/16667/statement?page=0&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id16667-p2-s10",
+      "method": "GET",
+      "path": "/api/customers/16667/statement?page=2&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id16667-p0-s20",
+      "method": "GET",
+      "path": "/api/customers/16667/statement?page=0&size=20",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id16667-p2-s20",
+      "method": "GET",
+      "path": "/api/customers/16667/statement?page=2&size=20",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id25000-p0-s1",
+      "method": "GET",
+      "path": "/api/customers/25000/statement?page=0&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id25000-p2-s1",
+      "method": "GET",
+      "path": "/api/customers/25000/statement?page=2&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id25000-p0-s10",
+      "method": "GET",
+      "path": "/api/customers/25000/statement?page=0&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id25000-p2-s10",
+      "method": "GET",
+      "path": "/api/customers/25000/statement?page=2&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id25000-p0-s20",
+      "method": "GET",
+      "path": "/api/customers/25000/statement?page=0&size=20",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id25000-p2-s20",
+      "method": "GET",
+      "path": "/api/customers/25000/statement?page=2&size=20",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id33333-p0-s1",
+      "method": "GET",
+      "path": "/api/customers/33333/statement?page=0&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id33333-p2-s1",
+      "method": "GET",
+      "path": "/api/customers/33333/statement?page=2&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id33333-p0-s10",
+      "method": "GET",
+      "path": "/api/customers/33333/statement?page=0&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id33333-p2-s10",
+      "method": "GET",
+      "path": "/api/customers/33333/statement?page=2&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id33333-p0-s20",
+      "method": "GET",
+      "path": "/api/customers/33333/statement?page=0&size=20",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id33333-p2-s20",
+      "method": "GET",
+      "path": "/api/customers/33333/statement?page=2&size=20",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id41666-p0-s1",
+      "method": "GET",
+      "path": "/api/customers/41666/statement?page=0&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id41666-p2-s1",
+      "method": "GET",
+      "path": "/api/customers/41666/statement?page=2&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id41666-p0-s10",
+      "method": "GET",
+      "path": "/api/customers/41666/statement?page=0&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id41666-p2-s10",
+      "method": "GET",
+      "path": "/api/customers/41666/statement?page=2&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id41666-p0-s20",
+      "method": "GET",
+      "path": "/api/customers/41666/statement?page=0&size=20",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 20",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id41666-p2-s20",
+      "method": "GET",
+      "path": "/api/customers/41666/statement?page=2&size=20",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 20",
+      "expected_status": 200
+    }
+  ],
+  "hash": "07d3383e10191eb2"
+}

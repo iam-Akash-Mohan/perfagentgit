@@ -1,0 +1,41 @@
+{
+  "diagnose": [
+    {
+      "args": {
+        "iterations": 5,
+        "page_size": 1,
+        "request_id": "dense-req-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/payments/recent?page=0&size=1  (request_id='dense-req-p0-s100', page_size=1) iterations=5 (1 warmup discarded)\n  statuses                     : {'200': 5}\n  p50 latency                  : 4.2 ms\n  p95 latency                  : 5.9 ms\n  result rows in response      : 1\n  response body size (median)  : 122 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.2 ms (4.1 % of p50)\n  latency per result row       : 4.2 ms\n  body bytes per result row    : 122",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 5,
+        "page_size": 100,
+        "request_id": "dense-req-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/payments/recent?page=0&size=100  (request_id='dense-req-p0-s100', page_size=100) iterations=5 (1 warmup discarded)\n  statuses                     : {'200': 5}\n  p50 latency                  : 9.3 ms\n  p95 latency                  : 15.5 ms\n  result rows in response      : 100\n  response body size (median)  : 12317 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.4 ms (4.6 % of p50)\n  latency per result row       : 0.1 ms\n  body bytes per result row    : 123",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 5,
+        "page_size": 0,
+        "request_id": "dense-req-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/payments/recent?page=0&size=1  (request_id='dense-req-p0-s100', page_size=0) iterations=5 (1 warmup discarded)\n  statuses                     : {'200': 5}\n  p50 latency                  : 5.6 ms\n  p95 latency                  : 7.5 ms\n  result rows in response      : 1\n  response body size (median)  : 122 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.3 ms (5.6 % of p50)\n  latency per result row       : 5.6 ms\n  body bytes per result row    : 122",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 5,
+        "page_size": 100,
+        "request_id": "dense-req-p2-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/payments/recent?page=2&size=100  (request_id='dense-req-p2-s100', page_size=100) iterations=5 (1 warmup discarded)\n  statuses                     : {'200': 5}\n  p50 latency                  : 6.9 ms\n  p95 latency                  : 18.3 ms\n  result rows in response      : 100\n  response body size (median)  : 12321 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.4 ms (5.1 % of p50)\n  latency per result row       : 0.1 ms\n  body bytes per result row    : 123",
+      "tool": "run_probe"
+    }
+  ],
+  "plan": []
+}

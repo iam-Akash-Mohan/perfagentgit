@@ -172,8 +172,9 @@ def validate_hypothesis_set(
         raise ToolError(
             "probes_run is empty. You must run at least one probe with run_probe "
             "and report it before ranking hypotheses.",
-            suggestion="Call run_probe to sweep page_size, then report each probe "
-                       "with the hypothesis ids it separates.",
+            suggestion="Call run_probe against this endpoint's own corpus "
+                       "requests, then report each probe with the hypothesis "
+                       "ids it separates.",
         )
 
     discriminating = [p for p in result.probes_run if p.discriminates_between]

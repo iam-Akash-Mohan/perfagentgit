@@ -1,0 +1,41 @@
+{
+  "diagnose": [
+    {
+      "args": {
+        "iterations": 5,
+        "page_size": 1,
+        "request_id": "dense-req-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/customers/directory?page=0&size=1  (request_id='dense-req-p0-s100', page_size=1) iterations=5 (1 warmup discarded)\n  statuses                     : {'200': 5}\n  p50 latency                  : 3.7 ms\n  p95 latency                  : 6.0 ms\n  result rows in response      : 1\n  response body size (median)  : 79 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.2 ms (4.1 % of p50)\n  latency per result row       : 3.7 ms\n  body bytes per result row    : 79",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 3,
+        "page_size": 100,
+        "request_id": "dense-req-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/customers/directory?page=0&size=100  (request_id='dense-req-p0-s100', page_size=100) iterations=3 (1 warmup discarded)\n  statuses                     : {'200': 3}\n  p50 latency                  : 21.9 ms\n  p95 latency                  : 30.4 ms\n  result rows in response      : 100\n  response body size (median)  : 7712 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 1.1 ms (4.9 % of p50)\n  latency per result row       : 0.2 ms\n  body bytes per result row    : 77",
+      "tool": "run_probe"
+    }
+  ],
+  "plan": [
+    {
+      "args": {
+        "columns": [
+          "id",
+          "customer_name",
+          "joined_on"
+        ],
+        "params": [
+          "50",
+          "0"
+        ],
+        "sql": "SELECT `id`, `customer_name`, `joined_on` FROM `customer_profile` ORDER BY `id` ASC LIMIT %s OFFSET %s",
+        "table": "customer_profile"
+      },
+      "result": "index_benefit('customer_profile', ['id', 'customer_name', 'joined_on'])\n\n  BEFORE   customer_profile: type=index, key=PRIMARY\n           rows_examined=50   actual=0.1 ms\n  AFTER    customer_profile: type=index, key=senapathy_tmp_aaa98812a3\n           rows_examined=50   actual=0.0 ms\n  COST     creation 0.2 s · estimated size 2.5 MB\n  VERDICT  rows examined reduced 0.000%, 4.1x faster\n\n  The index was temporary (senapathy_tmp_aaa98812a3) and has been dropped. Nothing was left on the schema.",
+      "tool": "index_benefit"
+    }
+  ]
+}

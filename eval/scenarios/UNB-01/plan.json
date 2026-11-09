@@ -1,0 +1,150 @@
+{
+  "endpoint": "GET /api/invoices/{id}/payment-history",
+  "measured_total_ms": 2.96,
+  "ranked": [
+    {
+      "hypothesis_id": "h1",
+      "claim": "ORM hydration of the Invoice entity and its PaymentAllocation collection dominates the non‑SQL time.",
+      "layer": "orm_hydration",
+      "attributed_ms": 2.0,
+      "fixability": {
+        "hypothesis_id": "h1",
+        "fixability": 0.05,
+        "reason": "response size is the API contract; the oracle rejects any change to it (unbounded response collection: allocations)",
+        "blocked_by": "allocations is an unbounded response collection in response_shape.unbounded_collections; the frozen oracle compares the response body byte for byte",
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 0.1
+    },
+    {
+      "hypothesis_id": "h2",
+      "claim": "JSON serialization of the response body (Jackson) adds a measurable cost that grows with the number of rows and total payload size.",
+      "layer": "serialization",
+      "attributed_ms": 1.0,
+      "fixability": {
+        "hypothesis_id": "h2",
+        "fixability": 0.05,
+        "reason": "response size is the API contract; the oracle rejects any change to it (unbounded response collection: allocations)",
+        "blocked_by": "allocations is an unbounded response collection in response_shape.unbounded_collections; the frozen oracle compares the response body byte for byte",
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 0.05
+    },
+    {
+      "hypothesis_id": "h3",
+      "claim": "Application‑level aggregation logic (e.g., computing totals, statuses) performed per allocation row adds a modest overhead.",
+      "layer": "application_logic",
+      "attributed_ms": 0.5,
+      "fixability": {
+        "hypothesis_id": "h3",
+        "fixability": 0.1,
+        "reason": "the work produces the contract (computes running remaining balance and creates a PaymentHistoryLineDto for each allocation row feeds the unbounded response collection 'allocations')",
+        "blocked_by": "'allocations' is an unbounded response collection and this work is what fills it (src/main/java/com/ex/service/InvoicePaymentHistoryService.java:37); removing the work removes response bytes",
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 0.05
+    }
+  ],
+  "considered": [
+    "h1",
+    "h2"
+  ],
+  "candidates": [
+    {
+      "id": "c1",
+      "targets_hypothesis": "h1",
+      "approach": "add_index",
+      "description": "Create a covering index on payment_allocation (invoice_id, allocated_amount, id) to enable index‑only scans for the allocation rows, reducing rows examined during the join query.",
+      "mechanism": "rows_examined",
+      "mechanism_changed": "rows examined per request",
+      "predicted_effect": "rows examined drop from 2 to 1",
+      "files_to_touch": [
+        "src/main/resources/db/migration/V__add_payment_allocation_covering_index.sql"
+      ],
+      "sql_change": "CREATE INDEX idx_payment_allocation_invoice_alloc_id ON payment_allocation (invoice_id, allocated_amount, id);",
+      "sql_before": null,
+      "sql_after": null,
+      "sql_params": [],
+      "baseline_digest": null,
+      "baseline_calls": null,
+      "what_could_break": [
+        "If the index creation fails due to disk space or lock contention, the migration will abort.",
+        "MySQL may choose a sub‑optimal plan despite the index, yielding no benefit."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 1,
+      "requires_flag": false,
+      "expected_value_ms": 0.1,
+      "sql_verification": null,
+      "not_selectable_because": "this patch changes the database schema, and both arms resolve to the SAME schema: mysql://localhost:3307/mini.\nAn index is a property of the database, not of a worktree. Once green's migration applies it, blue is querying an indexed table too, so an interleaved A/B would compare two arms that both have the index and report no improvement for a change that may be worth a great deal. That is a false negative, and it looks exactly like the system working.\nThe measurement was NOT run. This is not a statement that the patch does not help — it is a statement that this harness cannot currently find out. Give each arm its own schema and run again; docs/schema-changes.md says what that requires.",
+      "scope_reasons": {}
+    },
+    {
+      "id": "c2",
+      "targets_hypothesis": "h2",
+      "approach": "query_rewrite",
+      "description": "Rewrite the payment‑history query to fetch the invoice header in a derived sub‑query, avoiding repeated scanning of the invoice table for each allocation row and thus reducing rows examined.",
+      "mechanism": "rows_examined",
+      "mechanism_changed": "rows examined per request",
+      "predicted_effect": "rows examined drop from 2 to 1",
+      "files_to_touch": [
+        "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+        "src/main/java/com/ex/web/InvoicePaymentHistoryController.java",
+        "src/main/java/com/ex/service/InvoicePaymentHistoryService.java"
+      ],
+      "sql_change": null,
+      "sql_before": "SELECT i.amount, i.status, pa.id, p.paid_on, pa.allocated_amount, p.method FROM invoice i LEFT JOIN payment_allocation pa ON pa.invoice_id = i.id LEFT JOIN customer_payment p ON p.id = pa.payment_id WHERE i.id = %s ORDER BY p.paid_on ASC, p.id ASC, pa.id ASC",
+      "sql_after": "SELECT i.amount, i.status, pa.id, p.paid_on, pa.allocated_amount, p.method FROM (SELECT amount, status FROM invoice WHERE id = %s) i LEFT JOIN payment_allocation pa ON pa.invoice_id = %s LEFT JOIN customer_payment p ON p.id = pa.payment_id ORDER BY p.paid_on ASC, p.id ASC, pa.id ASC",
+      "sql_params": [
+        "invoiceId",
+        "invoiceId"
+      ],
+      "baseline_digest": null,
+      "baseline_calls": null,
+      "what_could_break": [
+        "The derived sub‑query must return exactly one row; if the invoice does not exist the query returns no rows and the service will throw an exception as before.",
+        "If the optimizer does not use the sub‑query as intended, rows examined may not change."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 2,
+      "requires_flag": false,
+      "expected_value_ms": 0.05,
+      "sql_verification": {
+        "verified": false,
+        "attempted": true,
+        "rows_examined_before": 0,
+        "rows_examined_after": 0,
+        "rows_delta_pct": 0.0,
+        "actual_ms_before": 0.0,
+        "actual_ms_after": 0.0,
+        "scored": false,
+        "note": "EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: Not all parameters were used in the SQL statement\nStatement: SELECT i.amount, i.status, pa.id, p.paid_on, pa.allocated_amount, p.method FROM invoice i LEFT JOIN payment_allocation pa ON pa.invoice_id = i.id LEFT JOIN customer_payment p ON p.id = pa.payment_id WHERE i.id = %s ORDER BY p.paid_on ASC, p.id ASC, pa.id ASC  /  SELECT i.amount, i.status, pa.id, p.p",
+        "assessed_by": "code"
+      },
+      "not_selectable_because": "EXPLAIN ANALYZE could not verify this candidate's own sql_before/sql_after before a patch exists (EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: Not all parameters were used in the SQL statement\nStatement: SELECT i.amount, i.status, pa.id, p.paid_on, pa.allocated_amount, p.method FROM invoice i LEFT JOIN payment_allocation pa ON pa.invoice_id = i.id LEFT JOIN customer_payment p ON p.id = pa.payment_id WHERE i.id = %s ORDER BY p.paid_on ASC, p.id ASC, pa.id ASC  /  SELECT i.amount, i.status, pa.id, p.p). An instrumented mechanism has not earned selection without evidence — this is unverifiable, not disproven, but it still disqualifies until it can be checked.",
+      "scope_reasons": {
+        "src/main/java/com/ex/web/InvoicePaymentHistoryController.java": "on this endpoint's own traced call path to src/main/java/com/ex/repo/PaymentAllocationRepository.java, which this candidate already touches — included so a change to src/main/java/com/ex/repo/PaymentAllocationRepository.java has its caller in scope",
+        "src/main/java/com/ex/service/InvoicePaymentHistoryService.java": "on this endpoint's own traced call path to src/main/java/com/ex/repo/PaymentAllocationRepository.java, which this candidate already touches — included so a change to src/main/java/com/ex/repo/PaymentAllocationRepository.java has its caller in scope"
+      }
+    }
+  ],
+  "selected_id": null,
+  "selection_reason": "no candidate cleared the selection rule: every one was either above risk tier T2 or did not claim to preserve the response bytes",
+  "not_selected": [
+    {
+      "candidate_id": "c1",
+      "reason": "this patch changes the database schema, and both arms resolve to the SAME schema: mysql://localhost:3307/mini.\nAn index is a property of the database, not of a worktree. Once green's migration applies it, blue is querying an indexed table too, so an interleaved A/B would compare two arms that both have the index and report no improvement for a change that may be worth a great deal. That is a false negative, and it looks exactly like the system working.\nThe measurement was NOT run. This is not a statement that the patch does not help — it is a statement that this harness cannot currently find out. Give each arm its own schema and run again; docs/schema-changes.md says what that requires."
+    },
+    {
+      "candidate_id": "c2",
+      "reason": "EXPLAIN ANALYZE could not verify this candidate's own sql_before/sql_after before a patch exists (EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: Not all parameters were used in the SQL statement\nStatement: SELECT i.amount, i.status, pa.id, p.paid_on, pa.allocated_amount, p.method FROM invoice i LEFT JOIN payment_allocation pa ON pa.invoice_id = i.id LEFT JOIN customer_payment p ON p.id = pa.payment_id WHERE i.id = %s ORDER BY p.paid_on ASC, p.id ASC, pa.id ASC  /  SELECT i.amount, i.status, pa.id, p.p). An instrumented mechanism has not earned selection without evidence — this is unverifiable, not disproven, but it still disqualifies until it can be checked."
+    }
+  ],
+  "prompt_hash": "5f311954ae548093",
+  "base_commit": "feb56fa89ee38f1426cbe87c5f61a5185b05f78a",
+  "decided_by": "code",
+  "baseline_hash": "bfe146ff8ea534c9"
+}

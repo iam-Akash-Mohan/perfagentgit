@@ -1,0 +1,6 @@
+{
+  "scenario": "LOOP-01",
+  "endpoint": "GET /api/invoices/overdue-worklist",
+  "mini_spring_commit": "6bd44ce97c30f0c96bda54772044e0e597c2229a",
+  "mini_spring_tag": "eval/LOOP-01"
+}

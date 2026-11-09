@@ -1,0 +1,6 @@
+{
+  "scenario": "COL-06",
+  "endpoint": "GET /api/reports/collections",
+  "mini_spring_commit": "0de8c07375c27bcb1d484adb84197b5ce045fbc1",
+  "mini_spring_tag": "eval/COL-06"
+}

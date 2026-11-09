@@ -1,0 +1,6 @@
+{
+  "scenario": "INV-04",
+  "endpoint": "GET /api/customers/{id}/invoices",
+  "mini_spring_commit": "e0d7c7021d82ac93431f1647469a3b6c0cd71499",
+  "mini_spring_tag": "eval/INV-04"
+}

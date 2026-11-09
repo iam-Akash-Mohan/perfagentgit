@@ -10,6 +10,7 @@ from ..contracts import HypothesisSet, Layer
 from ..errors import ContractViolation, ToolError
 from ..llm import make_client
 from ..measure.baseline import baseline_hash
+from ..measure.corpus import load_corpus
 from ..measure.sql import MySQLTarget, require_base_url
 from ..tools.db import DIAGNOSE_TOOLS, optional_db_tools
 from .evidence import (
@@ -19,7 +20,7 @@ from .evidence import (
     render_evidence,
     unexplained_share_pct,
 )
-from .probe import RUN_PROBE_TOOL, ProbeLog, make_run_probe
+from .probe import ProbeCatalog, ProbeLog, make_run_probe, run_probe_tool
 from .validate import ATTRIBUTION_TOLERANCE, validate_hypothesis_set
 
 # Tool surface is deliberately two tools. Every request re-sends every schema,
@@ -165,7 +166,8 @@ EMIT_HYPOTHESES_TOOL = {
 # together in the task string. Every number interpolated here comes from a
 # recorded artifact, never from prose.
 
-def build_task(baseline: dict[str, Any], endpoint_model: dict[str, Any]) -> str:
+def build_task(baseline: dict[str, Any], endpoint_model: dict[str, Any], *,
+              catalog: ProbeCatalog) -> str:
     facts = baseline["derived"]
     p50 = baseline["benchmark"]["latency"]["p50_ms"]
     per_row = ms_per_result_row(baseline)
@@ -221,18 +223,27 @@ Candidate directions worth separating (do not just accept one):
 
 === HOW TO EXPERIMENT ===
 
-run_probe fires the real endpoint with a page size and name filter you choose, and
-reports p50 latency, application SQL statements per request, server-side SQL ms per
-request, result row count and RESPONSE BODY SIZE IN BYTES.
+run_probe fires ONE OF THIS ENDPOINT'S OWN CORPUS REQUESTS, repeatedly, and reports
+p50 latency, application SQL statements per request, server-side SQL ms per request,
+result row count and RESPONSE BODY SIZE IN BYTES. It cannot call any other endpoint.
 
-Start by SWEEPING page_size: 1, 5, 20, 50. That tells you whether cost scales
-linearly with the number of result rows, and which quantities scale with it —
-latency, SQL statements, SQL ms, or response bytes. Quantities that scale together
-are candidates for the same cause; quantities that stay flat are ruled out.
-Use iterations=3 for page_size 20 and above; large pages are slow.
+This endpoint's own requests, available to probe:
+{catalog.describe_requests()}
 
-A probe with name_filter='zzzz-no-such-customer' returns zero rows and isolates the
-filter query from all per-row work. That is a useful control.
+{(
+    f"This endpoint paginates (max page size {catalog.max_page_size}). Start by "
+    "SWEEPING page_size: 1, a typical size, and the max. That tells you whether "
+    "cost scales linearly with the number of result rows, and which quantities "
+    "scale with it -- latency, SQL statements, SQL ms, or response bytes. "
+    "Quantities that scale together are candidates for the same cause; "
+    "quantities that stay flat are ruled out. Use iterations=3 for larger "
+    "page sizes; they are slow."
+    if catalog.paginates else
+    "This endpoint does not paginate. Vary request_id instead -- the ids above "
+    "already span this endpoint's own real range of magnitude (a denser or "
+    "sparser path parameter), the same spread the benchmark phase itself uses. "
+    "Firing a sparse and a dense request and comparing is the sweep."
+)}
 
 For MECHANISM, use the call chain and the declared data access above — they tell you
 which method runs per row and what it touches. State the mechanism in terms of what
@@ -302,6 +313,15 @@ def run_diagnosis(
     # rather than a missing-value error.
     sql_share = (baseline.get("derived") or {}).get("sql_share_of_latency_pct")
 
+    # The corpus this run's own workload phase generated for THIS endpoint —
+    # what run_probe is allowed to replay. ProbeCatalog raises
+    # ContractViolation immediately if nothing probeable exists, rather than
+    # letting diagnose silently measure a different endpoint than the one
+    # under test (see probe.py's module docstring for why that matters).
+    corpus = load_corpus(directory / "corpus.json")
+    base_url_resolved = require_base_url(base_url)
+    catalog = ProbeCatalog(base_url_resolved, endpoint_model, corpus)
+
     probe_log = ProbeLog()
     accepted: dict[str, HypothesisSet] = {}
     rejections: list[str] = []
@@ -341,12 +361,17 @@ def run_diagnosis(
     try:
         run_agent(
             client=llm,
-            task=build_task(baseline, endpoint_model),
-            tools=[RUN_PROBE_TOOL, EMIT_HYPOTHESES_TOOL,
+            task=build_task(baseline, endpoint_model, catalog=catalog),
+            tools=[run_probe_tool(catalog.describe_requests(),
+                                  paginates=catalog.paginates,
+                                  max_page_size=catalog.max_page_size),
+                   EMIT_HYPOTHESES_TOOL,
                    *(spec.schema() for spec in db_specs)],
             handlers={
-                "run_probe": make_run_probe(require_base_url(base_url), target,
-                                            log=probe_log),
+                "run_probe": make_run_probe(base_url_resolved, target,
+                                            endpoint_model=endpoint_model,
+                                            corpus=corpus, log=probe_log,
+                                            catalog=catalog),
                 "emit_hypotheses": emit_hypotheses,
                 **{spec.name: spec.handler for spec in db_specs},
             },

@@ -1,0 +1,16 @@
+{
+  "scenario": "SER-01",
+  "endpoint": "GET /api/customers/bios",
+  "measured_total_ms": 5.6,
+  "required_layers": ["serialization"],
+  "forbidden_layers": [],
+  "dominant_layer_any_of": ["serialization", "orm_hydration"],
+  "plan": {
+    "selectable": false
+  },
+  "tier2": {
+    "terminal_state_any_of": ["BOTTLENECK_NOT_FIXABLE"],
+    "behaviour_preserved": true
+  },
+  "notes": "PREDICTED REFUSAL. The outcome asserted here is deliberately narrow: no patch phase reached, no PR, a refusal recorded with a stated reason. (An earlier, stricter acceptance bar required the refusal to cite serialization's 0.30 fixability and an uninstrumented mechanism on the SAME candidate -- that specified a reasoning path, not a behaviour, and was withdrawn as inconsistent with this suite's own assert-outcomes-not-methods rule; mechanism/fixability are recorded below as context, never as a gate.)\n\n`dominant_layer_any_of` includes `orm_hydration` alongside `serialization`, not as a concession but as an accurate reflection of a confirmed, independent finding: this endpoint (CustomerBioService.bios, via CustomerProfileRepository.findBioRows, a narrow JPQL constructor projection that hydrates ZERO entities -- confirmed by reading the code) reliably draws an invented orm_hydration hypothesis across every live sample taken of it. This frozen sample's own hypotheses.json has orm_hydration attributed 3.0ms, serialization 2.5ms -- the hallucinated hypothesis genuinely outranks the real one here. This was ONLY exposed after this session's cassette-replay-divergence fix let Tier 1 replay reach the dominant-layer check at all; before that fix this scenario was quarantined on an unrelated CassetteMiss and this mismatch was silently unreachable.\n\nRoot cause, confirmed, not speculated: `diagnose/probe.py::make_run_probe` was hardcoded to always fire `POST /api/customers/search` regardless of which endpoint was under test (its own tool schema said so) -- FIXED this session (`ProbeCatalog`, see TESTING-PLAN.md) to build every probe from THIS run's own endpoint_model/corpus. Re-running diagnose live, post-fix, against this exact endpoint's recorded facts (and against COL-04, UNB-06) confirms the orm_hydration claim about a JPQL constructor-expression projection SURVIVES a correct probe -- it is an independent reasoning error (JPQL `select new ...(...)` never hydrates an entity; the comprehension model's `DataAccessKind` has no field distinguishing that from an entity-returning query, so nothing stops diagnose from assuming otherwise), not a consequence of probing the wrong endpoint. Full detail in TESTING-PLAN.md's headline finding. Re-freezing this scenario is NOT reliable and should not be treated as a stable source of truth for which layer dominates -- only for the outcome (refused, for a stated reason), which is why `dominant_layer_any_of` is widened here rather than the sampling made to look more consistent than it is."
+}

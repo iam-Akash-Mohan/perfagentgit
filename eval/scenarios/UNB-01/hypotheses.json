@@ -1,0 +1,137 @@
+{
+  "hypotheses": [
+    {
+      "id": "h1",
+      "claim": "ORM hydration of the Invoice entity and its PaymentAllocation collection dominates the non‑SQL time.",
+      "mechanism": "Hibernate reads the result set, creates an Invoice entity instance and for each allocation row creates a PaymentAllocation entity, linking them in a managed collection; this object graph building costs several milliseconds per request.",
+      "layer": "orm_hydration",
+      "evidence": [
+        "Measured server‑side SQL per request: 0.1–0.4 ms (≈ 7 % of p50).",
+        "Probe dense‑id1 (2 rows) p50 latency 3.6 ms, dense‑id200001 (1 row) 4.6 ms – latency does not shrink to the SQL time, indicating heavy Java‑side object materialisation.",
+        "JPQL digest shows a left‑join that returns both Invoice and allocations; JPA must instantiate an Invoice object plus a collection of Allocation entities per row."
+      ],
+      "attributed_ms": 2.0,
+      "prediction": "If the query is rewritten to return scalar DTOs instead of entities, the latency will drop by ≈2 ms per request regardless of row count.",
+      "confidence": 0.8
+    },
+    {
+      "id": "h2",
+      "claim": "JSON serialization of the response body (Jackson) adds a measurable cost that grows with the number of rows and total payload size.",
+      "mechanism": "After the service returns the Invoice object with its Allocation collection, the MVC layer serialises it to JSON; each entity field and collection element requires reflection, type conversion and buffer copying, adding ~0.3 ms per 100 B of payload.",
+      "layer": "serialization",
+      "evidence": [
+        "Response body size for 2 rows (dense‑id1) 298 B, latency 3.6 ms; for 0 rows (dense‑id800001) 77 B, latency 5.1 ms – the difference in bytes explains ≈1 ms of the latency gap.",
+        "Spring Boot’s default Jackson mapper traverses the entity graph built by Hibernate; each field visited incurs reflection and buffer writes."
+      ],
+      "attributed_ms": 1.0,
+      "prediction": "Enabling Jackson’s afterburner module or switching to a streaming serializer will reduce the measured p50 by at least 0.8 ms without touching the JPA query.",
+      "confidence": 0.7
+    },
+    {
+      "id": "h3",
+      "claim": "Application‑level aggregation logic (e.g., computing totals, statuses) performed per allocation row adds a modest overhead.",
+      "mechanism": "A `for`‑loop in `InvoicePaymentHistoryService.history` processes each PaymentAllocation, performing arithmetic and populating DTO fields; each iteration adds ~0.4 ms.",
+      "layer": "application_logic",
+      "evidence": [
+        "Service method `history` likely iterates over the Allocation collection to compute remaining balance or status flags; this loop runs once per row.",
+        "The latency per result row observed in probe dense‑id200001 (1 row, 4.6 ms) is higher than the pure SQL time, indicating extra per‑row work beyond hydration."
+      ],
+      "attributed_ms": 0.5,
+      "prediction": "Removing the aggregation loop or moving it to a database‑side calculation will lower latency by ~0.4 ms per allocation row.",
+      "confidence": 0.5
+    }
+  ],
+  "probes_run": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 15,
+        "request_id": "dense-id1"
+      },
+      "discriminates_between": [
+        "h1",
+        "h2",
+        "h3"
+      ],
+      "result": "2 rows, 298 B, p50 3.6 ms, SQL 0.1 ms – shows latency far above SQL, supporting ORM and serialization costs."
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 15,
+        "request_id": "dense-id200001"
+      },
+      "discriminates_between": [
+        "h1",
+        "h2",
+        "h3"
+      ],
+      "result": "1 row, 193 B, p50 4.6 ms, SQL 0.2 ms – latency grows with row count, consistent with per‑row ORM/serialization/application work."
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 15,
+        "request_id": "dense-id800001"
+      },
+      "discriminates_between": [
+        "h1",
+        "h2",
+        "h3"
+      ],
+      "result": "0 rows, 77 B, p50 5.1 ms, SQL 0.3 ms – baseline overhead (fixed cost) visible when no rows are materialised, supporting the fixed‑overhead component of h1/h2."
+    }
+  ],
+  "ranked_ids": [
+    "h1",
+    "h2",
+    "h3"
+  ],
+  "measured_total_ms": 2.96,
+  "probes_executed": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-id1",
+        "iterations": 15
+      },
+      "result": "probe: GET http://localhost:18080/api/invoices/1/payment-history  (request_id='dense-id1') iterations=15 (1 warmup discarded)\n  statuses                     : {'200': 15}\n  p50 latency                  : 3.6 ms\n  p95 latency                  : 4.7 ms\n  result rows in response      : 2\n  response body size (median)  : 298 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.1 ms (3.6 % of p50)\n  latency per result row       : 1.8 ms\n  body bytes per result row    : 149",
+      "endpoint_called": "GET http://localhost:18080/api/invoices/1/payment-history"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-id1000001",
+        "iterations": 15
+      },
+      "result": "probe: GET http://localhost:18080/api/invoices/1000001/payment-history  (request_id='dense-id1000001') iterations=15 (1 warmup discarded)\n  statuses                     : {'200': 15}\n  p50 latency                  : 7.6 ms\n  p95 latency                  : 9.5 ms\n  result rows in response      : 0\n  response body size (median)  : 78 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.4 ms (5.6 % of p50)",
+      "endpoint_called": "GET http://localhost:18080/api/invoices/1000001/payment-history"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-id800001",
+        "iterations": 15
+      },
+      "result": "probe: GET http://localhost:18080/api/invoices/800001/payment-history  (request_id='dense-id800001') iterations=15 (1 warmup discarded)\n  statuses                     : {'200': 15}\n  p50 latency                  : 5.1 ms\n  p95 latency                  : 8.7 ms\n  result rows in response      : 0\n  response body size (median)  : 77 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.3 ms (5.8 % of p50)",
+      "endpoint_called": "GET http://localhost:18080/api/invoices/800001/payment-history"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-id200001",
+        "iterations": 15
+      },
+      "result": "probe: GET http://localhost:18080/api/invoices/200001/payment-history  (request_id='dense-id200001') iterations=15 (1 warmup discarded)\n  statuses                     : {'200': 15}\n  p50 latency                  : 4.6 ms\n  p95 latency                  : 6.5 ms\n  result rows in response      : 1\n  response body size (median)  : 193 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.2 ms (3.7 % of p50)\n  latency per result row       : 4.6 ms\n  body bytes per result row    : 193",
+      "endpoint_called": "GET http://localhost:18080/api/invoices/200001/payment-history"
+    }
+  ],
+  "baseline": "/Users/akashm/Documents/ak/perfagent/eval/scratch/UNB-01/baseline.json",
+  "baseline_hash": "bfe146ff8ea534c9",
+  "endpoint_model": "/Users/akashm/Documents/ak/perfagent/eval/scratch/UNB-01/endpoint_model.json",
+  "submissions_rejected": 0,
+  "database_tools": [
+    "explain",
+    "list_indexes"
+  ]
+}

@@ -1,0 +1,148 @@
+{
+  "endpoint": "GET /api/reports/collections",
+  "measured_total_ms": 268.678,
+  "ranked": [
+    {
+      "hypothesis_id": "h1",
+      "claim": "The JPQL query forces a full table scan because no index matches the WHERE predicates, causing ~250 ms of database_query time per request.",
+      "layer": "database_query",
+      "attributed_ms": 250.0,
+      "fixability": {
+        "hypothesis_id": "h1",
+        "fixability": 0.95,
+        "reason": "additive index, zero behaviour risk (payment_allocation is read on allocated_amount and no existing index leads with that column)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 237.5
+    },
+    {
+      "hypothesis_id": "h2",
+      "claim": "Hibernate’s hydration of each result row into a CollectionsRowDto adds ~0.08 ms per row (~8 ms per request).",
+      "layer": "orm_hydration",
+      "attributed_ms": 8.0,
+      "fixability": {
+        "hypothesis_id": "h2",
+        "fixability": 0.8,
+        "reason": "DTO projection returns the same values (customer_payment: 3 of 6 columns are read)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 6.4
+    },
+    {
+      "hypothesis_id": "h3",
+      "claim": "Serializing the DTO list to JSON consumes ~0.05 ms per row (~5 ms per request).",
+      "layer": "serialization",
+      "attributed_ms": 5.0,
+      "fixability": {
+        "hypothesis_id": "h3",
+        "fixability": 0.3,
+        "reason": "library-level, rarely beatable by hand (no unbounded response collection is implicated)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 1.5
+    }
+  ],
+  "considered": [
+    "h1",
+    "h2"
+  ],
+  "candidates": [
+    {
+      "id": "c1",
+      "targets_hypothesis": "h1",
+      "approach": "add_index",
+      "description": "Create a composite index on customer_payment(method, paid_on) to let MySQL use the index for the method equality and paid_on range predicates, eliminating the full table scan on CustomerPayment.",
+      "mechanism": "rows_examined",
+      "mechanism_changed": "rows examined",
+      "predicted_effect": "rows examined drop from ~157,625,300 to ~2,000,000",
+      "files_to_touch": [
+        "src/main/resources/db/migration/V20231109__add_idx_customer_payment_method_paid_on.sql"
+      ],
+      "sql_change": "CREATE INDEX idx_customer_payment_method_paid_on ON customer_payment (method, paid_on);",
+      "sql_before": null,
+      "sql_after": null,
+      "sql_params": [],
+      "baseline_digest": null,
+      "baseline_calls": null,
+      "what_could_break": [
+        "If the index creation takes a long time it could lock the table during migration.",
+        "If the query planner chooses a sub‑optimal plan despite the index, rows examined may not drop as expected."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 1,
+      "requires_flag": false,
+      "expected_value_ms": 237.5,
+      "sql_verification": null,
+      "not_selectable_because": "this patch changes the database schema, and both arms resolve to the SAME schema: mysql://localhost:3307/mini.\nAn index is a property of the database, not of a worktree. Once green's migration applies it, blue is querying an indexed table too, so an interleaved A/B would compare two arms that both have the index and report no improvement for a change that may be worth a great deal. That is a false negative, and it looks exactly like the system working.\nThe measurement was NOT run. This is not a statement that the patch does not help — it is a statement that this harness cannot currently find out. Give each arm its own schema and run again; docs/schema-changes.md says what that requires.",
+      "scope_reasons": {}
+    },
+    {
+      "id": "c2",
+      "targets_hypothesis": "h1",
+      "approach": "query_rewrite",
+      "description": "Rewrite the JPQL‑generated SQL to avoid the FUNCTION('DATE', …) call and compare the timestamp column directly, allowing the new (method, paid_on) index to be used.",
+      "mechanism": "rows_examined",
+      "mechanism_changed": "rows examined",
+      "predicted_effect": "rows examined drop from ~157,625,300 to ~2,000,000",
+      "files_to_touch": [
+        "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+        "src/main/java/com/ex/web/CollectionsReportController.java",
+        "src/main/java/com/ex/service/CollectionsReportService.java"
+      ],
+      "sql_change": null,
+      "sql_before": "SELECT c.name, i.id, cp.paid_on, pa.allocated_amount FROM payment_allocation pa JOIN customer_payment cp ON pa.payment_id = cp.id JOIN invoice i ON pa.invoice_id = i.id JOIN customer c ON i.customer_id = c.id WHERE DATE(cp.paid_on) >= %s AND DATE(cp.paid_on) < %s AND cp.method = %s ORDER BY cp.paid_on ASC, cp.id ASC, pa.id ASC LIMIT %s OFFSET %s",
+      "sql_after": "SELECT c.name, i.id, cp.paid_on, pa.allocated_amount FROM payment_allocation pa JOIN customer_payment cp ON pa.payment_id = cp.id JOIN invoice i ON pa.invoice_id = i.id JOIN customer c ON i.customer_id = c.id WHERE cp.paid_on >= %s AND cp.paid_on < %s AND cp.method = %s ORDER BY cp.paid_on ASC, cp.id ASC, pa.id ASC LIMIT %s OFFSET %s",
+      "sql_params": [
+        "2023-06-01",
+        "2023-07-01",
+        "ACH",
+        "50",
+        "0"
+      ],
+      "baseline_digest": null,
+      "baseline_calls": null,
+      "what_could_break": [
+        "Changing the WHERE clause semantics could alter results if time components are present; however the original query truncates to date, and the new range comparison is equivalent for the given date‑only parameters."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 2,
+      "requires_flag": false,
+      "expected_value_ms": 236.0,
+      "sql_verification": {
+        "verified": true,
+        "attempted": true,
+        "rows_examined_before": 449915,
+        "rows_examined_after": 25351,
+        "rows_delta_pct": -94.4,
+        "actual_ms_before": 297.0,
+        "actual_ms_after": 88.7,
+        "scored": true,
+        "note": "EXPLAIN ANALYZE: rows examined 449,915 -> 25,351 (-94.4%), actual time 297.0 ms -> 88.7 ms",
+        "assessed_by": "code"
+      },
+      "not_selectable_because": null,
+      "scope_reasons": {
+        "src/main/java/com/ex/web/CollectionsReportController.java": "on this endpoint's own traced call path to src/main/java/com/ex/repo/PaymentAllocationRepository.java, which this candidate already touches — included so a change to src/main/java/com/ex/repo/PaymentAllocationRepository.java has its caller in scope",
+        "src/main/java/com/ex/service/CollectionsReportService.java": "on this endpoint's own traced call path to src/main/java/com/ex/repo/PaymentAllocationRepository.java, which this candidate already touches — included so a change to src/main/java/com/ex/repo/PaymentAllocationRepository.java has its caller in scope"
+      }
+    }
+  ],
+  "selected_id": "c2",
+  "selection_reason": "highest expected value (236.0 ms) among candidates at risk tier T2 or below that preserve the response bytes; approach query_rewrite, tier T2",
+  "not_selected": [
+    {
+      "candidate_id": "c1",
+      "reason": "this patch changes the database schema, and both arms resolve to the SAME schema: mysql://localhost:3307/mini.\nAn index is a property of the database, not of a worktree. Once green's migration applies it, blue is querying an indexed table too, so an interleaved A/B would compare two arms that both have the index and report no improvement for a change that may be worth a great deal. That is a false negative, and it looks exactly like the system working.\nThe measurement was NOT run. This is not a statement that the patch does not help — it is a statement that this harness cannot currently find out. Give each arm its own schema and run again; docs/schema-changes.md says what that requires."
+    }
+  ],
+  "prompt_hash": "5f311954ae548093",
+  "base_commit": "0de8c07375c27bcb1d484adb84197b5ce045fbc1",
+  "decided_by": "code",
+  "baseline_hash": "c2deb2435726dc58"
+}

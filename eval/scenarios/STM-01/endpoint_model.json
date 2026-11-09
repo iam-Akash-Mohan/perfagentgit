@@ -1,0 +1,557 @@
+{
+  "route": "GET /api/customers/{id}/statement",
+  "entry": {
+    "file": "src/main/java/com/ex/web/StatementController.java",
+    "line": 19,
+    "symbol": "StatementController.statement"
+  },
+  "path": [
+    {
+      "file": "src/main/java/com/ex/web/StatementController.java",
+      "line": 19,
+      "symbol": "StatementController.statement"
+    },
+    {
+      "file": "src/main/java/com/ex/service/StatementService.java",
+      "line": 37,
+      "symbol": "StatementService.build"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/CustomerRepository.java",
+      "line": 28,
+      "symbol": "CustomerRepository.findProfile"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 18,
+      "symbol": "InvoiceRepository.countByCustomerIdAndStatus"
+    },
+    {
+      "file": "src/main/java/com/ex/service/OutstandingCalculator.java",
+      "line": 23,
+      "symbol": "OutstandingCalculator.outstandingFor"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/CustomerRepository.java",
+      "line": 28,
+      "symbol": "CustomerRepository.findProfile"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 14,
+      "symbol": "InvoiceRepository.sumOpenAmountByCustomer"
+    },
+    {
+      "file": "src/main/java/com/ex/service/StatementNarrator.java",
+      "line": 20,
+      "symbol": "StatementNarrator.describe"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/CustomerRepository.java",
+      "line": 28,
+      "symbol": "CustomerRepository.findProfile"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+      "line": 47,
+      "symbol": "PaymentAllocationRepository.findRecentForCustomer"
+    }
+  ],
+  "call_chain": [
+    {
+      "method": "StatementController.statement",
+      "file": "src/main/java/com/ex/web/StatementController.java",
+      "line": 19,
+      "does": "controller receives request and delegates to service"
+    },
+    {
+      "method": "StatementService.build",
+      "file": "src/main/java/com/ex/service/StatementService.java",
+      "line": 37,
+      "does": "builds statement DTO by gathering profile, counts, totals, narrative and recent allocations"
+    },
+    {
+      "method": "CustomerRepository.findProfile",
+      "file": "src/main/java/com/ex/repo/CustomerRepository.java",
+      "line": 28,
+      "does": "loads customer profile with aggregated payment counts and totals"
+    },
+    {
+      "method": "InvoiceRepository.countByCustomerIdAndStatus",
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 18,
+      "does": "counts open invoices for customer"
+    },
+    {
+      "method": "OutstandingCalculator.outstandingFor",
+      "file": "src/main/java/com/ex/service/OutstandingCalculator.java",
+      "line": 23,
+      "does": "calculates total outstanding amount for customer"
+    },
+    {
+      "method": "CustomerRepository.findProfile",
+      "file": "src/main/java/com/ex/repo/CustomerRepository.java",
+      "line": 28,
+      "does": "validates customer existence via profile query"
+    },
+    {
+      "method": "InvoiceRepository.sumOpenAmountByCustomer",
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 14,
+      "does": "sums open invoice amounts"
+    },
+    {
+      "method": "StatementNarrator.describe",
+      "file": "src/main/java/com/ex/service/StatementNarrator.java",
+      "line": 20,
+      "does": "creates narrative string for statement"
+    },
+    {
+      "method": "CustomerRepository.findProfile",
+      "file": "src/main/java/com/ex/repo/CustomerRepository.java",
+      "line": 28,
+      "does": "loads customer profile again for name in narrative"
+    },
+    {
+      "method": "PaymentAllocationRepository.findRecentForCustomer",
+      "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+      "line": 47,
+      "does": "fetches recent payment allocations (paged)"
+    }
+  ],
+  "data_access": [
+    {
+      "trigger": "customerRepo.findProfile",
+      "kind": "jpql_query",
+      "file": "src/main/java/com/ex/repo/CustomerRepository.java",
+      "line": 28,
+      "sql": "select new com.ex.dto.CustomerProfile(c.id, c.name, count(p.id), coalesce(sum(p.amount), 0)) from Customer c left join CustomerPayment p on p.customerId = c.id where c.id = :id group by c.id, c.name",
+      "tables": [
+        "customer",
+        "customer_payment"
+      ],
+      "executes_per_row": false,
+      "note": "aggregates CustomerPayment rows for profile"
+    },
+    {
+      "trigger": "invoiceRepo.countByCustomerIdAndStatus",
+      "kind": "derived_query",
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 18,
+      "sql": "select count(i) from Invoice i where i.customer.id = :customerId and i.status = :status",
+      "tables": [
+        "invoice"
+      ],
+      "executes_per_row": false,
+      "note": null
+    },
+    {
+      "trigger": "invoiceRepo.sumOpenAmountByCustomer",
+      "kind": "jpql_query",
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 14,
+      "sql": "select coalesce(sum(i.amount), 0) from Invoice i where i.customer.id = :customerId and i.status = 'OPEN'",
+      "tables": [
+        "invoice"
+      ],
+      "executes_per_row": false,
+      "note": null
+    },
+    {
+      "trigger": "paymentAllocationRepo.findRecentForCustomer",
+      "kind": "jpql_query",
+      "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+      "line": 47,
+      "sql": "select new com.ex.dto.StatementAllocationDto(i.id, p.paidOn, pa.allocatedAmount) from PaymentAllocation pa, CustomerPayment p, Invoice i where pa.paymentId = p.id and pa.invoiceId = i.id and p.customerId = :customerId order by p.paidOn desc, p.id desc",
+      "tables": [
+        "payment_allocation",
+        "customer_payment",
+        "invoice"
+      ],
+      "executes_per_row": false,
+      "note": null
+    }
+  ],
+  "sql_sources": [
+    {
+      "method": "customerRepo.findProfile",
+      "kind": "@Query JPQL",
+      "tables": [
+        "customer",
+        "customer_payment"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/repo/CustomerRepository.java",
+        "line": 28,
+        "symbol": null
+      }
+    },
+    {
+      "method": "invoiceRepo.countByCustomerIdAndStatus",
+      "kind": "derived query",
+      "tables": [
+        "invoice"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+        "line": 18,
+        "symbol": null
+      }
+    },
+    {
+      "method": "invoiceRepo.sumOpenAmountByCustomer",
+      "kind": "@Query JPQL",
+      "tables": [
+        "invoice"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+        "line": 14,
+        "symbol": null
+      }
+    },
+    {
+      "method": "paymentAllocationRepo.findRecentForCustomer",
+      "kind": "@Query JPQL",
+      "tables": [
+        "payment_allocation",
+        "customer_payment",
+        "invoice"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+        "line": 47,
+        "symbol": null
+      }
+    }
+  ],
+  "entities": [],
+  "transactions": [
+    {
+      "method": "StatementService.build",
+      "propagation": "REQUIRED",
+      "read_only": true,
+      "citation": {
+        "file": "src/main/java/com/ex/service/StatementService.java",
+        "line": 36,
+        "symbol": "build"
+      }
+    }
+  ],
+  "external_calls": [],
+  "tables": [
+    {
+      "table": "customer",
+      "entity": "Customer",
+      "columns_read": [
+        "id",
+        "name"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "name varchar(255) NOT NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 49936
+        }
+      ],
+      "approx_rows": 49936,
+      "foreign_keys": [
+        {
+          "direction": "in",
+          "constraint": "fk_customer_payment_customer",
+          "column": "customer_payment.customer_id",
+          "references": "id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_invoice_customer",
+          "column": "invoice.customer_id",
+          "references": "id"
+        }
+      ]
+    },
+    {
+      "table": "customer_payment",
+      "entity": "CustomerPayment",
+      "columns_read": [
+        "id",
+        "amount"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "customer_id bigint NOT NULL",
+        "paid_on datetime NOT NULL",
+        "amount decimal(19,2) NOT NULL",
+        "method varchar(16) NOT NULL",
+        "reference varchar(64) NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "idx_customer_payment_customer_id",
+          "columns": [
+            "customer_id"
+          ],
+          "unique": false,
+          "cardinality": 35120
+        },
+        {
+          "name": "idx_customer_payment_customer_id_paid_on",
+          "columns": [
+            "customer_id",
+            "paid_on",
+            "id"
+          ],
+          "unique": false,
+          "cardinality": 38836
+        },
+        {
+          "name": "idx_customer_payment_method_paid_on_covering",
+          "columns": [
+            "method",
+            "paid_on",
+            "id",
+            "customer_id",
+            "amount"
+          ],
+          "unique": false,
+          "cardinality": 3
+        },
+        {
+          "name": "idx_customer_payment_paid_on",
+          "columns": [
+            "paid_on"
+          ],
+          "unique": false,
+          "cardinality": 1464665
+        },
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 1492467
+        }
+      ],
+      "approx_rows": 1492467,
+      "foreign_keys": [
+        {
+          "direction": "out",
+          "constraint": "fk_customer_payment_customer",
+          "column": "customer_id",
+          "references": "customer.id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_payment_allocation_payment",
+          "column": "payment_allocation.payment_id",
+          "references": "id"
+        }
+      ]
+    },
+    {
+      "table": "invoice",
+      "entity": "Invoice",
+      "columns_read": [
+        "customer_id",
+        "status",
+        "amount"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "customer_id bigint NULL",
+        "amount decimal(19,2) NULL",
+        "status varchar(255) NULL",
+        "due_date date NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "idx_invoice_customer_id",
+          "columns": [
+            "customer_id"
+          ],
+          "unique": false,
+          "cardinality": 32931
+        },
+        {
+          "name": "idx_invoice_customer_id_status_due_date_id",
+          "columns": [
+            "customer_id",
+            "status",
+            "due_date",
+            "id"
+          ],
+          "unique": false,
+          "cardinality": 35666
+        },
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 1196007
+        }
+      ],
+      "approx_rows": 1196007,
+      "foreign_keys": [
+        {
+          "direction": "out",
+          "constraint": "fk_invoice_customer",
+          "column": "customer_id",
+          "references": "customer.id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_payment_invoice",
+          "column": "payment.invoice_id",
+          "references": "id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_payment_allocation_invoice",
+          "column": "payment_allocation.invoice_id",
+          "references": "id"
+        }
+      ]
+    },
+    {
+      "table": "payment_allocation",
+      "entity": "PaymentAllocation",
+      "columns_read": [
+        "allocated_amount"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "payment_id bigint NOT NULL",
+        "invoice_id bigint NOT NULL",
+        "allocated_amount decimal(19,2) NOT NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "idx_payment_allocation_invoice_id",
+          "columns": [
+            "invoice_id"
+          ],
+          "unique": false,
+          "cardinality": 1016736
+        },
+        {
+          "name": "idx_payment_allocation_payment_id",
+          "columns": [
+            "payment_id"
+          ],
+          "unique": false,
+          "cardinality": 1486455
+        },
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 2060646
+        }
+      ],
+      "approx_rows": 2060646,
+      "foreign_keys": [
+        {
+          "direction": "out",
+          "constraint": "fk_payment_allocation_invoice",
+          "column": "invoice_id",
+          "references": "invoice.id"
+        },
+        {
+          "direction": "out",
+          "constraint": "fk_payment_allocation_payment",
+          "column": "payment_id",
+          "references": "customer_payment.id"
+        }
+      ]
+    }
+  ],
+  "per_row_work": [
+    {
+      "description": "creates a StatementAllocationDto for each recent payment allocation row returned by the query",
+      "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+      "line": 47,
+      "kind": "object_creation",
+      "scales_with": "recent allocations per customer (capped at 20)",
+      "bounded": true,
+      "bound": "page size RECENT_ALLOCATIONS_PAGE_SIZE = 20"
+    }
+  ],
+  "response_shape": {
+    "dto": "StatementDto",
+    "fields_returned": [
+      "customerId",
+      "customerName",
+      "openInvoiceCount",
+      "totalOutstanding",
+      "narrative",
+      "recentAllocations"
+    ],
+    "computed_fields": [],
+    "unbounded_collections": [],
+    "citation": {
+      "file": "src/main/java/com/ex/dto/StatementDto.java",
+      "line": 8,
+      "symbol": "StatementDto"
+    }
+  },
+  "request_shape": {
+    "parameters": [
+      {
+        "name": "id",
+        "location": "path",
+        "type": "integer",
+        "required": true,
+        "default": null,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/StatementController.java",
+          "line": 20,
+          "symbol": "id"
+        }
+      },
+      {
+        "name": "month",
+        "location": "query",
+        "type": "string",
+        "required": false,
+        "default": "2024-06",
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/StatementController.java",
+          "line": 21,
+          "symbol": "month"
+        }
+      }
+    ]
+  },
+  "pagination": {
+    "mechanism": "offset",
+    "fires_count_query": false,
+    "max_page_size": 20,
+    "citation": {
+      "file": "src/main/java/com/ex/service/StatementService.java",
+      "line": 42,
+      "symbol": null
+    }
+  },
+  "caching": [],
+  "hidden_query_triggers": [],
+  "tests_covering": [],
+  "uncertainties": [
+    "AUTOMATED CHECK: id are required request parameters with no recorded default and no allowed_values. Corpus generation cannot invent a value for a required parameter and will refuse by name unless one of those is filled in — check whether the code actually constrains the value (an enum, a @Pattern) that was missed."
+  ],
+  "prompt_hash": "b4cf7ea7df5e8d57",
+  "base_commit": "fee0fa56fd0e35bea716a4642d59269fa31d0b5d"
+}

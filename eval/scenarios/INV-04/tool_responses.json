@@ -1,0 +1,45 @@
+{
+  "diagnose": [
+    {
+      "args": {
+        "iterations": 10,
+        "page_size": 1,
+        "request_id": "dense-id1-statusOPEN-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/customers/1/invoices?status=OPEN&page=0&size=1  (request_id='dense-id1-statusOPEN-p0-s100', page_size=1) iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 5.3 ms\n  p95 latency                  : 8.2 ms\n  result rows in response      : 1\n  response body size (median)  : 115 bytes\n  application SQL per request  : 3.0 statements\n  server-side SQL per request  : 0.3 ms (5.8 % of p50)\n  latency per result row       : 5.3 ms\n  body bytes per result row    : 115",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 10,
+        "request_id": "dense-id1-statusOPEN-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/customers/1/invoices?status=OPEN&page=0&size=100  (request_id='dense-id1-statusOPEN-p0-s100') iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 37.6 ms\n  p95 latency                  : 59.7 ms\n  result rows in response      : 100\n  response body size (median)  : 11547 bytes\n  application SQL per request  : 102.0 statements\n  server-side SQL per request  : 3.3 ms (8.8 % of p50)\n  latency per result row       : 0.4 ms\n  body bytes per result row    : 115",
+      "tool": "run_probe"
+    }
+  ],
+  "plan": [
+    {
+      "args": {
+        "params": [
+          "123",
+          "OPEN"
+        ],
+        "sql": "SELECT i FROM Invoice i WHERE i.customer.id = ?1 AND i.status = ?2 ORDER BY i.dueDate ASC, i.id ASC"
+      },
+      "result": "ERROR: EXPLAIN failed: Not all parameters were used in the SQL statement\nStatement: SELECT i FROM Invoice i WHERE i.customer.id = ?1 AND i.status = ?2 ORDER BY i.dueDate ASC, i.id ASC",
+      "tool": "explain"
+    },
+    {
+      "args": {
+        "params": [
+          "123",
+          "OPEN"
+        ],
+        "sql": "SELECT i FROM Invoice i WHERE i.customer.id = %s AND i.status = %s ORDER BY i.dueDate ASC, i.id ASC"
+      },
+      "result": "ERROR: EXPLAIN failed: 1146 (42S02): Table 'mini.Invoice' doesn't exist\nStatement: SELECT i FROM Invoice i WHERE i.customer.id = %s AND i.status = %s ORDER BY i.dueDate ASC, i.id ASC",
+      "tool": "explain"
+    }
+  ]
+}

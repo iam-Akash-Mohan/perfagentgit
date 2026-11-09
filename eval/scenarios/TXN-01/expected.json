@@ -1,0 +1,17 @@
+{
+  "scenario": "TXN-01",
+  "endpoint": "GET /api/invoices/paid-summary",
+  "measured_total_ms": 9.0,
+  "required_layers": [],
+  "forbidden_layers": ["database_query"],
+  "dominant_layer_any_of": ["serialization", "orm_hydration", "application_logic"],
+  "plan": {
+    "selectable": false,
+    "not_selectable_because_contains": "does not instrument"
+  },
+  "tier2": {
+    "terminal_state_any_of": ["NO_SIGNIFICANT_IMPROVEMENT", "BOTTLENECK_NOT_FIXABLE"],
+    "behaviour_preserved": true
+  },
+  "notes": "PREDICTED, CONFIRMED PROBE FAILURE. The planted bug -- a read path (no writes anywhere in the method) running in the default read-write transaction instead of @Transactional(readOnly = true) -- turned out to have an even more pointed answer than 'unmeasurable': hand-measured directly (size=100, 30 requests each, applied locally then reverted, never shipped), readOnly=true was NOT faster (mean 5.97ms -> 6.43ms) and the reason is mechanical, not noise -- the as-built version issues NO 'SET SESSION TRANSACTION' statement at all (MySQL's default is already READ WRITE), while readOnly=true adds TWO: 'SET SESSION TRANSACTION READ ONLY' at the start AND 'SET SESSION TRANSACTION READ WRITE' at the end (Spring resets the session's transaction mode before the connection returns to the pool). The actual savings @Transactional(readOnly = true) is documented to provide -- skipping Hibernate's dirty-checking pass and the flush it would otherwise attempt -- is a pure in-JVM comparison loop over already-loaded objects; it issues no SQL whether or not anything is dirty, so it has no footprint in performance_schema, rows_examined or sql_count, and at this entity's modest size (4 persistent fields) does not recover the two extra round trips the 'fix' itself adds. This is the plain, honest answer the scenario was built to test for: nothing the database can observe, by construction, not a measurement gap. Two samples, two valid refusal shapes: a fresh re-freeze never selects a candidate at all (dto_projection correctly marked not_selectable for an uninstrumented mechanism=serialization, add_index blocked by schema isolation as always); the live run (TXN-01, $0.076, one run) instead reached for dto_projection specifically (switching full Invoice entities to a narrow projection, which ALSO happens to eliminate entity management and so sidesteps read_only_transaction's own mechanism entirely) and measured it directly: improvement_threshold FAILED (p95 -12.55%, below the 15% floor -- this entity is too narrow to show much savings from avoiding entity management alone) and mechanism_match FAILED (SQL statements 2 -> 2, +0.0%), landing on NO_SIGNIFICANT_IMPROVEMENT. Worth being honest about: neither live sample actually tried read_only_transaction as its own approach -- the service returning full entities (needed so there is something to dirty-check at all) also makes 'skip the entity entirely' a more attractive alternative the model reasonably prefers. The hand-measurement above is the direct test of this scenario's own named mechanism; the live/frozen runs are corroborating evidence that no candidate here clears the bar, not a demonstration that read_only_transaction specifically was tried and refused."
+}

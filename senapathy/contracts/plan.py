@@ -113,6 +113,55 @@ class RankedHypothesis(BaseModel):
     expected_value_ms: float
 
 
+class SqlVerification(BaseModel):
+    """What EXPLAIN ANALYZE said about a candidate's own `sql_before`/
+    `sql_after`, measured at PLAN time, before anything is patched.
+
+    `assessed_by` mirrors `FixabilityAssessment`: this is a measurement, never
+    a model's claim about its own fix. `verified=False` covers two different
+    situations that must not be collapsed into one:
+
+    - `attempted=False` — no live database was reachable at plan time AT ALL.
+      Every candidate in this run is equally unable to be checked, so this is
+      a planning limitation, not something this candidate did wrong; it falls
+      back to the hypothesis-level `expected_value_ms`, same as before this
+      field existed.
+    - `attempted=True` — a database WAS reachable and EXPLAIN ANALYZE was
+      actually run against this candidate's own statements, and it could not
+      complete (a parse error, a parameter mismatch, a reference EXPLAIN
+      rejects). This is NOT the same as `rows_delta_pct` clearing or missing
+      the mechanism-match bar — it means the claim was never checked at all.
+      An instrumented mechanism has not earned selection without evidence, so
+      this disqualifies the candidate (see `sql_verification_failure`) — the
+      unknown is reported as unverifiable, never as disproven.
+    """
+
+    verified: bool
+    attempted: bool = Field(
+        default=True,
+        description="False only when there was no live database connection "
+                    "at all at plan time — a run-wide limitation. True for "
+                    "every other case, including when the statement itself "
+                    "could not be run; defaults True so historical records "
+                    "(all of which came from a reachable database) read "
+                    "correctly without being rewritten.")
+    rows_examined_before: int = 0
+    rows_examined_after: int = 0
+    rows_delta_pct: float = 0.0
+    actual_ms_before: float = 0.0
+    actual_ms_after: float = 0.0
+    scored: bool = Field(
+        default=False,
+        description="True only when this measurement was actually used to "
+                    "set expected_value_ms — currently just the "
+                    "rows_examined mechanism, and only once verified=True. A "
+                    "sql_count candidate is still verified and reported "
+                    "here, but a single EXPLAIN ANALYZE of one call does not "
+                    "capture a call-COUNT fix, so it is not used to score.")
+    note: str = ""
+    assessed_by: Literal["code"] = "code"
+
+
 class CandidateFix(BaseModel):
     """One proposed fix. The model's plan, with code's risk assessment on it."""
 
@@ -130,7 +179,39 @@ class CandidateFix(BaseModel):
     mechanism_changed: str          # "SQL statements per request"
     predicted_effect: str           # "queries per request drop from 6 to 2"
     files_to_touch: list[str]       # becomes the patch agent's write allowlist
-    sql_change: str | None = None   # the index or rewritten query, if any
+    sql_change: str | None = None   # the additive CREATE INDEX, if any — NOT
+                                    # a rewritten query; see sql_before/sql_after
+    sql_before: str | None = Field(
+        default=None,
+        description="The query that runs TODAY, in runnable form with %s "
+                    "placeholders — required alongside sql_after for any "
+                    "SQL-rewrite approach whose mechanism is instrumented, so "
+                    "EXPLAIN ANALYZE has a baseline to compare against.")
+    sql_after: str | None = Field(
+        default=None,
+        description="The query this candidate replaces it with. Same "
+                    "placeholder convention as sql_before and the explain "
+                    "tool. This is checked with EXPLAIN ANALYZE before the "
+                    "candidate can be selected — a claim about rows examined "
+                    "is a measurement here, not a prediction left for the "
+                    "gate to discover after a patch, a verify and a "
+                    "measurement have already been paid for.")
+    sql_params: list[str] = Field(
+        default_factory=list,
+        description="Values for the %s placeholders shared by sql_before "
+                    "and sql_after, in order — same binding convention as "
+                    "the explain tool.")
+    baseline_digest: str | None = Field(
+        default=None,
+        description="The digest hash, from the brief's baseline evidence, "
+                    "of the statement a 'sql_count' candidate claims to "
+                    "reduce the call count of. Checked against that same "
+                    "evidence, not trusted — see "
+                    "submit.py::_baseline_citation_failure.")
+    baseline_calls: int | None = Field(
+        default=None,
+        description="The call count this candidate claims that baseline "
+                    "digest runs today, copied from the same evidence.")
     what_could_break: list[str]
     preserves_response_bytes: bool  # the model's claim; verified by the oracle
 
@@ -138,6 +219,14 @@ class CandidateFix(BaseModel):
     risk_tier: RiskTier
     requires_flag: bool = False
     expected_value_ms: float = 0.0
+    sql_verification: SqlVerification | None = Field(
+        default=None,
+        description="Set at PLAN time by running EXPLAIN ANALYZE on "
+                    "sql_before/sql_after and comparing. None for a candidate "
+                    "with no SQL to verify — a Java-side call-structure "
+                    "change like remove_redundant_call or "
+                    "move_work_out_of_loop keeps hypothesis-level scoring. "
+                    "Never set by the model.")
     not_selectable_because: str | None = Field(
         default=None,
         description="Set at PLAN time when this candidate changes the schema "

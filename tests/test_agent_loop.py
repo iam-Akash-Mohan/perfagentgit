@@ -405,6 +405,82 @@ def test_a_provider_rejected_tool_call_is_corrected_not_fatal() -> None:
                for m in second)
 
 
+def test_a_cassette_miss_with_a_recorded_correction_is_corrected_not_fatal() -> None:
+    """STM-01: the LIVE recording hit exactly the shape above (a provider-
+    rejected malformed tool call), and the self-correction message run_agent
+    appended became a permanent part of that conversation's history. Offline
+    REPLAY of that same recording never triggers a live rejection -- it is
+    fed a cached good response -- so without this, its own reconstructed
+    request is one message short of the one that was actually recorded next,
+    forever after. `Cassette.recover_self_correction` reads that correction
+    text back from the cassette; `_correction_for` must hand it straight to
+    the SAME retry path this suite already proves handles a live rejection,
+    not treat it as some new, separate kind of event."""
+    from senapathy.llm.base import CassetteMiss
+
+    class ReplayedWithGap:
+        """Simulates an offline cassette client whose first lookup always
+        misses (the reconstructed conversation is missing the correction),
+        carrying the correction text `Cassette.recover_self_correction`
+        would have found, then succeeds once asked again."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.seen: list[list[dict]] = []
+
+        def complete(self, **kwargs):
+            self.calls += 1
+            self.seen.append(list(kwargs["messages"]))
+            if self.calls == 1:
+                raise CassetteMiss(
+                    "offline=True and no cassette matches request ...",
+                    recorded_correction="schema error: missing properties: 'pattern'",
+                )
+            return LLMResponse(
+                content=[{"type": "tool_use", "id": "t1", "name": "finish",
+                          "input": {"ok": True}}],
+                stop_reason="tool_use", usage=Usage(), latency_ms=0.0,
+                raw_message={"role": "assistant", "tool_calls": [{"id": "t1"}]})
+
+        def tool_result_messages(self, results):
+            return [{"role": "tool", "tool_call_id": r.id, "content": r.content}
+                    for r in results]
+
+    client = ReplayedWithGap()
+    outcome = run_agent(
+        client=client, task="go",
+        tools=[{"name": "finish", "description": "d",
+                "parameters": {"type": "object", "properties": {}}}],
+        handlers={"finish": lambda ok: "done"},
+        terminal_tool="finish", budget=LoopBudget(max_steps=5))
+
+    assert outcome.status is LoopStatus.COMPLETED
+    assert client.calls == 2, "it asked again instead of raising CassetteMiss"
+    second = client.seen[1]
+    assert any("missing properties: 'pattern'" in str(m.get("content"))
+               for m in second)
+
+
+def test_a_cassette_miss_with_no_recorded_correction_still_ends_the_loop() -> None:
+    """The ambiguous or genuinely-stale case: recover_self_correction found
+    none or more than one candidate and returned None. This must fail exactly
+    like any other uncorrectable error, not loop forever guessing."""
+    from senapathy.llm.base import CassetteMiss
+
+    class ReplayedWithNoRecovery:
+        calls = 0
+
+        def complete(self, **kwargs):
+            type(self).calls += 1
+            raise CassetteMiss("no cassette matches and no recovery found")
+
+    outcome = run_agent(client=ReplayedWithNoRecovery(), task="go", tools=[],
+                        handlers={}, budget=LoopBudget(max_steps=5))
+    assert outcome.status is LoopStatus.ERROR
+    assert ReplayedWithNoRecovery.calls == 1, "no retry on an unrecoverable miss"
+    assert "CassetteMiss" in outcome.stopped_because
+
+
 def test_an_error_the_model_cannot_fix_still_ends_the_loop() -> None:
     """A 401 is not corrected by saying something different, and retrying it
     would spend the budget discovering that repeatedly."""

@@ -1,0 +1,150 @@
+{
+  "endpoint": "GET /api/invoices/overdue-worklist",
+  "measured_total_ms": 30.944,
+  "ranked": [
+    {
+      "hypothesis_id": "h1",
+      "claim": "ORM hydration of each Invoice (and its lazy-loaded FeeSchedule) consumes the bulk of per‑row latency",
+      "layer": "orm_hydration",
+      "attributed_ms": 20.0,
+      "fixability": {
+        "hypothesis_id": "h1",
+        "fixability": 0.9,
+        "reason": "batchable: fetch join, @EntityGraph, or an IN query (feeScheduleRepo.findByActiveTrue executes once per result row, src/main/java/com/ex/service/OverdueWorklistService.java:38)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 18.0
+    },
+    {
+      "hypothesis_id": "h2",
+      "claim": "JSON serialization of the result list dominates the remaining per‑row cost",
+      "layer": "serialization",
+      "attributed_ms": 10.0,
+      "fixability": {
+        "hypothesis_id": "h2",
+        "fixability": 0.3,
+        "reason": "library-level, rarely beatable by hand (no unbounded response collection is implicated)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 3.0
+    },
+    {
+      "hypothesis_id": "h3",
+      "claim": "Per‑row application logic (late‑fee calculation) adds measurable overhead beyond ORM and serialization",
+      "layer": "application_logic",
+      "attributed_ms": 7.0,
+      "fixability": {
+        "hypothesis_id": "h3",
+        "fixability": 0.4,
+        "reason": "UNCLASSIFIED: no policy row matched this hypothesis, so 0.40 is a placeholder rather than an assessment",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": false
+      },
+      "expected_value_ms": 2.8
+    }
+  ],
+  "considered": [
+    "h1",
+    "h2"
+  ],
+  "candidates": [
+    {
+      "id": "c2",
+      "targets_hypothesis": "h1",
+      "approach": "dto_projection",
+      "description": "Rewrite the overdue query to join the active FeeSchedule and compute lateFee in the SELECT, returning OverdueInvoiceDto directly, removing the per‑row loop and the extra FeeSchedule query.",
+      "mechanism": "sql_count",
+      "mechanism_changed": "SQL statements per request",
+      "predicted_effect": "SQL statements per request drop from ~101 (1 invoice query + ~100 feeSchedule queries) to 2 (single join query and no per‑row calls)",
+      "files_to_touch": [
+        "src/main/java/com/ex/repo/InvoiceRepository.java",
+        "src/main/java/com/ex/service/OverdueWorklistService.java",
+        "src/main/java/com/ex/web/OverdueWorklistController.java"
+      ],
+      "sql_change": null,
+      "sql_before": "SELECT i.id, c.name, i.amount, i.due_date FROM invoice i JOIN customer c ON c.id = i.customer_id WHERE i.status = %s ORDER BY i.due_date ASC, i.id ASC LIMIT %s, %s",
+      "sql_after": "SELECT i.id, c.name, i.amount, i.due_date, i.amount * (fs.rate_percentage/100) AS late_fee FROM invoice i JOIN customer c ON c.id = i.customer_id JOIN fee_schedule fs ON fs.active = true WHERE i.status = %s ORDER BY i.due_date ASC, i.id ASC LIMIT %s, %s",
+      "sql_params": [
+        "OVERDUE",
+        "%offset%",
+        "%limit%"
+      ],
+      "baseline_digest": "cd14e786d4269521e99e15ea7961af54afe26d734674513cf74ae38574348200",
+      "baseline_calls": 10000,
+      "what_could_break": [
+        "If more than one FeeSchedule row has active = true the join could duplicate invoice rows; the business rule assumes exactly one active schedule.",
+        "The JPQL constructor expression must match the OverdueInvoiceDto constructor signature; mismatches cause runtime errors.",
+        "Changing the query may affect the execution plan; however the fee_schedule table is tiny (3 rows) so the join cost is negligible."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 1,
+      "requires_flag": false,
+      "expected_value_ms": 18.0,
+      "sql_verification": {
+        "verified": false,
+        "attempted": true,
+        "rows_examined_before": 0,
+        "rows_examined_after": 0,
+        "rows_delta_pct": 0.0,
+        "actual_ms_before": 0.0,
+        "actual_ms_after": 0.0,
+        "scored": false,
+        "note": "EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: 1064 (42000): You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ''%offset%', '%limit%'' at line 1\nStatement: SELECT i.id, c.name, i.amount, i.due_date FROM invoice i JOIN customer c ON c.id = i.customer_id WHERE i.status = %s ORDER BY i.due_date ASC, i.id ASC LIMIT %s, %s  /  SELECT i.id, c.name, i.amount, i.due_date, i.amount * (fs.rate_percentage/100) AS late_fee FROM invoice i JOIN customer c ON c.id = ",
+        "assessed_by": "code"
+      },
+      "not_selectable_because": "EXPLAIN ANALYZE could not verify this candidate's own sql_before/sql_after before a patch exists (EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: 1064 (42000): You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ''%offset%', '%limit%'' at line 1\nStatement: SELECT i.id, c.name, i.amount, i.due_date FROM invoice i JOIN customer c ON c.id = i.customer_id WHERE i.status = %s ORDER BY i.due_date ASC, i.id ASC LIMIT %s, %s  /  SELECT i.id, c.name, i.amount, i.due_date, i.amount * (fs.rate_percentage/100) AS late_fee FROM invoice i JOIN customer c ON c.id = ). An instrumented mechanism has not earned selection without evidence — this is unverifiable, not disproven, but it still disqualifies until it can be checked.",
+      "scope_reasons": {
+        "src/main/java/com/ex/web/OverdueWorklistController.java": "on this endpoint's own traced call path to src/main/java/com/ex/repo/InvoiceRepository.java, which this candidate already touches — included so a change to src/main/java/com/ex/repo/InvoiceRepository.java has its caller in scope"
+      }
+    },
+    {
+      "id": "c1",
+      "targets_hypothesis": "h1",
+      "approach": "remove_redundant_call",
+      "description": "Fetch the active FeeSchedule once before the loop and reuse it for all rows, eliminating the per‑row feeScheduleRepo.findByActiveTrue() call.",
+      "mechanism": "sql_count",
+      "mechanism_changed": "SQL statements per request",
+      "predicted_effect": "SQL statements per request drop from ~101 (1 invoice query + ~100 feeSchedule queries) to 2 (invoice query + single feeSchedule query)",
+      "files_to_touch": [
+        "src/main/java/com/ex/service/OverdueWorklistService.java",
+        "src/main/java/com/ex/web/OverdueWorklistController.java"
+      ],
+      "sql_change": null,
+      "sql_before": null,
+      "sql_after": null,
+      "sql_params": [],
+      "baseline_digest": "cd14e786d4269521e99e15ea7961af54afe26d734674513cf74ae38574348200",
+      "baseline_calls": 10000,
+      "what_could_break": [
+        "If the active fee schedule changes during the request the late fee would be computed with a stale rate; the schedule is expected to be static for the duration of the request.",
+        "If feeScheduleRepo.findByActiveTrue() returns empty, the same IllegalStateException is still thrown."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 2,
+      "requires_flag": false,
+      "expected_value_ms": 18.0,
+      "sql_verification": null,
+      "not_selectable_because": null,
+      "scope_reasons": {
+        "src/main/java/com/ex/web/OverdueWorklistController.java": "on this endpoint's own traced call path to src/main/java/com/ex/service/OverdueWorklistService.java, which this candidate already touches — included so a change to src/main/java/com/ex/service/OverdueWorklistService.java has its caller in scope"
+      }
+    }
+  ],
+  "selected_id": "c1",
+  "selection_reason": "highest expected value (18.0 ms) among candidates at risk tier T2 or below that preserve the response bytes; approach remove_redundant_call, tier T2",
+  "not_selected": [
+    {
+      "candidate_id": "c2",
+      "reason": "EXPLAIN ANALYZE could not verify this candidate's own sql_before/sql_after before a patch exists (EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: 1064 (42000): You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ''%offset%', '%limit%'' at line 1\nStatement: SELECT i.id, c.name, i.amount, i.due_date FROM invoice i JOIN customer c ON c.id = i.customer_id WHERE i.status = %s ORDER BY i.due_date ASC, i.id ASC LIMIT %s, %s  /  SELECT i.id, c.name, i.amount, i.due_date, i.amount * (fs.rate_percentage/100) AS late_fee FROM invoice i JOIN customer c ON c.id = ). An instrumented mechanism has not earned selection without evidence — this is unverifiable, not disproven, but it still disqualifies until it can be checked."
+    }
+  ],
+  "prompt_hash": "5f311954ae548093",
+  "base_commit": "6bd44ce97c30f0c96bda54772044e0e597c2229a",
+  "decided_by": "code",
+  "baseline_hash": "e7369cc5551a5ddf"
+}

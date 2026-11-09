@@ -27,6 +27,7 @@ from typing import Any, Callable, Iterable
 
 from .contracts import LLMResponse, ToolCallResult, Usage
 from .errors import GuardrailError, ToolError
+from .llm.base import CassetteMiss
 from .trace import EventType, Trace
 
 # Three identical dispatches in a row is a loop, not deliberation. Two is a
@@ -398,6 +399,12 @@ def _correction_for(
 ) -> str | None:
     """Ask the client whether this failure is the model's to fix.
 
+    A `CassetteMiss` carrying its own `recorded_correction` is answered
+    FIRST, before anything provider-specific: offline replay hit exactly
+    this situation — see `Cassette.recover_self_correction`'s docstring —
+    and the text to continue with was already read back verbatim from a
+    later cassette file, not produced by any client hook.
+
     `tool_names` is this phase's registry, so a hallucinated tool name can
     be named as such rather than described as a schema mismatch it never
     made. Passed as a keyword and with a fallback to the old one-argument
@@ -405,6 +412,9 @@ def _correction_for(
     existed) that defines `correction_for(self, error)` must keep working
     unmodified.
     """
+    if isinstance(error, CassetteMiss):
+        return error.recorded_correction
+
     hook = getattr(client, "correction_for", None)
     if not callable(hook):
         return None

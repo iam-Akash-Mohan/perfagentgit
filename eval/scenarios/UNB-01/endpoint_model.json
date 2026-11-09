@@ -1,0 +1,408 @@
+{
+  "route": "GET /api/invoices/{id}/payment-history",
+  "entry": {
+    "file": "src/main/java/com/ex/web/InvoicePaymentHistoryController.java",
+    "line": 16,
+    "symbol": "InvoicePaymentHistoryController.paymentHistory"
+  },
+  "path": [
+    {
+      "file": "src/main/java/com/ex/web/InvoicePaymentHistoryController.java",
+      "line": 16,
+      "symbol": "InvoicePaymentHistoryController.paymentHistory"
+    },
+    {
+      "file": "src/main/java/com/ex/service/InvoicePaymentHistoryService.java",
+      "line": 23,
+      "symbol": "InvoicePaymentHistoryService.history"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+      "line": 36,
+      "symbol": "PaymentAllocationRepository.findInvoiceWithAllocations"
+    }
+  ],
+  "call_chain": [
+    {
+      "method": "InvoicePaymentHistoryController.paymentHistory",
+      "file": "src/main/java/com/ex/web/InvoicePaymentHistoryController.java",
+      "line": 16,
+      "does": "handle GET request and delegate to service"
+    },
+    {
+      "method": "InvoicePaymentHistoryService.history",
+      "file": "src/main/java/com/ex/service/InvoicePaymentHistoryService.java",
+      "line": 23,
+      "does": "fetch all invoice header fields and its allocations in a single query, then compute running balance and build DTO"
+    },
+    {
+      "method": "PaymentAllocationRepository.findInvoiceWithAllocations",
+      "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+      "line": 36,
+      "does": "execute JPQL query that left‑joins Invoice, PaymentAllocation and CustomerPayment to retrieve invoice header and allocation rows"
+    }
+  ],
+  "data_access": [
+    {
+      "trigger": "allocationRepo.findInvoiceWithAllocations",
+      "kind": "jpql_query",
+      "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+      "line": 29,
+      "sql": "select i.amount, i.status, pa.id, p.paid_on, pa.allocated_amount, p.method from invoice i left join payment_allocation pa on pa.invoice_id = i.id left join customer_payment p on p.id = pa.payment_id where i.id = ? order by p.paid_on asc, p.id asc, pa.id asc",
+      "tables": [
+        "invoice",
+        "payment_allocation",
+        "customer_payment"
+      ],
+      "executes_per_row": false,
+      "note": "select new com.ex.dto.InvoiceAllocationRowDto(i.amount, i.status, pa.id, p.paidOn, pa.allocatedAmount, p.method) from Invoice i left join PaymentAllocation pa on pa.invoiceId = i.id left join CustomerPayment p on p.id = pa.paymentId where i.id = :invoiceId order by p.paidOn asc, p.id asc, pa.id asc"
+    }
+  ],
+  "sql_sources": [
+    {
+      "method": "allocationRepo.findInvoiceWithAllocations",
+      "kind": "@Query JPQL",
+      "tables": [
+        "invoice",
+        "payment_allocation",
+        "customer_payment"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+        "line": 29,
+        "symbol": null
+      }
+    }
+  ],
+  "entities": [
+    {
+      "name": "Invoice",
+      "table": "invoice",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/Invoice.java",
+        "line": 7,
+        "symbol": "Invoice"
+      },
+      "relations": [
+        {
+          "field": "customer",
+          "type": "ManyToOne",
+          "fetch": "LAZY",
+          "target": "Customer",
+          "batch_size": null,
+          "fetch_mode": null
+        }
+      ]
+    },
+    {
+      "name": "PaymentAllocation",
+      "table": "payment_allocation",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/PaymentAllocation.java",
+        "line": 11,
+        "symbol": "PaymentAllocation"
+      },
+      "relations": []
+    },
+    {
+      "name": "CustomerPayment",
+      "table": "customer_payment",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/CustomerPayment.java",
+        "line": 10,
+        "symbol": "CustomerPayment"
+      },
+      "relations": []
+    }
+  ],
+  "transactions": [
+    {
+      "method": "InvoicePaymentHistoryService.history",
+      "propagation": "REQUIRED",
+      "read_only": true,
+      "citation": {
+        "file": "src/main/java/com/ex/service/InvoicePaymentHistoryService.java",
+        "line": 22,
+        "symbol": "history"
+      }
+    }
+  ],
+  "external_calls": [],
+  "tables": [
+    {
+      "table": "invoice",
+      "entity": "Invoice",
+      "columns_read": [
+        "amount",
+        "status",
+        "id",
+        "allocated_amount",
+        "paid_on",
+        "method"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "customer_id bigint NULL",
+        "amount decimal(19,2) NULL",
+        "status varchar(255) NULL",
+        "due_date date NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "idx_invoice_customer_id",
+          "columns": [
+            "customer_id"
+          ],
+          "unique": false,
+          "cardinality": 32931
+        },
+        {
+          "name": "idx_invoice_customer_id_status_due_date_id",
+          "columns": [
+            "customer_id",
+            "status",
+            "due_date",
+            "id"
+          ],
+          "unique": false,
+          "cardinality": 35666
+        },
+        {
+          "name": "idx_invoice_status_due_date_id",
+          "columns": [
+            "status",
+            "due_date",
+            "id"
+          ],
+          "unique": false,
+          "cardinality": 2
+        },
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 1196007
+        }
+      ],
+      "approx_rows": 1196007,
+      "foreign_keys": [
+        {
+          "direction": "out",
+          "constraint": "fk_invoice_customer",
+          "column": "customer_id",
+          "references": "customer.id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_payment_invoice",
+          "column": "payment.invoice_id",
+          "references": "id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_payment_allocation_invoice",
+          "column": "payment_allocation.invoice_id",
+          "references": "id"
+        }
+      ]
+    },
+    {
+      "table": "payment_allocation",
+      "entity": "PaymentAllocation",
+      "columns_read": [
+        "id",
+        "allocated_amount"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "payment_id bigint NOT NULL",
+        "invoice_id bigint NOT NULL",
+        "allocated_amount decimal(19,2) NOT NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "idx_payment_allocation_invoice_id",
+          "columns": [
+            "invoice_id"
+          ],
+          "unique": false,
+          "cardinality": 1016736
+        },
+        {
+          "name": "idx_payment_allocation_payment_id",
+          "columns": [
+            "payment_id"
+          ],
+          "unique": false,
+          "cardinality": 1486455
+        },
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 2060646
+        }
+      ],
+      "approx_rows": 2060646,
+      "foreign_keys": [
+        {
+          "direction": "out",
+          "constraint": "fk_payment_allocation_invoice",
+          "column": "invoice_id",
+          "references": "invoice.id"
+        },
+        {
+          "direction": "out",
+          "constraint": "fk_payment_allocation_payment",
+          "column": "payment_id",
+          "references": "customer_payment.id"
+        }
+      ]
+    },
+    {
+      "table": "customer_payment",
+      "entity": "CustomerPayment",
+      "columns_read": [
+        "paid_on",
+        "method"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "customer_id bigint NOT NULL",
+        "paid_on datetime NOT NULL",
+        "amount decimal(19,2) NOT NULL",
+        "method varchar(16) NOT NULL",
+        "reference varchar(64) NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "idx_customer_payment_customer_id",
+          "columns": [
+            "customer_id"
+          ],
+          "unique": false,
+          "cardinality": 35120
+        },
+        {
+          "name": "idx_customer_payment_customer_id_paid_on",
+          "columns": [
+            "customer_id",
+            "paid_on",
+            "id"
+          ],
+          "unique": false,
+          "cardinality": 38836
+        },
+        {
+          "name": "idx_customer_payment_method_paid_on_covering",
+          "columns": [
+            "method",
+            "paid_on",
+            "id",
+            "customer_id",
+            "amount"
+          ],
+          "unique": false,
+          "cardinality": 3
+        },
+        {
+          "name": "idx_customer_payment_paid_on",
+          "columns": [
+            "paid_on"
+          ],
+          "unique": false,
+          "cardinality": 1464665
+        },
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 1492467
+        }
+      ],
+      "approx_rows": 1492467,
+      "foreign_keys": [
+        {
+          "direction": "out",
+          "constraint": "fk_customer_payment_customer",
+          "column": "customer_id",
+          "references": "customer.id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_payment_allocation_payment",
+          "column": "payment_allocation.payment_id",
+          "references": "id"
+        }
+      ]
+    }
+  ],
+  "per_row_work": [
+    {
+      "description": "computes running remaining balance and creates a PaymentHistoryLineDto for each allocation row",
+      "file": "src/main/java/com/ex/service/InvoicePaymentHistoryService.java",
+      "line": 37,
+      "kind": "object_creation",
+      "scales_with": "allocations per invoice",
+      "bounded": false,
+      "bound": null
+    }
+  ],
+  "response_shape": {
+    "dto": "InvoicePaymentHistoryDto",
+    "fields_returned": [
+      "invoiceId",
+      "invoiceAmount",
+      "status",
+      "allocations"
+    ],
+    "computed_fields": [],
+    "unbounded_collections": [
+      "allocations"
+    ],
+    "citation": {
+      "file": "src/main/java/com/ex/dto/InvoicePaymentHistoryDto.java",
+      "line": 10,
+      "symbol": "InvoicePaymentHistoryDto"
+    }
+  },
+  "request_shape": {
+    "parameters": [
+      {
+        "name": "id",
+        "location": "path",
+        "type": "integer",
+        "required": true,
+        "default": null,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/InvoicePaymentHistoryController.java",
+          "line": 16,
+          "symbol": null
+        }
+      }
+    ]
+  },
+  "pagination": {
+    "mechanism": "none",
+    "fires_count_query": false,
+    "max_page_size": null,
+    "citation": null
+  },
+  "caching": [],
+  "hidden_query_triggers": [],
+  "tests_covering": [
+    "src/test/java/com/ex/InvoicePaymentHistoryIT.java"
+  ],
+  "uncertainties": [
+    "AUTOMATED CHECK: id are required request parameters with no recorded default and no allowed_values. Corpus generation cannot invent a value for a required parameter and will refuse by name unless one of those is filled in — check whether the code actually constrains the value (an enum, a @Pattern) that was missed."
+  ],
+  "prompt_hash": "b4cf7ea7df5e8d57",
+  "base_commit": "feb56fa89ee38f1426cbe87c5f61a5185b05f78a"
+}

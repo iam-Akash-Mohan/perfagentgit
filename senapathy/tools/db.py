@@ -109,6 +109,30 @@ def require_select(sql: str, *, what: str) -> str:
     return sql.strip().rstrip(";")
 
 
+_INTEGER_PARAM = re.compile(r"^-?\d+$")
+
+
+def bind_params(params: Sequence[str] | None) -> tuple[Any, ...]:
+    """Params the way MySQL's own grammar needs them, not the way the tool
+    schema types them.
+
+    Every placeholder value arrives as a `str` -- `EXPLAIN_PARAMETERS` and
+    `INDEX_BENEFIT_PARAMETERS` type `params` as `array of string`, because
+    that is the only shape the model can supply. Handed straight to the
+    connector, a Python `str` is rendered as a QUOTED literal regardless of
+    where it lands -- correct for a WHERE-clause comparison ('ACH',
+    '2023-06-01'), a syntax error for LIMIT/OFFSET, which MySQL's grammar
+    accepts only as a bare integer, never a quoted one ("You have an error
+    in your SQL syntax ... near ''50' OFFSET '0''" is this bug, not a
+    malformed statement). A parameter that is purely digits is unambiguous
+    in every query shape this tool sees; converting just those to `int`
+    leaves every genuine string comparison exactly as quoted as before.
+    """
+    if not params:
+        return ()
+    return tuple(int(p) if _INTEGER_PARAM.match(p) else p for p in params)
+
+
 def covering_index(indexes: Sequence[IndexInfo],
                    columns: Sequence[str]) -> str | None:
     """The existing index that already covers `columns` as a PREFIX, if any.
@@ -279,7 +303,7 @@ class DbToolbox:
         actual time but not the access type per table, and classic EXPLAIN
         carries the access type but only an optimizer ESTIMATE of rows.
         """
-        arguments = tuple(params or ())
+        arguments = bind_params(params)
 
         reading = PlanReading(tree="")
         cursor.execute(f"EXPLAIN {sql}", arguments)
@@ -370,6 +394,34 @@ class DbToolbox:
             f"  actual time   {reading.actual_ms:,.1f} ms",
             f"  index used    {'yes' if reading.any_index_used else 'NO'}",
         ])
+
+    # ── verify a candidate's own before/after claim, read-only ───────────
+
+    def plan_delta(self, sql_before: str, sql_after: str,
+                   params: list[str] | None = None) -> tuple[PlanReading, PlanReading]:
+        """EXPLAIN ANALYZE both statements on one connection. Nothing created,
+        nothing dropped — unlike `index_benefit`, there is no index here to
+        leave behind, so the only safety properties that apply are the ones
+        `explain` already has: SELECT-only, and the session timeout set in
+        `_cursor`.
+
+        Called from the plan phase's candidate validation (`plan/submit.py`),
+        not exposed to the model as a tool — this is code independently
+        checking a candidate's claim about its own `sql_after`, not the agent
+        exploring.
+        """
+        before_sql = require_select(sql_before, what="plan_delta (sql_before)")
+        after_sql = require_select(sql_after, what="plan_delta (sql_after)")
+        with connect(self.target) as conn:
+            cursor = self._cursor(conn)
+            try:
+                before = self._read_plan(cursor, before_sql, params)
+                after = self._read_plan(cursor, after_sql, params)
+            except Exception as exc:  # noqa: BLE001 — the caller must read this
+                raise _explain_error(exc, f"{before_sql}  /  {after_sql}") from exc
+            finally:
+                cursor.close()
+        return before, after
 
     # ── 2. list_indexes ──────────────────────────────────────────────────
 
@@ -696,7 +748,7 @@ def _explain_error(exc: Exception, statement: str) -> ToolError:
 def _run(cursor: Any, sql: str,
          params: Sequence[str] | None) -> tuple[list[tuple[Any, ...]], float]:
     started = time.perf_counter()
-    cursor.execute(sql, tuple(params or ()))
+    cursor.execute(sql, bind_params(params))
     rows = [tuple(row) for row in cursor.fetchall()]
     return rows, (time.perf_counter() - started) * 1000.0
 

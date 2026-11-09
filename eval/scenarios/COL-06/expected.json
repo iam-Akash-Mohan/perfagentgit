@@ -1,0 +1,19 @@
+{
+  "scenario": "COL-06",
+  "endpoint": "GET /api/reports/collections",
+  "measured_total_ms": 268.678,
+  "required_layers": ["database_query"],
+  "forbidden_layers": [],
+  "dominant_layer_any_of": ["database_query"],
+  "plan": {
+    "selectable": true,
+    "mechanism_any_of": ["rows_examined"],
+    "min_rows_examined_improvement_pct": 15.0,
+    "approach_context": ["fetch_join", "query_rewrite", "add_index", "dto_projection"]
+  },
+  "tier2": {
+    "terminal_state_any_of": ["PR_OPENED"],
+    "behaviour_preserved": true
+  },
+  "notes": "A non-sargable FUNCTION('DATE', p.paidOn) predicate forces a full scan of customer_payment (database_query, ~257 of 268.7 ms). This is the scenario the mechanism-classifier bug (COL-06, this project's own) broke: a candidate stating mechanism_changed='rows examined' was classified sql_count because its description also mentioned a query, so the gate checked query count instead of rows examined and failed a patch that actually worked -- `mechanism` is now a typed field, not reclassified from text, so this specific bug cannot recur, but the scenario still exists to catch any future drift in whether rows_examined is what actually gets checked. The real shipped fix (PR_OPENED) measured p95 -35.44% and rows_examined 3,152,506 -> 276,496 (-91.2%); min_rows_examined_improvement_pct is set well below that (15%, the same floor the live gate itself uses) so the assertion has headroom but still fails loudly if the fix stops moving rows_examined at all. approach_context is NOT a pass condition -- re-freezing this scenario across the plan-phase sql_before/sql_after contract change (see TESTING-PLAN.md) drew fetch_join, then dto_projection (verified by hand to also remove the FUNCTION('DATE', ...) wrapper), then query_rewrite again; all are legitimate ways to make the predicate sargable, and asserting one specific approach meant re-widening this list on every re-sample instead of testing the thing the scenario is actually about."
+}

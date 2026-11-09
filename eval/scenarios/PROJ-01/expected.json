@@ -1,0 +1,18 @@
+{
+  "scenario": "PROJ-01",
+  "endpoint": "GET /api/customers/directory",
+  "measured_total_ms": 19.0,
+  "required_layers": [],
+  "forbidden_layers": ["database_query"],
+  "dominant_layer_any_of": ["orm_hydration", "serialization", "application_logic"],
+  "plan": {
+    "selectable": true,
+    "mechanism_any_of": ["sql_count", "rows_examined"],
+    "approach_context": ["dto_projection", "entity_graph", "add_index"]
+  },
+  "tier2": {
+    "terminal_state_any_of": ["BOTTLENECK_NOT_FIXABLE"],
+    "behaviour_preserved": true
+  },
+  "notes": "PREDICTED, CONFIRMED PROBE FAILURE -- do not treat a future PASS here as progress without re-reading this note. customer_profile carries wide, unused TEXT/MEDIUMTEXT columns (bio, internal_notes, raw_import_payload, ~8KB/row); the planted bug fetches the full entity for a directory listing that uses three narrow fields. SELECT * and SELECT id,name,joined_on examine the SAME rows and issue the SAME one statement per request, so NEITHER instrumented mechanism (sql_count, rows_examined) can move, by construction -- confirmed, not assumed: hand-measured mean latency 8.48ms -> 4.38ms (-48.3%) with sql_count 1->1 and rows_examined 50->50 unchanged both ways. The live run (PROJ-01, $0.050, one run) selected dto_projection claiming mechanism=rows_examined; the real gate measured improvement_threshold PASS (p95 27.7ms -> 11.5ms, -58.42%, a real win) and mechanism_match FAIL (rows examined 400 -> 400, +0.0%), landing on BOTTLENECK_NOT_FIXABLE -- a correct, precise refusal: real speedup, unprovable by this harness's two instrumented quantities, so not shipped. rows_sent also does not move (50/request either way) -- it is a ROW COUNT, not a byte count, so it is exactly as blind to over-fetched COLUMN WIDTH as sql_count/rows_examined are. The missing quantity is bytes transferred on the MySQL-to-application wire (or equivalently rows_sent x average row width AT THE JDBC RESULT-SET LEVEL) -- NOT HTTP response body size, which is identical either way (3855 bytes) since the DTO never leaks the wide columns; a naive 'measure the response' instinct would wrongly conclude there is nothing to find here. Re-freezing this scenario drew mechanism=sql_count on one sample (unscored, same family as INV-04/LOOP-01, not independently verified by EXPLAIN either way) -- mechanism_any_of covers both observed claims; neither is independently checked by Tier 1 since dto_projection's EXPLAIN verification keeps hitting the same LIMIT/OFFSET string-param binding quirk already on record for COL-06. Not fixed, per instruction: no new quantity was instrumented, mechanism_match was not adjusted, and the gate was not weakened. This is the finding, not a bug."
+}

@@ -149,14 +149,25 @@ def provision(
     java_home: str | None = None,
     require_database: bool = True,
     run_migrations: bool = True,
+    run_id: str | None = None,
+    blue_dir: str | Path | None = None,
 ) -> Provisioning:
-    """Ports, database, migrations. Does NOT build or boot the arms.
+    """Ports, database, migrations, and blue's own worktree. Does not
+    build or boot either arm.
 
-    Building is left to the phases that need a running arm, because they
-    already know how (`measure.arms.single_arm` / `both_arms`) and doing it
-    twice would double the slowest step in the pipeline. What this phase
-    guarantees is that when those phases run, the ports are free, the
-    database answers and the schema is current.
+    Building and booting are left to the phases that need a running arm
+    (`measure.arms.single_arm` / `both_arms`), because they already know
+    how and doing it twice would double the slowest step in the pipeline.
+    But resolving blue's WORKTREE — cheap, git-only, no compile and no JVM
+    — belongs here: four runs (COL-01, PAY-01, PAY-02) failed deep into
+    the pipeline, after understand had already spent real tokens, because
+    a blue left over from an earlier run was pinned at a commit the
+    repository had since moved past, and corpus generation 404'd on every
+    probe against a route that did not exist yet there. Resolving blue
+    from the repo's current HEAD here means that failure shows up as a
+    provisioning note before a single token is spent, not as a baffling
+    wall of 404s two phases later. `prepare_blue_worktree` recreates it,
+    rather than reusing it, whenever it is on a different commit.
     """
     root = Path(repo) if repo is not None else Path(profile.repo)
     notes: list[str] = []
@@ -181,11 +192,21 @@ def provision(
         if applied:
             notes.append(f"migrations applied via {', '.join(applied)}")
 
+    from .measure.arms import BLUE_DIR, prepare_blue_worktree
+
+    blue_worktree = prepare_blue_worktree(
+        run_id or "provision", repo=root, blue=blue_dir or BLUE_DIR)
+    commit = blue_worktree.base_commit
+    notes.append(f"blue resolved at {commit[:12]} ({root})")
+
     return Provisioning(
         blue=ArmEndpoint(name="blue", path=".senapathy/blue", port=blue,
-                         base_url=f"http://localhost:{blue}"),
+                         base_url=f"http://localhost:{blue}", commit=commit),
+        # Green does not exist yet — the patch phase creates it, from the
+        # same commit blue was just resolved to. Recorded here as the
+        # commit it WILL start from, not a claim that it already has.
         green=ArmEndpoint(name="green", path=".senapathy/green", port=green,
-                          base_url=f"http://localhost:{green}"),
+                          base_url=f"http://localhost:{green}", commit=commit),
         database_ready=ready,
         migrations_applied=applied,
         notes=notes,
@@ -218,7 +239,8 @@ def load_provisioning(path: str | Path) -> Provisioning:
 def render_provisioning(provisioning: Provisioning) -> str:
     out = ["", "PROVISIONING", ""]
     for arm in (provisioning.blue, provisioning.green):
-        out.append(f"  {arm.name:<8}{arm.base_url}   ({arm.path})")
+        commit = f"  commit {arm.commit[:12]}" if arm.commit else ""
+        out.append(f"  {arm.name:<8}{arm.base_url}   ({arm.path}){commit}")
     out.append("")
     out.append(f"  database  {'ready' if provisioning.database_ready else 'NOT READY'}")
     if provisioning.migrations_applied:

@@ -1,0 +1,17 @@
+{
+  "scenario": "INV-04",
+  "endpoint": "GET /api/customers/{id}/invoices",
+  "measured_total_ms": 28.088,
+  "required_layers": [],
+  "forbidden_layers": ["database_query", "network"],
+  "dominant_layer_any_of": ["serialization", "orm_hydration", "application_logic"],
+  "plan": {
+    "selectable": false,
+    "not_selectable_because_contains": "unverifiable"
+  },
+  "tier2": {
+    "terminal_state_any_of": ["READY_TO_SHIP", "PR_OPENED"],
+    "behaviour_preserved": true
+  },
+  "notes": "An N+1 per-row customer-name lookup (102 statements/request), but server-side SQL time is only ~11% of latency -- the real cost is the round-trip/ORM/serialization overhead around 100 small queries, not SQL execution time itself, so database_query is never the dominant hypothesis here and would be a wrong diagnosis if it ever were. Any of dto_projection, fetch_join, entity_graph or batch_query collapses the per-row lookups into the main query and correctly reports mechanism=sql_count -- re-freezing this scenario three times (after the plan-phase sql_before/sql_after contract change, see TESTING-PLAN.md's known-failure table) drew dto_projection, then fetch_join, then entity_graph, never the same approach twice. The actual shipped collapse (102 statements/request -> 2, p95 -74.5%, PR_OPENED, behaviour 60/60 identical) is recorded in tier2 and the scenario log, not independently re-verified by Tier 1 every run.\n\nUPDATED after the verification-gate fix (plan/risk.py::sql_verification_failure's attempted/verified distinction, fixed this session in response to Scenario 7 -- see TESTING-PLAN.md's known-failure table): every candidate this endpoint's own repository methods can express is JPQL (`:customerId`/`?`-style placeholders), which EXPLAIN ANALYZE cannot parse as SQL at all -- a tooling gap (EXPLAIN needs the generated SQL, not JPQL; logged, not fixed), not evidence any of these candidates is wrong. A fresh sample now correctly reports `selectable: false`, citing 'unverifiable, not disproven' -- the plan-time check is honest about not having evidence, which it did not have before either, it just did not act on that absence. The shipped PR's real numbers above are independent of this plan-time check (they come from the live gate's post-patch measurement) and are not in question."
+}

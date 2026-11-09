@@ -810,6 +810,7 @@ def _build_document(
         build_iterations=tools.iterations,
         tests_passed=0,
         tests_before=baseline.executed,
+        granted_files=sorted(tools._granted_files),
     )
 
     last_tests = [e for e in tools.log if e["tool"] == "run_tests" and e["ok"]]

@@ -15,7 +15,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from ..contracts import CandidateFix, EndpointModel, RiskTier
+from ..contracts import CandidateFix, EndpointModel, RiskTier, SqlVerification
+from ..gate.rules import MECHANISM_MOVE_PCT
+from ..tools.db import DbToolbox
 
 # The tier table, by approach. Everything in T1 either adds something the old
 # code path did not have (an index, a fetch plan) or narrows a transaction to
@@ -34,6 +36,17 @@ TIER_BY_APPROACH: dict[str, RiskTier] = {
     # HIGH rather than MEDIUM so `other` is flagged and never auto-selected.
     "other": RiskTier.HIGH,
 }
+
+# Approaches whose fix IS a different SQL statement — as opposed to
+# remove_redundant_call / move_work_out_of_loop / read_only_transaction,
+# which change how many times (or in what transaction) the SAME query runs,
+# with no new statement for EXPLAIN to look at. `add_index` is deliberately
+# excluded too: its `sql_change` is a CREATE INDEX, not a SELECT, and
+# `schema_change_blocked` already disqualifies it before this would run.
+SQL_REWRITE_APPROACHES = frozenset({
+    "fetch_join", "entity_graph", "batch_query", "dto_projection",
+    "query_rewrite",
+})
 
 # T3: correct-looking changes whose failure mode is invisible in a diff.
 CACHING_WORDS = (
@@ -164,7 +177,60 @@ def derive_scope(
                     f"which this candidate already touches — included so a "
                     f"change to {deepest} has its caller in scope"
                 )
+
+    # A method this endpoint's own trace shows being called from more than
+    # one site: STM-01's h4 (CustomerRepository.findProfile, independently
+    # called by StatementService, OutstandingCalculator AND
+    # StatementNarrator) is incoherent the same way COL-04's
+    # @SqlResultSetMapping candidate was if a plan only lists SOME of those
+    # callers — the backward walk above only ever reaches ONE of several
+    # sibling call sites, whichever the model happened to name, because
+    # siblings are not ancestors of each other in the traced path. A fix
+    # that removes the repetition has to touch every site that makes the
+    # call, not whichever one is already in scope.
+    for method, caller_files in repeated_callers(model).items():
+        if any(f in out for f in caller_files):
+            for file in caller_files:
+                if file not in out:
+                    out.append(file)
+                    reasons[file] = (
+                        f"{method} is called from here too, on this "
+                        f"endpoint's own traced call path — a candidate "
+                        f"touching one of its callers needs every one of "
+                        f"them, or the fix only removes the repetition at "
+                        f"the site it happened to name"
+                    )
     return out, reasons
+
+
+def repeated_callers(model: EndpointModel) -> dict[str, list[str]]:
+    """method -> the deduplicated files of every site that calls it, for
+    every method this endpoint's own traced call path invokes from more
+    than one place.
+
+    Read straight off `call_chain`'s own structure: in a DFS-ordered trace,
+    the hop immediately before any call IS that call's caller, so no
+    parsing of a hypothesis's prose is needed to find "every site a
+    repeated call happens from" — it is already there, in the data.
+    """
+    by_method: dict[str, list[int]] = {}
+    for i, hop in enumerate(model.call_chain):
+        by_method.setdefault(hop.method, []).append(i)
+
+    callers: dict[str, list[str]] = {}
+    for method, indices in by_method.items():
+        if len(indices) < 2:
+            continue
+        files: list[str] = []
+        for idx in indices:
+            if idx == 0:
+                continue
+            caller_file = model.call_chain[idx - 1].file
+            if caller_file not in files:
+                files.append(caller_file)
+        if len(files) > 1:
+            callers[method] = files
+    return callers
 
 
 def scope_mismatch_reason(*, description: str, mechanism_changed: str,
@@ -296,3 +362,122 @@ def selection_problem(candidate: CandidateFix) -> str | None:
         return ("it does not claim to preserve the response bytes, and the "
                 "frozen oracle compares them byte for byte")
     return None
+
+
+# ─────────────────────  SQL-rewrite candidates: verify, don't guess  ─────
+#
+# BATCH-01: a plan offered two candidates targeting one hypothesis — a
+# correlated subquery (`query_rewrite`) and a batched `IN (...) GROUP BY`
+# (`batch_query`) — both scored identically (expected_value_ms is
+# attributed_ms x the HYPOTHESIS's fixability, the same number for any
+# candidate attacking it), so selection fell through to lexical candidate id
+# and happened to ship the one MySQL re-executes once per outer row. Its own
+# rows_examined never moved. Nobody had to write a rule about correlated
+# subqueries — EXPLAIN ANALYZE already knew.
+
+
+def sql_verification_needed(*, approach: str, mechanism: str | None) -> bool:
+    """Whether this candidate must supply sql_before/sql_after."""
+    from ..gate.rules import INSTRUMENTED_MECHANISMS
+    return (approach in SQL_REWRITE_APPROACHES
+            and mechanism in INSTRUMENTED_MECHANISMS)
+
+
+def verify_sql_candidate(
+    box: DbToolbox | None,
+    *, sql_before: str, sql_after: str, params: list[str] | None,
+    mechanism: str | None,
+) -> SqlVerification:
+    """Run `sql_before`/`sql_after` through EXPLAIN ANALYZE and compare.
+
+    `scored=True` only for `rows_examined`: that is a per-call quantity, and
+    one EXPLAIN ANALYZE of each statement is a fair before/after comparison.
+    A `sql_count` fix changes how many times the SAME shape of statement
+    runs, which one EXPLAIN of each side cannot see — a batched `IN (...)`
+    naturally examines more rows in its single call than one row's worth of
+    the per-row original, and scoring on that delta would wrongly penalise
+    exactly the fix this harness is supposed to find. It is still verified —
+    both statements must at least run — the evidence just is not used to set
+    expected_value_ms or not_selectable_because.
+    """
+    if box is None:
+        return SqlVerification(
+            verified=False,
+            attempted=False,
+            note="no live database connection at plan time; this candidate's "
+                 "SQL was not independently checked against EXPLAIN ANALYZE.",
+        )
+    try:
+        before, after = box.plan_delta(sql_before, sql_after, params)
+    except Exception as exc:  # noqa: BLE001 — a bad statement is evidence too
+        return SqlVerification(
+            verified=False,
+            attempted=True,
+            note=f"EXPLAIN ANALYZE could not run both statements: {exc}",
+        )
+
+    delta_pct = (0.0 if before.rows_examined == 0 else
+                round(100.0 * (after.rows_examined - before.rows_examined)
+                      / before.rows_examined, 1))
+    scored = mechanism == "rows_examined"
+    note = (f"EXPLAIN ANALYZE: rows examined {before.rows_examined:,} -> "
+            f"{after.rows_examined:,} ({delta_pct:+.1f}%), actual time "
+            f"{before.actual_ms:,.1f} ms -> {after.actual_ms:,.1f} ms")
+    if not scored:
+        note += (". Mechanism is sql_count: a single EXPLAIN ANALYZE of each "
+                 "statement does not capture a call-count fix, so this "
+                 "delta is reported but not used to score or disqualify.")
+    return SqlVerification(
+        verified=True,
+        rows_examined_before=before.rows_examined,
+        rows_examined_after=after.rows_examined,
+        rows_delta_pct=delta_pct,
+        actual_ms_before=before.actual_ms,
+        actual_ms_after=after.actual_ms,
+        scored=scored,
+        note=note,
+    )
+
+
+def sql_verification_failure(verification: SqlVerification) -> str | None:
+    """Why this candidate is disqualified before a patch exists, or None.
+
+    Three states, not two:
+
+    - could not verify at all (`attempted=True`, `verified=False`) — EXPLAIN
+      ANALYZE was run and failed to even complete against this candidate's
+      own statements (bad syntax, a reference it rejects, a parameter
+      mismatch). This is an UNKNOWN, not a disproof — but a candidate
+      claiming an instrumented mechanism has not earned selection without
+      evidence, so it disqualifies all the same. Distinct from
+      `attempted=False` (no live database at plan time at all), which is a
+      run-wide planning limitation, not something this candidate did wrong,
+      and never disqualifies on its own.
+    - verified and scored, quantity flat — disproven: the same bar
+      MECHANISM_MATCH uses after a patch says this candidate would fail it,
+      so it is refused here instead of after a patch, a verify and a
+      measurement have already been paid for.
+    - verified and scored, quantity moved — not disqualified.
+    - verified but not scored (`sql_count`, a single EXPLAIN cannot see a
+      call-count fix) — not disqualified; the evidence is recorded, not used
+      to gate.
+    """
+    if not verification.verified:
+        if not verification.attempted:
+            return None
+        return (f"EXPLAIN ANALYZE could not verify this candidate's own "
+                f"sql_before/sql_after before a patch exists ({verification.note}). "
+                f"An instrumented mechanism has not earned selection without "
+                f"evidence — this is unverifiable, not disproven, but it "
+                f"still disqualifies until it can be checked.")
+    if not verification.scored:
+        return None
+    if verification.rows_delta_pct <= -MECHANISM_MOVE_PCT:
+        return None
+    return (f"EXPLAIN ANALYZE shows rows examined do not clear the "
+            f"{MECHANISM_MOVE_PCT:.0f}% mechanism-match bar before any patch "
+            f"exists: {verification.rows_examined_before:,} -> "
+            f"{verification.rows_examined_after:,} "
+            f"({verification.rows_delta_pct:+.1f}%). This candidate would "
+            f"fail MECHANISM_MATCH after a patch, a verify and a measurement "
+            f"had already been paid for.")

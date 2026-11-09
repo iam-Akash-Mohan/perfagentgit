@@ -1,0 +1,167 @@
+{
+  "endpoint": "GET /api/customers/{id}/invoices",
+  "measured_total_ms": 28.088,
+  "ranked": [
+    {
+      "hypothesis_id": "h1",
+      "claim": "ORM hydration of each Invoice entity (including lazy Customer proxy) dominates per‑row processing time.",
+      "layer": "orm_hydration",
+      "attributed_ms": 15.0,
+      "fixability": {
+        "hypothesis_id": "h1",
+        "fixability": 0.9,
+        "reason": "batchable: fetch join, @EntityGraph, or an IN query (customerRepository.findNameById executes once per result row, src/main/java/com/ex/dto/InvoiceDtoMapper.java:15)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 13.5
+    },
+    {
+      "hypothesis_id": "h2",
+      "claim": "JSON serialization of the DTO list consumes the bulk of the remaining per‑row latency.",
+      "layer": "serialization",
+      "attributed_ms": 10.0,
+      "fixability": {
+        "hypothesis_id": "h2",
+        "fixability": 0.3,
+        "reason": "library-level, rarely beatable by hand (no unbounded response collection is implicated)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 3.0
+    },
+    {
+      "hypothesis_id": "h3",
+      "claim": "Application‑level enrichment (InvoiceEnricher + InvoiceDtoMapper) adds measurable per‑row overhead beyond hydration and serialization.",
+      "layer": "application_logic",
+      "attributed_ms": 5.0,
+      "fixability": {
+        "hypothesis_id": "h3",
+        "fixability": 0.4,
+        "reason": "UNCLASSIFIED: no policy row matched this hypothesis, so 0.40 is a placeholder rather than an assessment",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": false
+      },
+      "expected_value_ms": 2.0
+    }
+  ],
+  "considered": [
+    "h1",
+    "h2"
+  ],
+  "candidates": [
+    {
+      "id": "c1",
+      "targets_hypothesis": "h1",
+      "approach": "fetch_join",
+      "description": "Add a join fetch of Customer in InvoiceRepository.findByCustomerIdAndStatus JPQL query and modify InvoiceDtoMapper to use invoice.getCustomer().getName instead of invoking CustomerRepository.findNameById per invoice.",
+      "mechanism": "rows_examined",
+      "mechanism_changed": "rows examined",
+      "predicted_effect": "rows examined drop from 10,000 to ~0 per request",
+      "files_to_touch": [
+        "src/main/java/com/ex/repo/InvoiceRepository.java",
+        "src/main/java/com/ex/dto/InvoiceDtoMapper.java",
+        "src/main/java/com/ex/web/InvoiceController.java",
+        "src/main/java/com/ex/service/InvoiceService.java",
+        "src/main/java/com/ex/service/InvoiceEnricher.java"
+      ],
+      "sql_change": null,
+      "sql_before": "select i from Invoice i where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc",
+      "sql_after": "select i from Invoice i join fetch i.customer where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc",
+      "sql_params": [
+        "<customerId>",
+        "<status>"
+      ],
+      "baseline_digest": null,
+      "baseline_calls": null,
+      "what_could_break": [
+        "Join fetch may increase memory usage as Customer entities are eagerly loaded for each Invoice.",
+        "If Invoice had other lazy collections, join fetch could cause Cartesian explosion (not the case here)."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 1,
+      "requires_flag": false,
+      "expected_value_ms": 13.5,
+      "sql_verification": {
+        "verified": false,
+        "attempted": true,
+        "rows_examined_before": 0,
+        "rows_examined_after": 0,
+        "rows_delta_pct": 0.0,
+        "actual_ms_before": 0.0,
+        "actual_ms_after": 0.0,
+        "scored": false,
+        "note": "EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: 1146 (42S02): Table 'mini.Invoice' doesn't exist\nStatement: select i from Invoice i where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc  /  select i from Invoice i join fetch i.customer where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc",
+        "assessed_by": "code"
+      },
+      "not_selectable_because": "EXPLAIN ANALYZE could not verify this candidate's own sql_before/sql_after before a patch exists (EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: 1146 (42S02): Table 'mini.Invoice' doesn't exist\nStatement: select i from Invoice i where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc  /  select i from Invoice i join fetch i.customer where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc). An instrumented mechanism has not earned selection without evidence — this is unverifiable, not disproven, but it still disqualifies until it can be checked.",
+      "scope_reasons": {
+        "src/main/java/com/ex/web/InvoiceController.java": "on this endpoint's own traced call path to src/main/java/com/ex/dto/InvoiceDtoMapper.java, which this candidate already touches — included so a change to src/main/java/com/ex/dto/InvoiceDtoMapper.java has its caller in scope",
+        "src/main/java/com/ex/service/InvoiceService.java": "on this endpoint's own traced call path to src/main/java/com/ex/dto/InvoiceDtoMapper.java, which this candidate already touches — included so a change to src/main/java/com/ex/dto/InvoiceDtoMapper.java has its caller in scope",
+        "src/main/java/com/ex/service/InvoiceEnricher.java": "on this endpoint's own traced call path to src/main/java/com/ex/dto/InvoiceDtoMapper.java, which this candidate already touches — included so a change to src/main/java/com/ex/dto/InvoiceDtoMapper.java has its caller in scope"
+      }
+    },
+    {
+      "id": "c2",
+      "targets_hypothesis": "h1",
+      "approach": "dto_projection",
+      "description": "Rewrite the InvoiceRepository query to directly project into InvoiceDto (including the customer name) using a JPQL constructor expression, eliminating the per‑row mapper and customer‑name query.",
+      "mechanism": "rows_examined",
+      "mechanism_changed": "rows examined",
+      "predicted_effect": "rows examined drop from 10,000 to ~0 per request and object creation overhead removed",
+      "files_to_touch": [
+        "src/main/java/com/ex/repo/InvoiceRepository.java"
+      ],
+      "sql_change": null,
+      "sql_before": "select i from Invoice i where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc",
+      "sql_after": "select new com.ex.dto.InvoiceDto(i.id, i.amount, i.status, i.dueDate, c.name) from Invoice i join i.customer c where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc",
+      "sql_params": [
+        "<customerId>",
+        "<status>"
+      ],
+      "baseline_digest": null,
+      "baseline_calls": null,
+      "what_could_break": [
+        "Constructor expression requires a matching InvoiceDto constructor (already exists).",
+        "Changing the repository return type may affect other callers of findByCustomerIdAndStatus."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 1,
+      "requires_flag": false,
+      "expected_value_ms": 13.5,
+      "sql_verification": {
+        "verified": false,
+        "attempted": true,
+        "rows_examined_before": 0,
+        "rows_examined_after": 0,
+        "rows_delta_pct": 0.0,
+        "actual_ms_before": 0.0,
+        "actual_ms_after": 0.0,
+        "scored": false,
+        "note": "EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: 1146 (42S02): Table 'mini.Invoice' doesn't exist\nStatement: select i from Invoice i where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc  /  select new com.ex.dto.InvoiceDto(i.id, i.amount, i.status, i.dueDate, c.name) from Invoice i join i.customer c where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc",
+        "assessed_by": "code"
+      },
+      "not_selectable_because": "EXPLAIN ANALYZE could not verify this candidate's own sql_before/sql_after before a patch exists (EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: 1146 (42S02): Table 'mini.Invoice' doesn't exist\nStatement: select i from Invoice i where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc  /  select new com.ex.dto.InvoiceDto(i.id, i.amount, i.status, i.dueDate, c.name) from Invoice i join i.customer c where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc). An instrumented mechanism has not earned selection without evidence — this is unverifiable, not disproven, but it still disqualifies until it can be checked.",
+      "scope_reasons": {}
+    }
+  ],
+  "selected_id": null,
+  "selection_reason": "no candidate cleared the selection rule: every one was either above risk tier T2 or did not claim to preserve the response bytes",
+  "not_selected": [
+    {
+      "candidate_id": "c1",
+      "reason": "EXPLAIN ANALYZE could not verify this candidate's own sql_before/sql_after before a patch exists (EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: 1146 (42S02): Table 'mini.Invoice' doesn't exist\nStatement: select i from Invoice i where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc  /  select i from Invoice i join fetch i.customer where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc). An instrumented mechanism has not earned selection without evidence — this is unverifiable, not disproven, but it still disqualifies until it can be checked."
+    },
+    {
+      "candidate_id": "c2",
+      "reason": "EXPLAIN ANALYZE could not verify this candidate's own sql_before/sql_after before a patch exists (EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: 1146 (42S02): Table 'mini.Invoice' doesn't exist\nStatement: select i from Invoice i where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc  /  select new com.ex.dto.InvoiceDto(i.id, i.amount, i.status, i.dueDate, c.name) from Invoice i join i.customer c where i.customer.id = %s and i.status = %s order by i.dueDate asc, i.id asc). An instrumented mechanism has not earned selection without evidence — this is unverifiable, not disproven, but it still disqualifies until it can be checked."
+    }
+  ],
+  "prompt_hash": "5f311954ae548093",
+  "base_commit": "e0d7c7021d82ac93431f1647469a3b6c0cd71499",
+  "decided_by": "code",
+  "baseline_hash": "547aa9997c7e5b15"
+}

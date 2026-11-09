@@ -74,7 +74,7 @@ MAX_DENSE_VALUES = 6
 # page/size axis below -- a query parameter by either of these names is
 # never ALSO sourced from request_shape, which would either duplicate or
 # conflict with it.
-_PAGINATION_PARAM_NAMES = frozenset({"page", "size"})
+PAGINATION_PARAM_NAMES = frozenset({"page", "size"})
 
 # How many distinct values to pull for a required query parameter the code
 # does not visibly constrain. Capped like path-parameter sampling (limit=6
@@ -275,7 +275,7 @@ def _required_query_values(
     shape = model.request_shape
     query_param_names = {
         p.name for p in (shape.parameters if shape else [])
-        if p.location == "query" and p.name not in _PAGINATION_PARAM_NAMES
+        if p.location == "query" and p.name not in PAGINATION_PARAM_NAMES
     }
     unknown = [name for name in overrides if name not in query_param_names]
     if unknown:
@@ -297,7 +297,7 @@ def _required_query_values(
     values: dict[str, list[Any]] = {}
     notes: list[str] = []
     for param in shape.parameters:
-        if param.location != "query" or param.name in _PAGINATION_PARAM_NAMES:
+        if param.location != "query" or param.name in PAGINATION_PARAM_NAMES:
             continue
 
         if param.name in overrides:

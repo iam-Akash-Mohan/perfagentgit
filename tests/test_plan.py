@@ -22,7 +22,7 @@ import pytest
 from senapathy.agent import LoopBudget
 from senapathy.contracts import (CandidateFix, EndpointModel, Hypothesis,
                                  HypothesisSet, Layer, LLMResponse, Plan,
-                                 RiskTier, Usage)
+                                 RiskTier, SqlDigestStat, Usage)
 from senapathy.errors import ContractViolation, ToolError
 from senapathy.plan.agent import load_plan, plan
 from senapathy.plan.fixability import (assess_fixability, covering_index,
@@ -324,6 +324,48 @@ def test_per_row_work_that_never_reaches_the_response_is_removable() -> None:
     assert "removable" in verdict.reason
 
 
+def test_scales_with_catches_a_field_the_description_only_names_fused() -> None:
+    """UNB-01's exact shape: the per-row work's `description` names the
+    unbounded field only fused into a camelCase identifier ("AllocationRowDto"
+    contains "allocation", but not as a standalone word — `mentions()`
+    correctly refuses that match, the same boundary that keeps "invoice"
+    from matching "invoiced"), while `scales_with` ("allocations per
+    invoice") says it plainly. Checking description alone scored this
+    "genuinely removable" (0.70) for work that produces a field inside the
+    endpoint's own unbounded response collection -- backwards, and now
+    fixed by also checking scales_with."""
+    verdict = assess_fixability(
+        hypothesis(layer="application_logic",
+                   claim="Per-row business logic (running balance "
+                         "calculation) adds fixed overhead per row",
+                   mechanism="InvoicePaymentHistoryService iterates over "
+                             "each allocation to compute a running balance; "
+                             "each iteration performs a few cheap "
+                             "calculations"),
+        endpoint_model(
+            per_row_work=[{
+                "description": "iterate each AllocationRowDto, subtract "
+                               "allocatedAmount from remaining balance and "
+                               "create a PaymentHistoryLineDto",
+                "file": SERVICE, "line": 37, "kind": "collection_processing",
+                "scales_with": "allocations per invoice", "bounded": False,
+            }],
+            response_shape={"dto": "InvoicePaymentHistoryDto",
+                            "fields_returned": ["invoiceId", "invoiceAmount",
+                                               "status", "allocations"],
+                            "unbounded_collections": ["allocations"]},
+        ),
+    )
+    # 0.10 (rule 7/8: the WORK feeds the unbounded collection), not 0.05
+    # (rule 1: the hypothesis's own text names the field directly) -- this
+    # hypothesis is framed as application-logic overhead, not a direct
+    # serialization/response-body claim, and that is the correct bucket.
+    # What matters is that it is blocked at all, which before this fix it
+    # was not (it fell through to rule 9, "genuinely removable", 0.70).
+    assert verdict.fixability == 0.10
+    assert "allocations" in (verdict.blocked_by or "")
+
+
 def test_serialization_without_an_unbounded_collection_is_merely_hard() -> None:
     verdict = assess_fixability(
         hypothesis(layer="serialization", claim="jackson is slow"),
@@ -582,6 +624,64 @@ def test_derive_scope_leaves_files_off_the_call_path_alone() -> None:
     assert reasons == {}
 
 
+INVOICE_REPOSITORY = "src/main/java/com/ex/repo/InvoiceRepository.java"
+OUTSTANDING_CALCULATOR = "src/main/java/com/ex/service/OutstandingCalculator.java"
+STATEMENT_NARRATOR = "src/main/java/com/ex/service/StatementNarrator.java"
+
+
+def _statement_shaped_model() -> EndpointModel:
+    """STM-01's own shape: one method (REPOSITORY's findProfile) called
+    independently from three sibling sites, none an ancestor of another."""
+    return endpoint_model(call_chain=[
+        {"method": "StatementController.statement", "file": CONTROLLER,
+         "line": 19, "does": "delegates to service"},
+        {"method": "StatementService.build", "file": SERVICE, "line": 37,
+         "does": "builds the statement"},
+        {"method": "OrderRepository.findProfile", "file": REPOSITORY,
+         "line": 28, "does": "loads customer profile for the header"},
+        {"method": "OutstandingCalculator.outstandingFor",
+         "file": OUTSTANDING_CALCULATOR, "line": 23,
+         "does": "calculates total outstanding"},
+        {"method": "OrderRepository.findProfile", "file": REPOSITORY,
+         "line": 28, "does": "validates customer existence"},
+        {"method": "StatementNarrator.describe", "file": STATEMENT_NARRATOR,
+         "line": 20, "does": "creates narrative string"},
+        {"method": "OrderRepository.findProfile", "file": REPOSITORY,
+         "line": 28, "does": "loads customer profile again for the name"},
+    ])
+
+
+def test_repeated_callers_finds_every_sibling_site() -> None:
+    from senapathy.plan.risk import repeated_callers
+
+    callers = repeated_callers(_statement_shaped_model())
+    assert callers == {
+        "OrderRepository.findProfile": [
+            SERVICE, OUTSTANDING_CALCULATOR, STATEMENT_NARRATOR,
+        ],
+    }
+
+
+@pytest.mark.parametrize("starting_file", [SERVICE, OUTSTANDING_CALCULATOR,
+                                           STATEMENT_NARRATOR])
+def test_derive_scope_includes_every_sibling_of_a_repeated_call(
+    starting_file: str,
+) -> None:
+    """STM-01: the plan named OutstandingCalculator and StatementService but
+    not StatementNarrator — omitted because it comes AFTER
+    OutstandingCalculator in the traced path, so the backward walk from
+    whichever file the model picked never reached it. Symmetric here:
+    whichever ONE of the three sibling callers the model starts from, all
+    three end up in scope, not just the ones earlier in the trace."""
+    from senapathy.plan.risk import derive_scope
+
+    files, reasons = derive_scope([starting_file], _statement_shaped_model())
+    assert set(files) >= {SERVICE, OUTSTANDING_CALCULATOR, STATEMENT_NARRATOR}
+    for sibling in (SERVICE, OUTSTANDING_CALCULATOR, STATEMENT_NARRATOR):
+        if sibling != starting_file:
+            assert sibling in reasons
+
+
 def test_a_candidate_missing_its_own_caller_is_rescoped_not_abandoned(
     root: SourceRoot
 ) -> None:
@@ -671,6 +771,314 @@ def test_sql_count_and_rows_examined_are_selectable_mechanisms(
     assert all(c.not_selectable_because is None for c in plan.candidates)
 
 
+# ────────────  BATCH-01: SQL-rewrite candidates are verified, not trusted ──
+
+
+def test_a_sql_rewrite_candidate_without_before_after_is_refused(
+    root: SourceRoot
+) -> None:
+    """fetch_join + sql_count IS a SQL_REWRITE_APPROACHES / instrumented
+    combination — its claim must be checkable with EXPLAIN ANALYZE, which
+    needs a statement on each side."""
+    raw = candidate_payload()
+    del raw["sql_before"]
+    del raw["sql_after"]
+    with pytest.raises(ToolError, match="EXPLAIN ANALYZE needs a statement"):
+        submit_handler(root, {})(candidates=[raw, INDEX_CANDIDATE])
+
+
+def test_a_sql_rewrite_candidates_sql_must_be_a_select(root: SourceRoot) -> None:
+    with pytest.raises(ToolError, match="not a single SELECT statement"):
+        submit_handler(root, {})(candidates=[
+            candidate_payload(sql_after="DROP TABLE order_line"),
+            INDEX_CANDIDATE,
+        ])
+
+
+def test_a_byte_identical_rewrite_is_refused_as_a_no_op(root: SourceRoot) -> None:
+    """UNB-04's exact shape: sql_before and sql_after are the same statement,
+    whitespace aside. EXPLAIN ANALYZE "verifies" it fine — the same
+    statement plans identically to itself — which is why this is checked
+    separately, before that verification is trusted."""
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        candidate_payload(
+            sql_before="SELECT id FROM orders WHERE customer_id = %s",
+            sql_after="SELECT id   FROM orders  WHERE customer_id = %s"),
+        INDEX_CANDIDATE,
+    ])
+    plan: Plan = sink["plan"]
+    fetch_join = next(c for c in plan.candidates if c.approach == "fetch_join")
+    assert fetch_join.not_selectable_because is not None
+    assert "same statement" in fetch_join.not_selectable_because
+    assert plan.selected_id != fetch_join.id
+
+
+def test_a_sql_count_claim_with_no_baseline_citation_is_refused(
+    root: SourceRoot
+) -> None:
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        candidate_payload(baseline_digest=None, baseline_calls=None),
+        INDEX_CANDIDATE,
+    ])
+    plan: Plan = sink["plan"]
+    fetch_join = next(c for c in plan.candidates if c.approach == "fetch_join")
+    assert fetch_join.not_selectable_because is not None
+    assert "names no baseline_digest" in fetch_join.not_selectable_because
+
+
+def test_a_sql_count_claim_naming_an_unmeasured_digest_is_refused(
+    root: SourceRoot
+) -> None:
+    """UNB-04's actual bug: the candidate claimed to eliminate a statement
+    that had already been designed out and so was never in baseline at
+    all."""
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        candidate_payload(baseline_digest="never-measured"),
+        INDEX_CANDIDATE,
+    ])
+    plan: Plan = sink["plan"]
+    fetch_join = next(c for c in plan.candidates if c.approach == "fetch_join")
+    assert fetch_join.not_selectable_because is not None
+    assert "does not appear in this endpoint's own measured baseline" in \
+        fetch_join.not_selectable_because
+
+
+def test_a_sql_count_claim_with_the_wrong_call_count_is_refused(
+    root: SourceRoot
+) -> None:
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        # Real digest, wildly wrong claimed count (default is 22).
+        candidate_payload(baseline_calls=4),
+        INDEX_CANDIDATE,
+    ])
+    plan: Plan = sink["plan"]
+    fetch_join = next(c for c in plan.candidates if c.approach == "fetch_join")
+    assert fetch_join.not_selectable_because is not None
+    assert "not even approximately" in fetch_join.not_selectable_because
+
+
+def test_a_sql_count_claim_matching_baseline_is_selectable(
+    root: SourceRoot
+) -> None:
+    """The control case: a real digest, a call count within tolerance of
+    what baseline actually measured — not the default fixture's own digest,
+    to prove this is a real check rather than an always-true default."""
+    digests = [SqlDigestStat(
+        digest="real-one", sample_sql="SELECT 1 FROM orders", calls=100,
+        total_ms=1.0, mean_ms=0.01)]
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink, baseline_digests=digests)(candidates=[
+        candidate_payload(baseline_digest="real-one", baseline_calls=98),
+        INDEX_CANDIDATE,
+    ])
+    plan: Plan = sink["plan"]
+    fetch_join = next(c for c in plan.candidates if c.approach == "fetch_join")
+    assert fetch_join.not_selectable_because is None
+
+
+def test_a_java_side_candidate_needs_no_sql_at_all(root: SourceRoot) -> None:
+    """remove_redundant_call and move_work_out_of_loop change how many times
+    the SAME query runs, not what it says — there is no new statement for
+    EXPLAIN to look at, so none is required."""
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        candidate_payload(approach="remove_redundant_call",
+                          mechanism="rows_examined",
+                          sql_before=None, sql_after=None),
+        candidate_payload(id="c2", approach="batch_query"),
+    ])
+    plan: Plan = sink["plan"]
+    rrc = next(c for c in plan.candidates if c.approach == "remove_redundant_call")
+    assert rrc.sql_verification is None
+    assert rrc.not_selectable_because is None
+
+
+def _fake_verification(monkeypatch, **overrides: Any) -> None:
+    """Replace the real EXPLAIN ANALYZE call with a scripted verdict — this
+    file reaches no network and no database."""
+    from senapathy.contracts import SqlVerification
+    base: dict[str, Any] = {"verified": True, "scored": True,
+                            "rows_examined_before": 1000,
+                            "rows_examined_after": 1000, "rows_delta_pct": 0.0,
+                            "note": "stubbed for test"}
+    base.update(overrides)
+    verdict = SqlVerification.model_validate(base)
+    monkeypatch.setattr("senapathy.plan.submit.verify_sql_candidate",
+                       lambda *a, **k: verdict)
+
+
+def test_a_measured_improvement_overrides_the_hypothesis_level_value(
+    root: SourceRoot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """h2's attributed_ms is 200.0 (fixability 0.9 -> the hypothesis-level
+    180.0 every other test asserts). A candidate whose OWN EXPLAIN ANALYZE
+    shows rows examined cut in half gets attributed_ms x 0.5 instead — direct
+    evidence beats the hypothesis-level proxy, exactly as asked."""
+    _fake_verification(monkeypatch, rows_examined_before=1000,
+                       rows_examined_after=500, rows_delta_pct=-50.0)
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(
+        candidates=[candidate_payload(), INDEX_CANDIDATE])
+    plan: Plan = sink["plan"]
+    fetch_join = next(c for c in plan.candidates if c.approach == "fetch_join")
+    assert fetch_join.expected_value_ms == 100.0
+    assert fetch_join.sql_verification is not None
+    assert fetch_join.sql_verification.verified
+
+
+def test_a_measured_non_improvement_disqualifies_before_any_patch(
+    root: SourceRoot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BATCH-01 itself: mechanism is rows_examined, and EXPLAIN ANALYZE shows
+    it did not move. Disqualified at plan time, not after a patch, a verify
+    and a measurement were paid for finding out MECHANISM_MATCH fails."""
+    _fake_verification(monkeypatch, rows_examined_before=14_533_404,
+                       rows_examined_after=14_533_406, rows_delta_pct=0.0)
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        candidate_payload(mechanism="rows_examined",
+                          mechanism_changed="rows examined"),
+        INDEX_CANDIDATE,
+    ])
+    plan: Plan = sink["plan"]
+    fetch_join = next(c for c in plan.candidates if c.approach == "fetch_join")
+    assert fetch_join.not_selectable_because is not None
+    assert "mechanism-match bar" in fetch_join.not_selectable_because
+    assert plan.selected_id != fetch_join.id
+
+
+def test_an_unscored_sql_count_verification_cannot_disqualify_or_rescore(
+    root: SourceRoot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A single EXPLAIN ANALYZE of each side cannot see a call-COUNT fix — a
+    batched IN(...) naturally examines more rows in one call than one row's
+    worth of the per-row original. sql_count candidates stay on the
+    hypothesis-level number and are never disqualified by this measurement,
+    however bad the raw delta looks."""
+    _fake_verification(monkeypatch, scored=False, rows_examined_before=10,
+                       rows_examined_after=10_000, rows_delta_pct=99_900.0)
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(
+        candidates=[candidate_payload(), INDEX_CANDIDATE])
+    plan: Plan = sink["plan"]
+    fetch_join = next(c for c in plan.candidates if c.approach == "fetch_join")
+    assert fetch_join.expected_value_ms == 180.0
+    assert fetch_join.not_selectable_because is None
+
+
+def test_an_unverifiable_candidate_keeps_the_hypothesis_level_value(
+    root: SourceRoot
+) -> None:
+    """No `mysql` is ever passed in this file — get_box() returns None, and
+    verify_sql_candidate degrades to verified=False rather than raising. A
+    missing live connection is not a disqualification."""
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(
+        candidates=[candidate_payload(), INDEX_CANDIDATE])
+    plan: Plan = sink["plan"]
+    fetch_join = next(c for c in plan.candidates if c.approach == "fetch_join")
+    assert fetch_join.sql_verification is not None
+    assert fetch_join.sql_verification.verified is False
+    assert fetch_join.expected_value_ms == 180.0
+    assert fetch_join.not_selectable_because is None
+
+
+def test_a_statement_explain_could_not_run_disqualifies_unverified_not_disproven(
+    root: SourceRoot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SER-01's exact shape: a live database WAS reachable (attempted=True)
+    and EXPLAIN ANALYZE still could not complete against this candidate's
+    own sql_before/sql_after (a reference it rejects, bad syntax, a
+    parameter mismatch) -- distinct from `test_an_unverifiable_candidate_
+    keeps_the_hypothesis_level_value` above, where there was no database at
+    all. An instrumented mechanism has not earned selection without
+    evidence: this disqualifies, and the reason must say "unverifiable",
+    never "disproven" -- the quantity was never measured, not measured flat.
+    Applies to sql_count too, not just the scored rows_examined mechanism:
+    a statement that cannot even be checked is not evidence either way."""
+    _fake_verification(monkeypatch, verified=False, attempted=True,
+                       scored=False, rows_examined_before=0,
+                       rows_examined_after=0, rows_delta_pct=0.0,
+                       note="EXPLAIN ANALYZE could not run both statements: "
+                            "1064 (42000) near 'someLazyCollection'")
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(
+        candidates=[candidate_payload(), INDEX_CANDIDATE])
+    plan: Plan = sink["plan"]
+    fetch_join = next(c for c in plan.candidates if c.approach == "fetch_join")
+    assert fetch_join.not_selectable_because is not None
+    assert "unverifiable, not disproven" in fetch_join.not_selectable_because
+    assert "someLazyCollection" in fetch_join.not_selectable_because
+    assert plan.selected_id != fetch_join.id
+
+
+def test_a_coin_flip_tie_is_disclosed_not_hidden(root: SourceRoot) -> None:
+    """fetch_join and entity_graph both target h2 (identical expected value)
+    and both land on risk tier T1 (identical tier), and neither touches the
+    schema — BATCH-01's exact shape, with nothing else around it to also
+    disqualify the loser. The loser's reason must say it was a coin flip,
+    not claim a higher score that was never computed."""
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        candidate_payload(id="c1", approach="fetch_join"),
+        candidate_payload(id="c2", approach="entity_graph",
+                          description="use an entity graph instead of a "
+                                      "join fetch"),
+    ])
+    plan: Plan = sink["plan"]
+    assert plan.candidates[0].risk_tier == plan.candidates[1].risk_tier
+    assert plan.candidates[0].expected_value_ms == plan.candidates[1].expected_value_ms
+    loser = plan.not_selected[0]
+    assert "tied with" in loser.reason
+    assert "sorted first by candidate id" in loser.reason
+    assert "a higher expected value was available" not in loser.reason
+    assert "TIE:" in plan.selection_reason
+
+
+def test_a_genuinely_higher_score_still_says_so(root: SourceRoot) -> None:
+    """The control case: when expected values actually differ, the old
+    message is exactly right and must not be replaced by a tie disclosure."""
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        candidate_payload(id="c1", targets_hypothesis="h1",
+                          approach="dto_projection", mechanism="rows_examined",
+                          mechanism_changed="rows examined",
+                          description="project only the fields the DTO uses"),
+        candidate_payload(id="c2", targets_hypothesis="h2"),
+    ])
+    plan: Plan = sink["plan"]
+    assert plan.selected_id == "c2"          # h2's 180.0 beats h1's 70.0
+    loser = next(r for r in plan.not_selected if r.candidate_id == "c1")
+    assert "a higher expected value was available" in loser.reason
+    assert "tied with" not in loser.reason
+    assert "TIE:" not in plan.selection_reason
+
+
+def test_equal_value_different_tier_credits_the_tier_not_a_coin_flip(
+    root: SourceRoot
+) -> None:
+    """Both candidates target h2 (expected value ties at 180.0) but differ
+    in risk tier — the sort's own second key genuinely decided this, which
+    is not the same claim as 'no measurable difference existed'."""
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(candidates=[
+        candidate_payload(),                              # fetch_join, T1
+        candidate_payload(id="c2", approach="query_rewrite",  # T2
+                          mechanism="rows_examined",
+                          mechanism_changed="rows examined",
+                          description="push the filter into the query"),
+    ])
+    plan: Plan = sink["plan"]
+    loser = next(r for r in plan.not_selected)
+    assert "preferred for its lower risk tier" in loser.reason
+    assert "sorted first by candidate id" not in loser.reason
+    assert "TIE:" not in plan.selection_reason
+
+
 def test_selection_refuses_tier_three_and_byte_changers() -> None:
     def candidate(**overrides: Any) -> CandidateFix:
         base: dict[str, Any] = {
@@ -692,8 +1100,27 @@ def test_selection_refuses_tier_three_and_byte_changers() -> None:
 # ────────────────────────────  the terminal tool  ────────────────────────
 
 
+# The one baseline digest `candidate_payload()`'s default sql_count claim
+# cites — submit_handler()'s default `baseline_digests`, so every existing
+# test that never mentions baseline_digest/baseline_calls at all keeps
+# working unchanged. Tests of the citation check itself (below) override
+# baseline_digests or the candidate's own baseline_digest/baseline_calls to
+# exercise a mismatch.
+DEFAULT_BASELINE_DIGEST = "d1"
+DEFAULT_BASELINE_CALLS = 22
+
+
+def default_baseline_digests() -> list[SqlDigestStat]:
+    return [SqlDigestStat(
+        digest=DEFAULT_BASELINE_DIGEST,
+        sample_sql="SELECT SUM(amount) FROM order_line WHERE order_id = %s",
+        calls=DEFAULT_BASELINE_CALLS, total_ms=1.0, mean_ms=0.045,
+    )]
+
+
 def submit_handler(root: SourceRoot, sink: dict[str, Any],
-                   model: EndpointModel | None = None):
+                   model: EndpointModel | None = None,
+                   baseline_digests: list[SqlDigestStat] | None = None):
     hypotheses, default_model = recorded()
     model = model or default_model
     ranked = rank_hypotheses(hypotheses, model)
@@ -702,6 +1129,8 @@ def submit_handler(root: SourceRoot, sink: dict[str, Any],
         considered=[r.hypothesis_id for r in ranked[:2]], sink=sink,
         endpoint="POST /api/orders/search",
         measured_total_ms=hypotheses.measured_total_ms,
+        baseline_digests=(default_baseline_digests()
+                          if baseline_digests is None else baseline_digests),
     )
 
 
@@ -715,6 +1144,22 @@ def candidate_payload(**overrides: Any) -> dict[str, Any]:
         "files_to_touch": [SERVICE],
         "what_could_break": ["duplicate rows if the join is not distinct"],
         "preserves_response_bytes": True,
+        # fetch_join + sql_count is a SQL_REWRITE_APPROACHES / instrumented
+        # combination, so sql_before/sql_after are required at plan time
+        # (plan/risk.py::sql_verification_needed). No live `mysql` is ever
+        # passed in this file, so EXPLAIN ANALYZE never actually runs against
+        # these — they only need to be syntactically a SELECT.
+        "sql_before": "SELECT SUM(amount) FROM order_line WHERE order_id = %s",
+        "sql_after": "SELECT o.id, lo.total FROM orders o JOIN "
+                     "(SELECT order_id, SUM(amount) AS total FROM order_line "
+                     "GROUP BY order_id) lo ON lo.order_id = o.id "
+                     "WHERE o.id = %s",
+        # A sql_count claim must cite the baseline digest it reduces — see
+        # submit.py::_baseline_citation_failure. Matches
+        # default_baseline_digests() above, so the default candidate is
+        # selectable without every test needing to know about this.
+        "baseline_digest": DEFAULT_BASELINE_DIGEST,
+        "baseline_calls": DEFAULT_BASELINE_CALLS,
     }
     base.update(overrides)
     return base
@@ -1016,10 +1461,20 @@ class Scripted:
 
 def run_phase(client: Any, repo: Path, tmp_path: Path) -> Plan:
     hypotheses, model = recorded()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    # plan() reads run_dir/baseline.json for the digests a sql_count
+    # candidate's baseline_digest/baseline_calls is checked against —
+    # candidate_payload()'s default citation needs this to resolve to
+    # selectable, the same way INDEX_CANDIDATE needs a reachable schema.
+    (run_dir / "baseline.json").write_text(json.dumps({
+        "sql_digests": [d.model_dump(mode="json")
+                       for d in default_baseline_digests()],
+    }))
     return plan(
         repo=repo, endpoint="POST /api/orders/search", hypotheses=hypotheses,
-        model=model, client=client, trace=Trace(tmp_path / "run", "r1"),
-        budget=LoopBudget(max_steps=8), run_dir=tmp_path / "run",
+        model=model, client=client, trace=Trace(run_dir, "r1"),
+        budget=LoopBudget(max_steps=8), run_dir=run_dir,
         mysql=None,     # no database in tests; get_schema is not registered
     )
 

@@ -309,6 +309,28 @@ def test_a_changed_prompt_is_a_cassette_miss(tmp_path: Path) -> None:
     assert len(post.calls) == 2
 
 
+def test_a_changed_max_tokens_is_still_a_cassette_hit(tmp_path: Path) -> None:
+    """LOOP-01: senapathy.yml sets max_tokens=8192, but a cassette replayed
+    from a different working directory (one where Settings.load() could not
+    find that file) silently resolved the code default of 4096 instead --
+    same semantic request, same recorded answer, a miss purely because of an
+    incidental wire-transport value that has nothing to do with what was
+    asked. The cassette directory is the one thing that must stay fixed
+    across both calls here (a fresh tmp_path per client() call would miss
+    for an unrelated reason); max_tokens is the one thing that must be
+    allowed to differ."""
+    post = Recorder(ok(OPENAI_OK))
+    first = client(post, tmp_path, max_tokens=8192)
+    first.complete(messages=[{"role": "user", "content": "x"}])
+    assert len(post.calls) == 1
+
+    replay = Recorder()          # any request now raises
+    second = client(replay, tmp_path, max_tokens=4096)
+    response = second.complete(messages=[{"role": "user", "content": "x"}])
+    assert response.from_cassette is True
+    assert replay.calls == []
+
+
 def test_offline_names_the_missing_hash(tmp_path: Path) -> None:
     instance = client(Recorder(), tmp_path, offline=True)
     with pytest.raises(CassetteMiss) as caught:
@@ -324,6 +346,51 @@ def test_offline_replays_a_recorded_call_with_no_network(tmp_path: Path) -> None
     offline = client(Recorder(), tmp_path, offline=True)
     response = offline.complete(messages=[{"role": "user", "content": "x"}])
     assert response.from_cassette and response.tool_uses()[0]["name"] == "read_file"
+
+
+def test_a_miss_recovers_the_correction_a_live_self_correction_left_behind(
+    tmp_path: Path
+) -> None:
+    """STM-01's root cause, reproduced directly against Cassette: the LIVE
+    recording hit a malformed tool call partway through, run_agent appended
+    a user-role correction message and retried -- the rejected FIRST attempt
+    never got cassette-written (no 200 came back for it), only the
+    CORRECTED second attempt succeeded and got recorded, with the
+    correction message already inside its own request.messages. A fresh
+    replay's natural reconstruction (assistant reply + tool result, nothing
+    else) is one message short of that recorded conversation forever after.
+    recover_self_correction must read that correction text back verbatim."""
+    base = [{"role": "user", "content": "go"},
+           {"role": "assistant", "tool_calls": [{"id": "t1"}]},
+           {"role": "tool", "tool_call_id": "t1", "content": "result"}]
+    recorded_with_correction = [
+        *base, {"role": "user", "content": "schema error: fix your call"}]
+
+    recorded = client(Recorder(ok(OPENAI_OK)), tmp_path)
+    recorded.cassette.write(
+        "k1", "cerebras", "gpt-oss-120b",
+        {"messages": recorded_with_correction}, OPENAI_OK)
+
+    found = recorded.cassette.recover_self_correction(base)
+    assert found == "schema error: fix your call"
+
+
+def test_recovery_does_not_guess_when_ambiguous_or_absent(tmp_path: Path) -> None:
+    recorded = client(Recorder(ok(OPENAI_OK)), tmp_path)
+    base = [{"role": "user", "content": "go"}]
+
+    # No candidate at all.
+    assert recorded.cassette.recover_self_correction(base) is None
+
+    # Two DIFFERENT candidates for the same prefix -- genuinely ambiguous,
+    # never pick one arbitrarily.
+    recorded.cassette.write("k1", "cerebras", "gpt-oss-120b",
+                           {"messages": [*base, {"role": "user", "content": "a"}]},
+                           OPENAI_OK)
+    recorded.cassette.write("k2", "cerebras", "gpt-oss-120b",
+                           {"messages": [*base, {"role": "user", "content": "b"}]},
+                           OPENAI_OK)
+    assert recorded.cassette.recover_self_correction(base) is None
 
 
 # ───────────────────────────────  gemini  ────────────────────────────────

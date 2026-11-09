@@ -1,0 +1,32 @@
+{
+  "diagnose": [
+    {
+      "args": {
+        "iterations": 5,
+        "page_size": 1,
+        "request_id": "dense-req-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/reports/collections?page=0&size=1  (request_id='dense-req-p0-s100', page_size=1) iterations=5 (1 warmup discarded)\n  statuses                     : {'200': 5}\n  p50 latency                  : 151.9 ms\n  p95 latency                  : 162.7 ms\n  result rows in response      : 1\n  response body size (median)  : 133 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 143.4 ms (94.4 % of p50)\n  latency per result row       : 151.9 ms\n  body bytes per result row    : 133",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 3,
+        "page_size": 100,
+        "request_id": "dense-req-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/reports/collections?page=0&size=100  (request_id='dense-req-p0-s100', page_size=100) iterations=3 (1 warmup discarded)\n  statuses                     : {'200': 3}\n  p50 latency                  : 159.8 ms\n  p95 latency                  : 161.5 ms\n  result rows in response      : 100\n  response body size (median)  : 13088 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 140.5 ms (87.9 % of p50)\n  latency per result row       : 1.6 ms\n  body bytes per result row    : 130",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 3,
+        "page_size": 100,
+        "request_id": "dense-req-p2-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/reports/collections?page=2&size=100  (request_id='dense-req-p2-s100', page_size=100) iterations=3 (1 warmup discarded)\n  statuses                     : {'200': 3}\n  p50 latency                  : 155.4 ms\n  p95 latency                  : 156.3 ms\n  result rows in response      : 100\n  response body size (median)  : 13177 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 135.3 ms (87.1 % of p50)\n  latency per result row       : 1.6 ms\n  body bytes per result row    : 131",
+      "tool": "run_probe"
+    }
+  ],
+  "plan": []
+}

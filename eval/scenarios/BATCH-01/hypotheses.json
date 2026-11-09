@@ -1,0 +1,127 @@
+{
+  "hypotheses": [
+    {
+      "id": "h0",
+      "claim": "N+1 count queries (InvoiceRepository.countByCustomerId) dominate latency, taking ~5.2 ms per row.",
+      "mechanism": "For each recent payment row the service calls InvoiceRepository.countByCustomerId, which issues a separate SELECT COUNT query; the DB must scan ~7.2 M invoice rows per call (rows examined / rows sent = 726 670 202 / 20 002), causing ~5 ms of server‑side work per row.",
+      "layer": "database_query",
+      "evidence": [
+        "Top SQL digest: SELECT COUNT(`i1_0`.`id`) FROM `invoice` `i1_0` WHERE `i1_0`.`customer_id` = ? executed 10 000 times, total 52 474.5 ms (5.247 ms each)",
+        "SQL share of measured latency is 89.61 % (52 510.7 ms of 58 599.7 ms)",
+        "application SQL statements per request increase from 2 to 101 when rows go from 1 to 100 (probe), matching one count query per row"
+      ],
+      "attributed_ms": 525.0,
+      "prediction": "If the per‑customer invoice count is pre‑aggregated or fetched with a single GROUP BY query, the total latency will drop by roughly 525 ms for a 100‑row request.",
+      "confidence": 0.95
+    },
+    {
+      "id": "h1",
+      "claim": "ORM hydration of CustomerPayment entities adds ~0.4 ms per row.",
+      "mechanism": "Spring Data JPA maps each row of the recent‑payment JPQL result to a CustomerPayment entity; object allocation, proxy creation and field population consume CPU per entity.",
+      "layer": "orm_hydration",
+      "evidence": [
+        "application SQL per request rises from 2 to 101 statements when rows increase (probe)",
+        "server‑side SQL accounts for 85 % of latency at 100 rows, leaving ~15 % (≈90 ms) non‑SQL",
+        "non‑SQL latency scales roughly linearly with row count (12.4 ms total for 1 row vs 610.5 ms total for 100 rows, after subtracting SQL)"
+      ],
+      "attributed_ms": 40.0,
+      "prediction": "Switching the JPQL query to a DTO projection (e.g., SELECT new PaymentSummary(...)) will reduce the non‑SQL portion by ~40 ms for 100 rows.",
+      "confidence": 0.7
+    },
+    {
+      "id": "h2",
+      "claim": "Per‑row application‑level aggregation logic costs ~0.3 ms per row.",
+      "mechanism": "The service creates a PaymentSummary object for each row, copies fields, and adds it to a list; this per‑iteration Java work accumulates across rows.",
+      "layer": "application_logic",
+      "evidence": [
+        "RecentPaymentSummaryService iterates over each CustomerPayment and builds a summary DTO, invoking countByCustomerId per row (observed 100 count queries)",
+        "After accounting for ORM cost, remaining non‑SQL overhead is ~0.5 ms per row, consistent with loop and DTO creation work"
+      ],
+      "attributed_ms": 30.0,
+      "prediction": "Refactoring to reuse a single mutable DTO or to pre‑allocate the list will shave ~30 ms from a 100‑row request.",
+      "confidence": 0.6
+    },
+    {
+      "id": "h3",
+      "claim": "JSON serialization adds ~0.2 ms per row.",
+      "mechanism": "Spring MVC uses Jackson to write the list of summary DTOs to JSON; each byte written requires CPU work and buffer allocation, incurring ~0.2 ms per row.",
+      "layer": "serialization",
+      "evidence": [
+        "Response body size grows linearly: 152 B for 1 row, 15 178 B for 100 rows (~151 B per row)",
+        "Jackson serialization time typically scales with output size; the measured non‑SQL overhead of ~0.9 ms per row leaves ~0.2 ms that aligns with serialising ~150 B"
+      ],
+      "attributed_ms": 20.0,
+      "prediction": "Using a streaming serializer or disabling pretty‑print will reduce the non‑SQL portion by ~20 ms for 100 rows.",
+      "confidence": 0.5
+    }
+  ],
+  "probes_run": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 5,
+        "page_size": 1,
+        "request_id": "dense-req-p0-s100"
+      },
+      "discriminates_between": [
+        "h0",
+        "h1",
+        "h2",
+        "h3"
+      ],
+      "result": "p50 latency 12.4 ms, application SQL 2.0 statements, server‑side SQL 8.7 ms, result rows 1, response size 152 B"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 5,
+        "page_size": 100,
+        "request_id": "dense-req-p0-s100"
+      },
+      "discriminates_between": [
+        "h0",
+        "h1",
+        "h2",
+        "h3"
+      ],
+      "result": "p50 latency 610.5 ms, application SQL 101.0 statements, server‑side SQL 519.3 ms, result rows 100, response size 15 178 B"
+    }
+  ],
+  "ranked_ids": [
+    "h0",
+    "h1",
+    "h2",
+    "h3"
+  ],
+  "measured_total_ms": 584.016,
+  "probes_executed": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-req-p0-s100",
+        "iterations": 5,
+        "page_size": 1
+      },
+      "result": "probe: GET http://localhost:18080/api/payments/recent-summary?page=0&size=1  (request_id='dense-req-p0-s100', page_size=1) iterations=5 (1 warmup discarded)\n  statuses                     : {'200': 5}\n  p50 latency                  : 12.4 ms\n  p95 latency                  : 14.8 ms\n  result rows in response      : 1\n  response body size (median)  : 152 bytes\n  application SQL per request  : 2.0 statements\n  server-side SQL per request  : 8.7 ms (70.1 % of p50)\n  latency per result row       : 12.4 ms\n  body bytes per result row    : 152",
+      "endpoint_called": "GET http://localhost:18080/api/payments/recent-summary?page=0&size=1"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-req-p0-s100",
+        "iterations": 5,
+        "page_size": 100
+      },
+      "result": "probe: GET http://localhost:18080/api/payments/recent-summary?page=0&size=100  (request_id='dense-req-p0-s100', page_size=100) iterations=5 (1 warmup discarded)\n  statuses                     : {'200': 5}\n  p50 latency                  : 610.5 ms\n  p95 latency                  : 641.5 ms\n  result rows in response      : 100\n  response body size (median)  : 15178 bytes\n  application SQL per request  : 101.0 statements\n  server-side SQL per request  : 519.3 ms (85.1 % of p50)\n  latency per result row       : 6.1 ms\n  body bytes per result row    : 151",
+      "endpoint_called": "GET http://localhost:18080/api/payments/recent-summary?page=0&size=100"
+    }
+  ],
+  "baseline": "/Users/akashm/Documents/ak/perfagent/eval/scratch/BATCH-01/baseline.json",
+  "baseline_hash": "1159c06fe266b720",
+  "endpoint_model": "/Users/akashm/Documents/ak/perfagent/eval/scratch/BATCH-01/endpoint_model.json",
+  "submissions_rejected": 1,
+  "database_tools": [
+    "explain",
+    "list_indexes"
+  ]
+}

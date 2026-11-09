@@ -1,0 +1,494 @@
+{
+  "route": "GET /api/reports/collections",
+  "entry": {
+    "file": "src/main/java/com/ex/web/CollectionsReportController.java",
+    "line": 21,
+    "symbol": "CollectionsReportController.collections"
+  },
+  "path": [
+    {
+      "file": "src/main/java/com/ex/web/CollectionsReportController.java",
+      "line": 21,
+      "symbol": "CollectionsReportController.collections"
+    },
+    {
+      "file": "src/main/java/com/ex/service/CollectionsReportService.java",
+      "line": 24,
+      "symbol": "CollectionsReportService.collectionsFor"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+      "line": 25,
+      "symbol": "PaymentAllocationRepository.findAllocations"
+    }
+  ],
+  "call_chain": [
+    {
+      "method": "CollectionsReportController.collections",
+      "file": "src/main/java/com/ex/web/CollectionsReportController.java",
+      "line": 21,
+      "does": "handle request and delegate to service"
+    },
+    {
+      "method": "CollectionsReportService.collectionsFor",
+      "file": "src/main/java/com/ex/service/CollectionsReportService.java",
+      "line": 24,
+      "does": "bound page size, call repository to fetch DTO rows"
+    },
+    {
+      "method": "PaymentAllocationRepository.findAllocations",
+      "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+      "line": 25,
+      "does": "execute JPQL query returning paged CollectionsRowDto objects"
+    }
+  ],
+  "data_access": [
+    {
+      "trigger": "paymentAllocationRepo.findAllocations",
+      "kind": "jpql_query",
+      "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+      "line": 19,
+      "sql": "select new com.ex.dto.CollectionsRowDto(c.name, i.id, p.paidOn, pa.allocatedAmount) from PaymentAllocation pa, CustomerPayment p, Invoice i, Customer c where pa.paymentId = p.id and pa.invoiceId = i.id and i.customer.id = c.id and FUNCTION('DATE', p.paidOn) >= :from and FUNCTION('DATE', p.paidOn) < :to and p.method = :method order by p.paidOn asc, p.id asc",
+      "tables": [
+        "payment_allocation",
+        "customer_payment",
+        "invoice",
+        "customer"
+      ],
+      "executes_per_row": false,
+      "note": "select new DTO with joins and pagination"
+    }
+  ],
+  "sql_sources": [
+    {
+      "method": "paymentAllocationRepo.findAllocations",
+      "kind": "@Query JPQL",
+      "tables": [
+        "payment_allocation",
+        "customer_payment",
+        "invoice",
+        "customer"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
+        "line": 19,
+        "symbol": null
+      }
+    }
+  ],
+  "entities": [
+    {
+      "name": "PaymentAllocation",
+      "table": "payment_allocation",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/PaymentAllocation.java",
+        "line": 1,
+        "symbol": null
+      },
+      "relations": [
+        {
+          "field": "payment",
+          "type": "ManyToOne",
+          "fetch": "LAZY",
+          "target": "CustomerPayment",
+          "batch_size": null,
+          "fetch_mode": null
+        },
+        {
+          "field": "invoice",
+          "type": "ManyToOne",
+          "fetch": "LAZY",
+          "target": "Invoice",
+          "batch_size": null,
+          "fetch_mode": null
+        }
+      ]
+    },
+    {
+      "name": "CustomerPayment",
+      "table": "customer_payment",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/CustomerPayment.java",
+        "line": 1,
+        "symbol": null
+      },
+      "relations": [
+        {
+          "field": "customer",
+          "type": "ManyToOne",
+          "fetch": "LAZY",
+          "target": "Customer",
+          "batch_size": null,
+          "fetch_mode": null
+        }
+      ]
+    },
+    {
+      "name": "Invoice",
+      "table": "invoice",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/Invoice.java",
+        "line": 1,
+        "symbol": null
+      },
+      "relations": [
+        {
+          "field": "customer",
+          "type": "ManyToOne",
+          "fetch": "LAZY",
+          "target": "Customer",
+          "batch_size": null,
+          "fetch_mode": null
+        }
+      ]
+    },
+    {
+      "name": "Customer",
+      "table": "customer",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/Customer.java",
+        "line": 1,
+        "symbol": null
+      },
+      "relations": []
+    }
+  ],
+  "transactions": [
+    {
+      "method": "CollectionsReportService.collectionsFor",
+      "propagation": "REQUIRED",
+      "read_only": true,
+      "citation": {
+        "file": "src/main/java/com/ex/service/CollectionsReportService.java",
+        "line": 23,
+        "symbol": null
+      }
+    }
+  ],
+  "external_calls": [],
+  "tables": [
+    {
+      "table": "payment_allocation",
+      "entity": "PaymentAllocation",
+      "columns_read": [
+        "allocated_amount",
+        "payment_id",
+        "invoice_id"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "payment_id bigint NOT NULL",
+        "invoice_id bigint NOT NULL",
+        "allocated_amount decimal(19,2) NOT NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "idx_payment_allocation_invoice_id",
+          "columns": [
+            "invoice_id"
+          ],
+          "unique": false,
+          "cardinality": 1016736
+        },
+        {
+          "name": "idx_payment_allocation_payment_id",
+          "columns": [
+            "payment_id"
+          ],
+          "unique": false,
+          "cardinality": 1486455
+        },
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 2060646
+        }
+      ],
+      "approx_rows": 2060646,
+      "foreign_keys": [
+        {
+          "direction": "out",
+          "constraint": "fk_payment_allocation_invoice",
+          "column": "invoice_id",
+          "references": "invoice.id"
+        },
+        {
+          "direction": "out",
+          "constraint": "fk_payment_allocation_payment",
+          "column": "payment_id",
+          "references": "customer_payment.id"
+        }
+      ]
+    },
+    {
+      "table": "customer_payment",
+      "entity": "CustomerPayment",
+      "columns_read": [
+        "paid_on",
+        "method",
+        "id"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "customer_id bigint NOT NULL",
+        "paid_on datetime NOT NULL",
+        "amount decimal(19,2) NOT NULL",
+        "method varchar(16) NOT NULL",
+        "reference varchar(64) NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "idx_customer_payment_customer_id",
+          "columns": [
+            "customer_id"
+          ],
+          "unique": false,
+          "cardinality": 35120
+        },
+        {
+          "name": "idx_customer_payment_paid_on",
+          "columns": [
+            "paid_on"
+          ],
+          "unique": false,
+          "cardinality": 1464665
+        },
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 1492467
+        }
+      ],
+      "approx_rows": 1492467,
+      "foreign_keys": [
+        {
+          "direction": "out",
+          "constraint": "fk_customer_payment_customer",
+          "column": "customer_id",
+          "references": "customer.id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_payment_allocation_payment",
+          "column": "payment_allocation.payment_id",
+          "references": "id"
+        }
+      ]
+    },
+    {
+      "table": "invoice",
+      "entity": "Invoice",
+      "columns_read": [
+        "id",
+        "customer_id"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "customer_id bigint NULL",
+        "amount decimal(19,2) NULL",
+        "status varchar(255) NULL",
+        "due_date date NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "idx_invoice_customer_id",
+          "columns": [
+            "customer_id"
+          ],
+          "unique": false,
+          "cardinality": 32931
+        },
+        {
+          "name": "idx_invoice_customer_id_status_due_date_id",
+          "columns": [
+            "customer_id",
+            "status",
+            "due_date",
+            "id"
+          ],
+          "unique": false,
+          "cardinality": 35666
+        },
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 1196007
+        }
+      ],
+      "approx_rows": 1196007,
+      "foreign_keys": [
+        {
+          "direction": "out",
+          "constraint": "fk_invoice_customer",
+          "column": "customer_id",
+          "references": "customer.id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_payment_invoice",
+          "column": "payment.invoice_id",
+          "references": "id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_payment_allocation_invoice",
+          "column": "payment_allocation.invoice_id",
+          "references": "id"
+        }
+      ]
+    },
+    {
+      "table": "customer",
+      "entity": "Customer",
+      "columns_read": [
+        "name",
+        "id"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "name varchar(255) NOT NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 49936
+        }
+      ],
+      "approx_rows": 49936,
+      "foreign_keys": [
+        {
+          "direction": "in",
+          "constraint": "fk_customer_payment_customer",
+          "column": "customer_payment.customer_id",
+          "references": "id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_invoice_customer",
+          "column": "invoice.customer_id",
+          "references": "id"
+        }
+      ]
+    }
+  ],
+  "per_row_work": [],
+  "response_shape": {
+    "dto": "CollectionsRowDto",
+    "fields_returned": [
+      "customerName",
+      "invoiceNumber",
+      "paymentDate",
+      "allocatedAmount"
+    ],
+    "computed_fields": [],
+    "unbounded_collections": [],
+    "citation": {
+      "file": "src/main/java/com/ex/web/CollectionsReportController.java",
+      "line": 21,
+      "symbol": null
+    }
+  },
+  "request_shape": {
+    "parameters": [
+      {
+        "name": "from",
+        "location": "query",
+        "type": "string",
+        "required": false,
+        "default": "2023-06-01",
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/CollectionsReportController.java",
+          "line": 22,
+          "symbol": "from"
+        }
+      },
+      {
+        "name": "to",
+        "location": "query",
+        "type": "string",
+        "required": false,
+        "default": "2023-07-01",
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/CollectionsReportController.java",
+          "line": 24,
+          "symbol": "to"
+        }
+      },
+      {
+        "name": "method",
+        "location": "query",
+        "type": "string",
+        "required": false,
+        "default": "ACH",
+        "allowed_values": [
+          "CARD",
+          "ACH",
+          "WIRE",
+          "CHECK"
+        ],
+        "citation": {
+          "file": "src/main/java/com/ex/web/CollectionsReportController.java",
+          "line": 26,
+          "symbol": "method"
+        }
+      },
+      {
+        "name": "page",
+        "location": "query",
+        "type": "integer",
+        "required": false,
+        "default": 0,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/CollectionsReportController.java",
+          "line": 27,
+          "symbol": "page"
+        }
+      },
+      {
+        "name": "size",
+        "location": "query",
+        "type": "integer",
+        "required": false,
+        "default": 50,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/CollectionsReportController.java",
+          "line": 28,
+          "symbol": "size"
+        }
+      }
+    ]
+  },
+  "pagination": {
+    "mechanism": "offset",
+    "fires_count_query": false,
+    "max_page_size": 100,
+    "citation": {
+      "file": "src/main/java/com/ex/service/CollectionsReportService.java",
+      "line": 27,
+      "symbol": null
+    }
+  },
+  "caching": [],
+  "hidden_query_triggers": [],
+  "tests_covering": [],
+  "uncertainties": [],
+  "prompt_hash": "b4cf7ea7df5e8d57",
+  "base_commit": "0de8c07375c27bcb1d484adb84197b5ce045fbc1"
+}

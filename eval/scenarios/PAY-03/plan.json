@@ -1,0 +1,137 @@
+{
+  "endpoint": "GET /api/payments/recent",
+  "measured_total_ms": 6.059,
+  "ranked": [
+    {
+      "hypothesis_id": "h2",
+      "claim": "Jackson serializes each DTO to JSON, costing ~0.04 ms per row (≈0.0004 ms per byte).",
+      "layer": "serialization",
+      "attributed_ms": 4.0,
+      "fixability": {
+        "hypothesis_id": "h2",
+        "fixability": 0.3,
+        "reason": "library-level, rarely beatable by hand (no unbounded response collection is implicated)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 1.2
+    },
+    {
+      "hypothesis_id": "h1",
+      "claim": "JPA/Hibernate materializes a full entity for each result row, incurring ~0.02 ms per row.",
+      "layer": "orm_hydration",
+      "attributed_ms": 2.0,
+      "fixability": {
+        "hypothesis_id": "h1",
+        "fixability": 0.4,
+        "reason": "UNCLASSIFIED: no policy row matched this hypothesis, so 0.40 is a placeholder rather than an assessment",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": false
+      },
+      "expected_value_ms": 0.8
+    },
+    {
+      "hypothesis_id": "h3",
+      "claim": "Fixed Spring MVC / service dispatch overhead accounts for ~0.5 ms per request.",
+      "layer": "application_logic",
+      "attributed_ms": 0.5,
+      "fixability": {
+        "hypothesis_id": "h3",
+        "fixability": 0.4,
+        "reason": "UNCLASSIFIED: no policy row matched this hypothesis, so 0.40 is a placeholder rather than an assessment",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": false
+      },
+      "expected_value_ms": 0.2
+    }
+  ],
+  "considered": [
+    "h2",
+    "h1"
+  ],
+  "candidates": [
+    {
+      "id": "c1",
+      "targets_hypothesis": "h2",
+      "approach": "other",
+      "description": "Register Jackson Afterburner module to speed up JSON serialization of RecentPaymentDto objects. Add a @Bean method returning AfterburnerModule in the Application class, which Spring Boot will auto-register with the ObjectMapper.",
+      "mechanism": "serialization",
+      "mechanism_changed": "serialization time per request",
+      "predicted_effect": "serialization time drops from ~4.0 ms to ~2.5 ms per request",
+      "files_to_touch": [
+        "src/main/java/com/ex/Application.java"
+      ],
+      "sql_change": null,
+      "sql_before": null,
+      "sql_after": null,
+      "sql_params": [],
+      "baseline_digest": null,
+      "baseline_calls": null,
+      "what_could_break": [
+        "Afterburner may not be compatible with the project's Jackson version, causing serialization errors at runtime."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 3,
+      "requires_flag": true,
+      "expected_value_ms": 1.2,
+      "sql_verification": null,
+      "not_selectable_because": "its mechanism is 'serialization', which this harness does not instrument — only rows_examined, sql_count carry before/after values, so MECHANISM_MATCH could never confirm this candidate regardless of what the patch does.",
+      "scope_reasons": {}
+    },
+    {
+      "id": "c2",
+      "targets_hypothesis": "h1",
+      "approach": "query_rewrite",
+      "description": "Rewrite the recent payments query to a native SQL query and map the result manually, avoiding Hibernate's JPQL parsing and DTO constructor expression overhead. Use EntityManager.createNativeQuery with placeholders for method and limit, then convert each row to RecentPaymentDto in the service.",
+      "mechanism": "allocation",
+      "mechanism_changed": "object allocations per request",
+      "predicted_effect": "DTO allocations per row drop from ~0.02 ms to negligible, reducing total request time by ~1 ms",
+      "files_to_touch": [
+        "src/main/java/com/ex/repo/CustomerPaymentRepository.java",
+        "src/main/java/com/ex/service/RecentPaymentsService.java",
+        "src/main/java/com/ex/web/RecentPaymentsController.java"
+      ],
+      "sql_change": null,
+      "sql_before": "select new com.ex.dto.RecentPaymentDto(p.id, c.name, p.paidOn, p.amount, p.method) from CustomerPayment p, Customer c where p.customerId = c.id and p.method = :method order by p.paidOn desc, p.id desc",
+      "sql_after": "SELECT cp.id, c.name, cp.paid_on, cp.amount, cp.method FROM customer_payment cp JOIN customer c ON cp.customer_id = c.id WHERE cp.method = %s ORDER BY cp.paid_on DESC, cp.id DESC LIMIT %s",
+      "sql_params": [
+        "CARD",
+        "50"
+      ],
+      "baseline_digest": null,
+      "baseline_calls": null,
+      "what_could_break": [
+        "Native query may return columns in a different type or order causing mapping errors.",
+        "Manual mapping code may introduce bugs or miss null handling."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 2,
+      "requires_flag": false,
+      "expected_value_ms": 0.8,
+      "sql_verification": null,
+      "not_selectable_because": "its mechanism is 'allocation', which this harness does not instrument — only rows_examined, sql_count carry before/after values, so MECHANISM_MATCH could never confirm this candidate regardless of what the patch does.",
+      "scope_reasons": {
+        "src/main/java/com/ex/web/RecentPaymentsController.java": "on this endpoint's own traced call path to src/main/java/com/ex/repo/CustomerPaymentRepository.java, which this candidate already touches — included so a change to src/main/java/com/ex/repo/CustomerPaymentRepository.java has its caller in scope"
+      }
+    }
+  ],
+  "selected_id": null,
+  "selection_reason": "no candidate cleared the selection rule: every one was either above risk tier T2 or did not claim to preserve the response bytes",
+  "not_selected": [
+    {
+      "candidate_id": "c1",
+      "reason": "its mechanism is 'serialization', which this harness does not instrument — only rows_examined, sql_count carry before/after values, so MECHANISM_MATCH could never confirm this candidate regardless of what the patch does."
+    },
+    {
+      "candidate_id": "c2",
+      "reason": "its mechanism is 'allocation', which this harness does not instrument — only rows_examined, sql_count carry before/after values, so MECHANISM_MATCH could never confirm this candidate regardless of what the patch does."
+    }
+  ],
+  "prompt_hash": "5f311954ae548093",
+  "base_commit": "b620611d5a8f3fe96054b57dc9124918c70237a7",
+  "decided_by": "code",
+  "baseline_hash": "2f89f0cf7d2d5c3d"
+}

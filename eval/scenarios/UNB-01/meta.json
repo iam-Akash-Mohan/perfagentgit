@@ -1,0 +1,6 @@
+{
+  "scenario": "UNB-01",
+  "endpoint": "GET /api/invoices/{id}/payment-history",
+  "mini_spring_commit": "feb56fa89ee38f1426cbe87c5f61a5185b05f78a",
+  "mini_spring_tag": "eval/UNB-01"
+}

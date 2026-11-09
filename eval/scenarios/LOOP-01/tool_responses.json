@@ -1,0 +1,23 @@
+{
+  "diagnose": [
+    {
+      "args": {
+        "iterations": 5,
+        "page_size": 1,
+        "request_id": "dense-req-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/invoices/overdue-worklist?page=0&size=1  (request_id='dense-req-p0-s100', page_size=1) iterations=5 (1 warmup discarded)\n  statuses                     : {'200': 5}\n  p50 latency                  : 4.8 ms\n  p95 latency                  : 6.5 ms\n  result rows in response      : 1\n  response body size (median)  : 119 bytes\n  application SQL per request  : 2.0 statements\n  server-side SQL per request  : 0.3 ms (6.4 % of p50)\n  latency per result row       : 4.8 ms\n  body bytes per result row    : 119",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 3,
+        "page_size": 100,
+        "request_id": "dense-req-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/invoices/overdue-worklist?page=0&size=100  (request_id='dense-req-p0-s100', page_size=100) iterations=3 (1 warmup discarded)\n  statuses                     : {'200': 3}\n  p50 latency                  : 58.9 ms\n  p95 latency                  : 72.7 ms\n  result rows in response      : 100\n  response body size (median)  : 12299 bytes\n  application SQL per request  : 101.0 statements\n  server-side SQL per request  : 4.5 ms (7.6 % of p50)\n  latency per result row       : 0.6 ms\n  body bytes per result row    : 122",
+      "tool": "run_probe"
+    }
+  ],
+  "plan": []
+}

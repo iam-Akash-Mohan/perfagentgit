@@ -1,0 +1,6 @@
+{
+  "scenario": "SER-01",
+  "endpoint": "GET /api/customers/bios",
+  "mini_spring_commit": "13ca852f5151a0870b16298bbb84d87d92633416",
+  "mini_spring_tag": "eval/SER-01"
+}

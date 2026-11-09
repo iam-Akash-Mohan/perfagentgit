@@ -9,14 +9,16 @@ rather than mysterious.
 
 from __future__ import annotations
 
-from ..contracts import EndpointModel, Hypothesis, RankedHypothesis
+from ..contracts import EndpointModel, Hypothesis, RankedHypothesis, SqlDigestStat
+from ..measure.baseline import is_session_control
 from .fixability import unbounded_fields
 
 
 def render_brief(*, ranked: list[RankedHypothesis],
                  hypotheses: dict[str, Hypothesis],
                  considered: list[str],
-                 model: EndpointModel) -> str:
+                 model: EndpointModel,
+                 baseline_digests: list[SqlDigestStat] | None = None) -> str:
     out: list[str] = []
     out.extend(_ranking(ranked, hypotheses, considered))
     out.append("")
@@ -26,8 +28,40 @@ def render_brief(*, ranked: list[RankedHypothesis],
     out.append("")
     out.extend(_tables(model))
     out.append("")
+    out.extend(_baseline_sql(baseline_digests or []))
+    out.append("")
     out.extend(_files(model))
     return "\n".join(out)
+
+
+def _baseline_sql(digests: list[SqlDigestStat]) -> list[str]:
+    """Every application statement this endpoint actually ran during
+    baseline measurement, with its own digest hash and call count.
+
+    A `sql_count` candidate must cite one of these BY HASH (`baseline_digest`)
+    with the `calls` figure it names (`baseline_calls`) — code checks the
+    citation against this same list, not the candidate's prose. A statement
+    that is not here was never measured running at all; a candidate that
+    claims to collapse calls of one is making that up.
+    """
+    out = ["=== BASELINE: WHAT ACTUALLY RAN, PER STATEMENT ===",
+           "",
+           "  A candidate with mechanism 'sql_count' must name ONE of these by",
+           "  its digest hash (baseline_digest) and the calls figure below",
+           "  (baseline_calls) — copied, not estimated. A digest not listed",
+           "  here was not measured running, so a candidate cannot claim to",
+           "  reduce its call count.",
+           ""]
+    app_digests = [d for d in digests if not is_session_control(d)]
+    if not app_digests:
+        out.append("  none recorded")
+        return out
+    for digest in app_digests:
+        out.append(f"  digest {digest.digest}")
+        out.append(f"    sql    {digest.sample_sql.strip()[:160]}")
+        out.append(f"    calls  {digest.calls}  (rows examined "
+                   f"{digest.rows_examined:,}, rows sent {digest.rows_sent:,})")
+    return out
 
 
 def _ranking(ranked: list[RankedHypothesis], hypotheses: dict[str, Hypothesis],

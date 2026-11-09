@@ -1,0 +1,369 @@
+{
+  "route": "GET /api/customers/{id}/invoices",
+  "entry": {
+    "file": "src/main/java/com/ex/web/InvoiceController.java",
+    "line": 18,
+    "symbol": "InvoiceController.listInvoices"
+  },
+  "path": [
+    {
+      "file": "src/main/java/com/ex/web/InvoiceController.java",
+      "line": 18,
+      "symbol": "InvoiceController.listInvoices"
+    },
+    {
+      "file": "src/main/java/com/ex/service/InvoiceService.java",
+      "line": 36,
+      "symbol": "InvoiceService.openInvoicesFor"
+    },
+    {
+      "file": "src/main/java/com/ex/service/InvoiceEnricher.java",
+      "line": 15,
+      "symbol": "InvoiceEnricher.enrich"
+    },
+    {
+      "file": "src/main/java/com/ex/dto/InvoiceDtoMapper.java",
+      "line": 14,
+      "symbol": "InvoiceDtoMapper.toDto"
+    }
+  ],
+  "call_chain": [
+    {
+      "method": "InvoiceController.listInvoices",
+      "file": "src/main/java/com/ex/web/InvoiceController.java",
+      "line": 18,
+      "does": "Controller method reads path and query parameters and delegates to service"
+    },
+    {
+      "method": "InvoiceService.openInvoicesFor",
+      "file": "src/main/java/com/ex/service/InvoiceService.java",
+      "line": 36,
+      "does": "Service validates customer exists, caps page size, queries invoices with pagination, enriches each invoice to DTO"
+    },
+    {
+      "method": "InvoiceEnricher.enrich",
+      "file": "src/main/java/com/ex/service/InvoiceEnricher.java",
+      "line": 15,
+      "does": "Enriches an Invoice by mapping it to a DTO"
+    },
+    {
+      "method": "InvoiceDtoMapper.toDto",
+      "file": "src/main/java/com/ex/dto/InvoiceDtoMapper.java",
+      "line": 14,
+      "does": "Maps Invoice entity to InvoiceDto, fetching customer name"
+    }
+  ],
+  "data_access": [
+    {
+      "trigger": "customerRepo.findById",
+      "kind": "derived_query",
+      "file": "src/main/java/com/ex/service/InvoiceService.java",
+      "line": 37,
+      "sql": null,
+      "tables": [],
+      "executes_per_row": false,
+      "note": "validates customer existence"
+    },
+    {
+      "trigger": "invoiceRepo.findByCustomerIdAndStatus",
+      "kind": "jpql_query",
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 24,
+      "sql": "select i from Invoice i where i.customer.id = :customerId and i.status = :status order by i.dueDate asc, i.id asc",
+      "tables": [
+        "invoice"
+      ],
+      "executes_per_row": false,
+      "note": null
+    },
+    {
+      "trigger": "customerRepository.findNameById",
+      "kind": "jpql_query",
+      "file": "src/main/java/com/ex/dto/InvoiceDtoMapper.java",
+      "line": 15,
+      "sql": "select c.name from Customer c where c.id = :id",
+      "tables": [
+        "customer"
+      ],
+      "executes_per_row": true,
+      "note": null
+    }
+  ],
+  "sql_sources": [
+    {
+      "method": "customerRepo.findById",
+      "kind": "derived query",
+      "tables": [],
+      "citation": {
+        "file": "src/main/java/com/ex/service/InvoiceService.java",
+        "line": 37,
+        "symbol": null
+      }
+    },
+    {
+      "method": "invoiceRepo.findByCustomerIdAndStatus",
+      "kind": "@Query JPQL",
+      "tables": [
+        "invoice"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+        "line": 24,
+        "symbol": null
+      }
+    },
+    {
+      "method": "customerRepository.findNameById",
+      "kind": "@Query JPQL",
+      "tables": [
+        "customer"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/dto/InvoiceDtoMapper.java",
+        "line": 15,
+        "symbol": null
+      }
+    }
+  ],
+  "entities": [
+    {
+      "name": "Invoice",
+      "table": "invoice",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/Invoice.java",
+        "line": 7,
+        "symbol": "Invoice"
+      },
+      "relations": [
+        {
+          "field": "customer",
+          "type": "ManyToOne",
+          "fetch": "LAZY",
+          "target": "Customer",
+          "batch_size": null,
+          "fetch_mode": null
+        }
+      ]
+    },
+    {
+      "name": "Customer",
+      "table": "customer",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/Customer.java",
+        "line": 7,
+        "symbol": "Customer"
+      },
+      "relations": []
+    }
+  ],
+  "transactions": [
+    {
+      "method": "openInvoicesFor",
+      "propagation": "REQUIRED",
+      "read_only": true,
+      "citation": {
+        "file": "src/main/java/com/ex/service/InvoiceService.java",
+        "line": 35,
+        "symbol": "@Transactional"
+      }
+    }
+  ],
+  "external_calls": [],
+  "tables": [
+    {
+      "table": "invoice",
+      "entity": "Invoice",
+      "columns_read": [
+        "customer_id",
+        "status",
+        "due_date",
+        "id",
+        "amount"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "customer_id bigint NULL",
+        "amount decimal(19,2) NULL",
+        "status varchar(255) NULL",
+        "due_date date NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "idx_invoice_customer_id",
+          "columns": [
+            "customer_id"
+          ],
+          "unique": false,
+          "cardinality": 32931
+        },
+        {
+          "name": "idx_invoice_customer_id_status_due_date_id",
+          "columns": [
+            "customer_id",
+            "status",
+            "due_date",
+            "id"
+          ],
+          "unique": false,
+          "cardinality": 35666
+        },
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 1196007
+        }
+      ],
+      "approx_rows": 1196007,
+      "foreign_keys": [
+        {
+          "direction": "out",
+          "constraint": "fk_invoice_customer",
+          "column": "customer_id",
+          "references": "customer.id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_payment_invoice",
+          "column": "payment.invoice_id",
+          "references": "id"
+        }
+      ]
+    },
+    {
+      "table": "customer",
+      "entity": "Customer",
+      "columns_read": [
+        "name"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "name varchar(255) NOT NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 49936
+        }
+      ],
+      "approx_rows": 49936,
+      "foreign_keys": [
+        {
+          "direction": "in",
+          "constraint": "fk_invoice_customer",
+          "column": "invoice.customer_id",
+          "references": "id"
+        }
+      ]
+    }
+  ],
+  "per_row_work": [
+    {
+      "description": "creates one InvoiceDto per invoice and adds it to the result list",
+      "file": "src/main/java/com/ex/service/InvoiceService.java",
+      "line": 45,
+      "kind": "object_creation",
+      "scales_with": "invoices per page",
+      "bounded": true,
+      "bound": "page size, max 100"
+    }
+  ],
+  "response_shape": {
+    "dto": "InvoiceDto",
+    "fields_returned": [
+      "id",
+      "amount",
+      "status",
+      "dueDate",
+      "customerName"
+    ],
+    "computed_fields": [],
+    "unbounded_collections": [],
+    "citation": {
+      "file": "src/main/java/com/ex/web/InvoiceController.java",
+      "line": 18,
+      "symbol": "List<InvoiceDto>"
+    }
+  },
+  "request_shape": {
+    "parameters": [
+      {
+        "name": "id",
+        "location": "path",
+        "type": "integer",
+        "required": true,
+        "default": null,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/InvoiceController.java",
+          "line": 18,
+          "symbol": "id"
+        }
+      },
+      {
+        "name": "status",
+        "location": "query",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/InvoiceController.java",
+          "line": 19,
+          "symbol": "status"
+        }
+      },
+      {
+        "name": "page",
+        "location": "query",
+        "type": "integer",
+        "required": false,
+        "default": 0,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/InvoiceController.java",
+          "line": 20,
+          "symbol": "page"
+        }
+      },
+      {
+        "name": "size",
+        "location": "query",
+        "type": "integer",
+        "required": false,
+        "default": 50,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/InvoiceController.java",
+          "line": 21,
+          "symbol": "size"
+        }
+      }
+    ]
+  },
+  "pagination": {
+    "mechanism": "offset",
+    "fires_count_query": false,
+    "max_page_size": 100,
+    "citation": {
+      "file": "src/main/java/com/ex/service/InvoiceService.java",
+      "line": 39,
+      "symbol": "PageRequest.of"
+    }
+  },
+  "caching": [],
+  "hidden_query_triggers": [],
+  "tests_covering": [],
+  "uncertainties": [
+    "Whether accessing invoice.getCustomer().getId() triggers a lazy load of the Customer entity (likely not, as the identifier is available without initialization).",
+    "AUTOMATED CHECK: id, status are required request parameters with no recorded default and no allowed_values. Corpus generation cannot invent a value for a required parameter and will refuse by name unless one of those is filled in — check whether the code actually constrains the value (an enum, a @Pattern) that was missed."
+  ],
+  "prompt_hash": "b4cf7ea7df5e8d57",
+  "base_commit": "e0d7c7021d82ac93431f1647469a3b6c0cd71499"
+}

@@ -1,0 +1,135 @@
+{
+  "endpoint": "GET /api/invoices/paid-summary",
+  "measured_total_ms": 5.301,
+  "ranked": [
+    {
+      "hypothesis_id": "h2",
+      "claim": "JSON serialization of the response adds a modest per‑byte cost",
+      "layer": "serialization",
+      "attributed_ms": 0.5,
+      "fixability": {
+        "hypothesis_id": "h2",
+        "fixability": 0.3,
+        "reason": "library-level, rarely beatable by hand (no unbounded response collection is implicated)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 0.15
+    },
+    {
+      "hypothesis_id": "h1",
+      "claim": "ORM hydration of Invoice entities dominates per‑row cost",
+      "layer": "orm_hydration",
+      "attributed_ms": 3.0,
+      "fixability": {
+        "hypothesis_id": "h1",
+        "fixability": 0.4,
+        "reason": "UNCLASSIFIED: no policy row matched this hypothesis, so 0.40 is a placeholder rather than an assessment",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": false
+      },
+      "expected_value_ms": 1.2
+    },
+    {
+      "hypothesis_id": "h3",
+      "claim": "Fixed controller/service overhead (request handling, paging calculation) consumes the bulk of the baseline latency",
+      "layer": "application_logic",
+      "attributed_ms": 2.0,
+      "fixability": {
+        "hypothesis_id": "h3",
+        "fixability": 0.4,
+        "reason": "UNCLASSIFIED: no policy row matched this hypothesis, so 0.40 is a placeholder rather than an assessment",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": false
+      },
+      "expected_value_ms": 0.8
+    }
+  ],
+  "considered": [
+    "h2",
+    "h1"
+  ],
+  "candidates": [
+    {
+      "id": "c2",
+      "targets_hypothesis": "h1",
+      "approach": "dto_projection",
+      "description": "Change the repository to return the DTO directly via a constructor‑expression projection, eliminating per‑row Invoice entity hydration. Update the service to return the repository result unchanged, removing the manual mapping loop.",
+      "mechanism": "allocation",
+      "mechanism_changed": "entity allocations per request",
+      "predicted_effect": "entity allocations drop from up to 100 per request to 0 (only DTOs are allocated)",
+      "files_to_touch": [
+        "src/main/java/com/ex/repo/InvoiceRepository.java",
+        "src/main/java/com/ex/service/PaidInvoiceSummaryService.java",
+        "src/main/java/com/ex/web/PaidInvoiceSummaryController.java"
+      ],
+      "sql_change": null,
+      "sql_before": null,
+      "sql_after": null,
+      "sql_params": [],
+      "baseline_digest": null,
+      "baseline_calls": null,
+      "what_could_break": [
+        "Any other code that calls findByStatusOnly expecting Invoice entities will now receive DTOs, causing ClassCastException.",
+        "If lazy‑loaded associations on Invoice were ever accessed (they are not in this endpoint), they will no longer be available."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 1,
+      "requires_flag": false,
+      "expected_value_ms": 1.2,
+      "sql_verification": null,
+      "not_selectable_because": "its mechanism is 'allocation', which this harness does not instrument — only rows_examined, sql_count carry before/after values, so MECHANISM_MATCH could never confirm this candidate regardless of what the patch does.",
+      "scope_reasons": {
+        "src/main/java/com/ex/web/PaidInvoiceSummaryController.java": "on this endpoint's own traced call path to src/main/java/com/ex/repo/InvoiceRepository.java, which this candidate already touches — included so a change to src/main/java/com/ex/repo/InvoiceRepository.java has its caller in scope"
+      }
+    },
+    {
+      "id": "c1",
+      "targets_hypothesis": "h2",
+      "approach": "other",
+      "description": "Register Jackson Afterburner module to speed JSON serialization without changing the response payload. Add a bean method in the existing Application class that creates an AfterburnerModule and registers it with the auto‑configured ObjectMapper.",
+      "mechanism": "serialization",
+      "mechanism_changed": "JSON serialization time per request",
+      "predicted_effect": "serialization time drops from ~0.5 ms to ~0.2 ms",
+      "files_to_touch": [
+        "src/main/java/com/ex/Application.java"
+      ],
+      "sql_change": null,
+      "sql_before": null,
+      "sql_after": null,
+      "sql_params": [],
+      "baseline_digest": null,
+      "baseline_calls": null,
+      "what_could_break": [
+        "If the Afterburner module is incompatible with the current Jackson version, serialization could fail at runtime.",
+        "Custom serializers/deserializers that rely on reflection may behave differently under Afterburner."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 3,
+      "requires_flag": true,
+      "expected_value_ms": 0.15,
+      "sql_verification": null,
+      "not_selectable_because": "its mechanism is 'serialization', which this harness does not instrument — only rows_examined, sql_count carry before/after values, so MECHANISM_MATCH could never confirm this candidate regardless of what the patch does.",
+      "scope_reasons": {}
+    }
+  ],
+  "selected_id": null,
+  "selection_reason": "no candidate cleared the selection rule: every one was either above risk tier T2 or did not claim to preserve the response bytes",
+  "not_selected": [
+    {
+      "candidate_id": "c2",
+      "reason": "its mechanism is 'allocation', which this harness does not instrument — only rows_examined, sql_count carry before/after values, so MECHANISM_MATCH could never confirm this candidate regardless of what the patch does."
+    },
+    {
+      "candidate_id": "c1",
+      "reason": "its mechanism is 'serialization', which this harness does not instrument — only rows_examined, sql_count carry before/after values, so MECHANISM_MATCH could never confirm this candidate regardless of what the patch does."
+    }
+  ],
+  "prompt_hash": "5f311954ae548093",
+  "base_commit": "ef3ce6db470838056e167017f57a1ec11f7269cc",
+  "decided_by": "code",
+  "baseline_hash": "9f457e491a72c351"
+}

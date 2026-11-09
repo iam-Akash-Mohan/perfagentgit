@@ -1,0 +1,97 @@
+{
+  "benchmark": [
+    {
+      "id": "dense-req-p0-s100",
+      "method": "GET",
+      "path": "/api/invoices/overdue-worklist?page=0&size=100",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model; page depth 0, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-req-p2-s100",
+      "method": "GET",
+      "path": "/api/invoices/overdue-worklist?page=2&size=100",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model; page depth 2, page size 100",
+      "expected_status": 200
+    }
+  ],
+  "held_back": [
+    {
+      "id": "sparse-req-p0-s1",
+      "method": "GET",
+      "path": "/api/invoices/overdue-worklist?page=0&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-req-p2-s1",
+      "method": "GET",
+      "path": "/api/invoices/overdue-worklist?page=2&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-req-p0-s10",
+      "method": "GET",
+      "path": "/api/invoices/overdue-worklist?page=0&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-req-p2-s10",
+      "method": "GET",
+      "path": "/api/invoices/overdue-worklist?page=2&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-req-p0-s50",
+      "method": "GET",
+      "path": "/api/invoices/overdue-worklist?page=0&size=50",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 50",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-req-p2-s50",
+      "method": "GET",
+      "path": "/api/invoices/overdue-worklist?page=2&size=50",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 50",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-req-p0-s100",
+      "method": "GET",
+      "path": "/api/invoices/overdue-worklist?page=0&size=100",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 0, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-req-p2-s100",
+      "method": "GET",
+      "path": "/api/invoices/overdue-worklist?page=2&size=100",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage; page depth 2, page size 100",
+      "expected_status": 200
+    }
+  ],
+  "hash": "2d9695d53b83c760"
+}

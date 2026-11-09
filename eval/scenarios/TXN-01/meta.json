@@ -1,0 +1,6 @@
+{
+  "scenario": "TXN-01",
+  "endpoint": "GET /api/invoices/paid-summary",
+  "mini_spring_commit": "ef3ce6db470838056e167017f57a1ec11f7269cc",
+  "mini_spring_tag": "eval/TXN-01"
+}

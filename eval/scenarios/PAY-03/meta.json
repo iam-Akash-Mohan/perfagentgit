@@ -1,0 +1,6 @@
+{
+  "scenario": "PAY-03",
+  "endpoint": "GET /api/payments/recent",
+  "mini_spring_commit": "b620611d5a8f3fe96054b57dc9124918c70237a7",
+  "mini_spring_tag": "eval/PAY-03"
+}

@@ -1,0 +1,120 @@
+{
+  "hypotheses": [
+    {
+      "id": "h1",
+      "claim": "ORM hydration of Invoice entities dominates per‑row cost",
+      "mechanism": "JpaRepository.findByStatusOnly returns Invoice entities; for each row JPA creates a managed entity, populates all fields and tracks it in the persistence context, which costs ~0.1 ms per row",
+      "layer": "orm_hydration",
+      "evidence": [
+        "Latency per result row is ~0.1 ms for 50 and 100 rows (probe size=50: p50 latency 6.7 ms, rows 50; probe size=100: p50 latency 6.9 ms, rows 100)",
+        "Server‑side SQL time drops to 0.3 ms (4 % of latency) for 50/100 rows, so the extra ~1.6 ms when moving from 10→100 rows is not SQL",
+        "Response body size grows linearly (53 bytes per row) while latency grows only ~1.6 ms, consistent with a per‑row object‑creation cost"
+      ],
+      "attributed_ms": 3.0,
+      "prediction": "If the query is changed to return a projection (e.g., interface‑based DTO) instead of full Invoice entities, the p50 latency for 100 rows will drop by >1 ms",
+      "confidence": 0.85
+    },
+    {
+      "id": "h2",
+      "claim": "JSON serialization of the response adds a modest per‑byte cost",
+      "mechanism": "Spring MVC uses MappingJackson2HttpMessageConverter; each byte of the JSON payload incurs processing (character encoding, buffer allocation) adding ~0.0003 ms per byte",
+      "layer": "serialization",
+      "evidence": [
+        "Response body size is 53 bytes per row (probe size=100: 5384 bytes, size=50: 2674 bytes)",
+        "Latency grows roughly proportionally with body size (5.3 ms → 6.9 ms when body grows from 533 B to 5384 B)",
+        "The increase (~1.6 ms) exceeds the per‑row ORM cost estimate, indicating a cost that scales with total bytes"
+      ],
+      "attributed_ms": 0.5,
+      "prediction": "If the endpoint returns a gzipped response (Content‑Encoding: gzip) the measured latency for 100 rows will decrease by at least 0.8 ms",
+      "confidence": 0.7
+    },
+    {
+      "id": "h3",
+      "claim": "Fixed controller/service overhead (request handling, paging calculation) consumes the bulk of the baseline latency",
+      "mechanism": "PaidInvoiceSummaryController builds the PageRequest, PaidInvoiceSummaryService computes paging bounds and invokes the repository; Spring MVC resolves the handler, creates ModelAndView, and builds the ResponseEntity – all of which happen once per request and cost ~2 ms",
+      "layer": "application_logic",
+      "evidence": [
+        "Even with zero rows (page size 0, not measured but can be inferred) the latency would still be around 5 ms because the p50 for 10 rows is 5.3 ms while per‑row cost is only ~0.1 ms",
+        "Application SQL time is only 0.3 ms for large pages, leaving >5 ms unexplained",
+        "The call chain (controller → service → repository) executes only one method before the query, suggesting constant‑time work"
+      ],
+      "attributed_ms": 2.0,
+      "prediction": "If the endpoint is called via MockMvc without the full HTTP stack (bypassing network and servlet filters), the measured p50 latency will drop by at least 1.5 ms",
+      "confidence": 0.9
+    }
+  ],
+  "probes_run": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 10,
+        "page_size": 10,
+        "request_id": "dense-req-p0-s100"
+      },
+      "discriminates_between": [
+        "h1",
+        "h3"
+      ],
+      "result": "Latency 5.3 ms, rows 10, SQL 1.6 ms, body 533 B – shows low per‑row cost and a fixed base component."
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 10,
+        "page_size": 100,
+        "request_id": "dense-req-p0-s100"
+      },
+      "discriminates_between": [
+        "h1",
+        "h2"
+      ],
+      "result": "Latency 6.9 ms, rows 100, SQL 0.3 ms, body 5384 B – latency grows modestly with rows and body size, separating per‑row ORM cost from serialization cost."
+    }
+  ],
+  "ranked_ids": [
+    "h3",
+    "h1",
+    "h2"
+  ],
+  "measured_total_ms": 5.301,
+  "probes_executed": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-req-p0-s100",
+        "iterations": 10,
+        "page_size": 10
+      },
+      "result": "probe: GET http://localhost:18080/api/invoices/paid-summary?page=0&size=10  (request_id='dense-req-p0-s100', page_size=10) iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 5.3 ms\n  p95 latency                  : 12.6 ms\n  result rows in response      : 10\n  response body size (median)  : 533 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 1.6 ms (29.8 % of p50)\n  latency per result row       : 0.5 ms\n  body bytes per result row    : 53",
+      "endpoint_called": "GET http://localhost:18080/api/invoices/paid-summary?page=0&size=10"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-req-p0-s100",
+        "iterations": 10,
+        "page_size": 50
+      },
+      "result": "probe: GET http://localhost:18080/api/invoices/paid-summary?page=0&size=50  (request_id='dense-req-p0-s100', page_size=50) iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 6.7 ms\n  p95 latency                  : 14.4 ms\n  result rows in response      : 50\n  response body size (median)  : 2674 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.3 ms (4.1 % of p50)\n  latency per result row       : 0.1 ms\n  body bytes per result row    : 53",
+      "endpoint_called": "GET http://localhost:18080/api/invoices/paid-summary?page=0&size=50"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-req-p0-s100",
+        "iterations": 10,
+        "page_size": 100
+      },
+      "result": "probe: GET http://localhost:18080/api/invoices/paid-summary?page=0&size=100  (request_id='dense-req-p0-s100', page_size=100) iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 6.9 ms\n  p95 latency                  : 16.3 ms\n  result rows in response      : 100\n  response body size (median)  : 5384 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.3 ms (4.5 % of p50)\n  latency per result row       : 0.1 ms\n  body bytes per result row    : 53",
+      "endpoint_called": "GET http://localhost:18080/api/invoices/paid-summary?page=0&size=100"
+    }
+  ],
+  "baseline": "/Users/akashm/Documents/ak/perfagent/eval/scratch/TXN-01/baseline.json",
+  "baseline_hash": "9f457e491a72c351",
+  "endpoint_model": "/Users/akashm/Documents/ak/perfagent/eval/scratch/TXN-01/endpoint_model.json",
+  "submissions_rejected": 0,
+  "database_tools": [
+    "explain",
+    "list_indexes"
+  ]
+}

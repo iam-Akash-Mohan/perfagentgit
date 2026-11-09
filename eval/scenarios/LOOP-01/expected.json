@@ -1,0 +1,18 @@
+{
+  "scenario": "LOOP-01",
+  "endpoint": "GET /api/invoices/overdue-worklist",
+  "measured_total_ms": 50.5,
+  "required_layers": [],
+  "forbidden_layers": ["database_query"],
+  "dominant_layer_any_of": ["orm_hydration", "serialization", "application_logic"],
+  "plan": {
+    "selectable": true,
+    "mechanism_any_of": ["sql_count"],
+    "approach_context": ["move_work_out_of_loop", "remove_redundant_call", "query_rewrite"]
+  },
+  "tier2": {
+    "terminal_state_any_of": ["PR_OPENED"],
+    "behaviour_preserved": true
+  },
+  "notes": "feeScheduleRepo.findByActiveTrue() is called once per row of the overdue-invoice page, with identical (no) parameters and an identical result every time -- a per-REQUEST constant the loop re-fetches by accident, not an N+1 (the query is not about the row). database_query is forbidden as dominant: the base query is properly indexed (idx_invoice_status_due_date_id, V8) and the real cost is entirely in call-count overhead around a tiny, near-static reference table, the same shape as INV-04. No min_rows_examined_improvement_pct here, for the same reason INV-04 has none: sql_count is verified at plan time (plan/risk.py::verify_sql_candidate) but deliberately not scored -- a single EXPLAIN of each side cannot see a call-count fix. approach_context is recorded, not a pass condition: the live run that actually shipped this (LOOP-01, PR_OPENED, SQL statements 202 -> 4 / -98.0%, p95 -78.0%) labeled its own candidate remove_redundant_call, while re-freezing this same code immediately after drew move_work_out_of_loop (and query_rewrite as the tied runner-up) -- the CODE CHANGE in both samples is identical (fetch the active schedule once before the loop, reuse it for every row), and both move_work_out_of_loop and remove_redundant_call are the same risk tier (T2) in TIER_BY_APPROACH, so this is a genuine labeling ambiguity between two adjacent enum values describing the same fix, not a functional difference. What is still asserted strictly: mechanism is sql_count, and database_query never dominates."
+}

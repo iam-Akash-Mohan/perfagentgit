@@ -1,0 +1,18 @@
+{
+  "scenario": "PAY-03",
+  "endpoint": "GET /api/payments/recent",
+  "measured_total_ms": 6.059,
+  "required_layers": [],
+  "forbidden_layers": ["database_query"],
+  "dominant_layer_any_of": null,
+  "plan": {
+    "selectable": false,
+    "not_selectable_because_contains": "does not instrument"
+  },
+  "tier2": {
+    "terminal_state_any_of": ["BOTTLENECK_NOT_FIXABLE"],
+    "behaviour_preserved": null,
+    "behaviour_preserved_note": "no candidate is ever selected, so no patch exists and there is nothing for the oracle to compare — behaviour_preserved does not apply to a refusal."
+  },
+  "notes": "A deliberately optimal endpoint (control case): one covering-index query, one query per request, rows examined close to rows returned. The honest diagnosis splits a few milliseconds thinly across orm_hydration/serialization/application_logic with no clear winner and, critically, no database_query hypothesis at all -- there is no scan to find. Both candidates the plan proposes name an uninstrumented mechanism (serialization/allocation) and are correctly marked not_selectable rather than shipped on a hunch. This is the scenario that exists to catch the agent inventing work where none exists -- the outcome asserted is the refusal itself and its stated reason, which is already method-independent: there is no approach label to over-fit to here."
+}

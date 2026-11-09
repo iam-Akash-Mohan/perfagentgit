@@ -1,0 +1,120 @@
+{
+  "hypotheses": [
+    {
+      "id": "h1",
+      "claim": "The JPQL query forces a full table scan because no index matches the WHERE predicates, causing ~250 ms of database_query time per request.",
+      "mechanism": "Hibernate translates the JPQL into a SELECT that scans the payment_allocation table (and joins) without an index, so MySQL must read millions of rows to produce the 100‑row page, dominating latency.",
+      "layer": "database_query",
+      "evidence": [
+        "rows examined / rows sent by MySQL: 157,625,302 / 10,002 (≈15,735 rows examined per result row)",
+        "digests reporting no index used: YES",
+        "server‑side SQL time per request ≈95 % of total latency (≈257 ms of 268 ms)"
+      ],
+      "attributed_ms": 250.0,
+      "prediction": "Creating an index on the columns used in the WHERE clause (e.g., paid_on, allocated_amount) will cut the server‑side SQL time by >80 % and reduce total latency accordingly.",
+      "confidence": 0.95
+    },
+    {
+      "id": "h2",
+      "claim": "Hibernate’s hydration of each result row into a CollectionsRowDto adds ~0.08 ms per row (~8 ms per request).",
+      "mechanism": "For each row the ResultSet is read and a new DTO object is instantiated and its fields populated, which costs measurable CPU time per row.",
+      "layer": "orm_hydration",
+      "evidence": [
+        "size=1 probe: non‑SQL latency 8.5 ms for 1 row",
+        "size=100 probe: non‑SQL latency 19.3 ms for 100 rows (≈0.19 ms per row, the excess over the fixed overhead is attributable to per‑row work)"
+      ],
+      "attributed_ms": 8.0,
+      "prediction": "Switching to a constructor‑expression JPQL that returns scalar values (bypassing entity hydration) will reduce per‑row latency by ~0.08 ms.",
+      "confidence": 0.85
+    },
+    {
+      "id": "h3",
+      "claim": "Serializing the DTO list to JSON consumes ~0.05 ms per row (~5 ms per request).",
+      "mechanism": "Spring’s MappingJackson2HttpMessageConverter iterates over the DTO list and writes each field to a JSON string; the work scales with number of rows and payload size.",
+      "layer": "serialization",
+      "evidence": [
+        "response body size grows linearly: 133 bytes for 1 row, 13,088 bytes for 100 rows (~130 bytes per row)",
+        "non‑SQL latency grows with row count (8.5 ms → 19.3 ms) after accounting for ORM cost, leaving ~5 ms attributable to serialization"
+      ],
+      "attributed_ms": 5.0,
+      "prediction": "Replacing Jackson with a streaming JSON writer or reducing the number of serialized fields will lower total latency by ~0.05 ms per row.",
+      "confidence": 0.8
+    }
+  ],
+  "probes_run": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 5,
+        "page_size": 1,
+        "request_id": "dense-req-p0-s100"
+      },
+      "discriminates_between": [
+        "h1",
+        "h2",
+        "h3"
+      ],
+      "result": "Non‑SQL latency 8.5 ms for 1 row; SQL time 143.4 ms. Shows fixed DB cost plus per‑row overhead."
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 3,
+        "page_size": 100,
+        "request_id": "dense-req-p0-s100"
+      },
+      "discriminates_between": [
+        "h1",
+        "h2",
+        "h3"
+      ],
+      "result": "Non‑SQL latency 19.3 ms for 100 rows; SQL time 140.5 ms. Linear increase supports per‑row ORM and serialization costs."
+    }
+  ],
+  "ranked_ids": [
+    "h1",
+    "h2",
+    "h3"
+  ],
+  "measured_total_ms": 268.678,
+  "probes_executed": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-req-p0-s100",
+        "iterations": 5,
+        "page_size": 1
+      },
+      "result": "probe: GET http://localhost:18080/api/reports/collections?page=0&size=1  (request_id='dense-req-p0-s100', page_size=1) iterations=5 (1 warmup discarded)\n  statuses                     : {'200': 5}\n  p50 latency                  : 151.9 ms\n  p95 latency                  : 162.7 ms\n  result rows in response      : 1\n  response body size (median)  : 133 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 143.4 ms (94.4 % of p50)\n  latency per result row       : 151.9 ms\n  body bytes per result row    : 133",
+      "endpoint_called": "GET http://localhost:18080/api/reports/collections?page=0&size=1"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-req-p0-s100",
+        "iterations": 3,
+        "page_size": 100
+      },
+      "result": "probe: GET http://localhost:18080/api/reports/collections?page=0&size=100  (request_id='dense-req-p0-s100', page_size=100) iterations=3 (1 warmup discarded)\n  statuses                     : {'200': 3}\n  p50 latency                  : 159.8 ms\n  p95 latency                  : 161.5 ms\n  result rows in response      : 100\n  response body size (median)  : 13088 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 140.5 ms (87.9 % of p50)\n  latency per result row       : 1.6 ms\n  body bytes per result row    : 130",
+      "endpoint_called": "GET http://localhost:18080/api/reports/collections?page=0&size=100"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-req-p2-s100",
+        "iterations": 3,
+        "page_size": 100
+      },
+      "result": "probe: GET http://localhost:18080/api/reports/collections?page=2&size=100  (request_id='dense-req-p2-s100', page_size=100) iterations=3 (1 warmup discarded)\n  statuses                     : {'200': 3}\n  p50 latency                  : 155.4 ms\n  p95 latency                  : 156.3 ms\n  result rows in response      : 100\n  response body size (median)  : 13177 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 135.3 ms (87.1 % of p50)\n  latency per result row       : 1.6 ms\n  body bytes per result row    : 131",
+      "endpoint_called": "GET http://localhost:18080/api/reports/collections?page=2&size=100"
+    }
+  ],
+  "baseline": "/Users/akashm/Documents/ak/perfagent/eval/scratch/COL-06/baseline.json",
+  "baseline_hash": "c2deb2435726dc58",
+  "endpoint_model": "/Users/akashm/Documents/ak/perfagent/eval/scratch/COL-06/endpoint_model.json",
+  "submissions_rejected": 1,
+  "database_tools": [
+    "explain",
+    "list_indexes"
+  ]
+}

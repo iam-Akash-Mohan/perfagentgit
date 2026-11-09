@@ -1,0 +1,123 @@
+{
+  "diagnose": [
+    {
+      "args": {
+        "iterations": 15,
+        "request_id": "dense-id1"
+      },
+      "result": "probe: GET http://localhost:18080/api/invoices/1/payment-history  (request_id='dense-id1') iterations=15 (1 warmup discarded)\n  statuses                     : {'200': 15}\n  p50 latency                  : 3.6 ms\n  p95 latency                  : 4.7 ms\n  result rows in response      : 2\n  response body size (median)  : 298 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.1 ms (3.6 % of p50)\n  latency per result row       : 1.8 ms\n  body bytes per result row    : 149",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 15,
+        "request_id": "dense-id1000001"
+      },
+      "result": "probe: GET http://localhost:18080/api/invoices/1000001/payment-history  (request_id='dense-id1000001') iterations=15 (1 warmup discarded)\n  statuses                     : {'200': 15}\n  p50 latency                  : 7.6 ms\n  p95 latency                  : 9.5 ms\n  result rows in response      : 0\n  response body size (median)  : 78 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.4 ms (5.6 % of p50)",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 15,
+        "request_id": "dense-id800001"
+      },
+      "result": "probe: GET http://localhost:18080/api/invoices/800001/payment-history  (request_id='dense-id800001') iterations=15 (1 warmup discarded)\n  statuses                     : {'200': 15}\n  p50 latency                  : 5.1 ms\n  p95 latency                  : 8.7 ms\n  result rows in response      : 0\n  response body size (median)  : 77 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.3 ms (5.8 % of p50)",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 15,
+        "request_id": "dense-id200001"
+      },
+      "result": "probe: GET http://localhost:18080/api/invoices/200001/payment-history  (request_id='dense-id200001') iterations=15 (1 warmup discarded)\n  statuses                     : {'200': 15}\n  p50 latency                  : 4.6 ms\n  p95 latency                  : 6.5 ms\n  result rows in response      : 1\n  response body size (median)  : 193 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.2 ms (3.7 % of p50)\n  latency per result row       : 4.6 ms\n  body bytes per result row    : 193",
+      "tool": "run_probe"
+    }
+  ],
+  "plan": [
+    {
+      "args": {
+        "columns": [
+          "invoice_id",
+          "allocated_amount",
+          "id"
+        ],
+        "params": [
+          "123"
+        ],
+        "sql": "SELECT pa.id, pa.allocated_amount FROM payment_allocation pa WHERE pa.invoice_id = %s",
+        "table": "payment_allocation"
+      },
+      "result": "index_benefit('payment_allocation', ['invoice_id', 'allocated_amount', 'id'])\n\n  BEFORE   pa: type=ref, key=idx_payment_allocation_invoice_id\n           rows_examined=0   actual=0.0 ms\n  AFTER    pa: type=ref, key=idx_payment_allocation_invoice_id\n           rows_examined=0   actual=0.0 ms\n  COST     creation 2.2 s · estimated size 69.7 MB\n  VERDICT  rows examined reduced 0.000%, 14.4x faster\n\n  The index was temporary (senapathy_tmp_4a1fd8468d) and has been dropped. Nothing was left on the schema.",
+      "tool": "index_benefit"
+    },
+    {
+      "args": {
+        "columns": [
+          "invoice_id",
+          "allocated_amount",
+          "id"
+        ],
+        "params": [
+          "1"
+        ],
+        "sql": "SELECT pa.id, pa.allocated_amount FROM payment_allocation pa WHERE pa.invoice_id = %s",
+        "table": "payment_allocation"
+      },
+      "result": "index_benefit('payment_allocation', ['invoice_id', 'allocated_amount', 'id'])\n\n  BEFORE   pa: type=ref, key=idx_payment_allocation_invoice_id\n           rows_examined=2   actual=0.1 ms\n  AFTER    pa: type=ref, key=idx_payment_allocation_invoice_id\n           rows_examined=2   actual=0.0 ms\n  COST     creation 2.1 s · estimated size 69.7 MB\n  VERDICT  rows examined reduced 0.000%, 9.5x faster\n\n  The index was temporary (senapathy_tmp_4a1fd8468d) and has been dropped. Nothing was left on the schema.",
+      "tool": "index_benefit"
+    },
+    {
+      "args": {
+        "columns": [
+          "payment_id",
+          "invoice_id",
+          "id",
+          "allocated_amount"
+        ],
+        "params": [
+          "1"
+        ],
+        "sql": "SELECT pa.id, pa.allocated_amount FROM payment_allocation pa WHERE pa.invoice_id = %s",
+        "table": "payment_allocation"
+      },
+      "result": "index_benefit('payment_allocation', ['payment_id', 'invoice_id', 'id', 'allocated_amount'])\n\n  BEFORE   pa: type=ref, key=idx_payment_allocation_invoice_id\n           rows_examined=2   actual=0.0 ms\n  AFTER    pa: type=ref, key=idx_payment_allocation_invoice_id\n           rows_examined=2   actual=0.0 ms\n  COST     creation 2.4 s · estimated size 87.7 MB\n  VERDICT  rows examined reduced 0.000%, 1.5x faster\n\n  The index was temporary (senapathy_tmp_1b567d2bbe) and has been dropped. Nothing was left on the schema.",
+      "tool": "index_benefit"
+    },
+    {
+      "args": {
+        "params": [
+          "1"
+        ],
+        "sql": "SELECT pa.id, pa.allocated_amount, p.paid_on, p.method FROM payment_allocation pa LEFT JOIN customer_payment p ON p.id = pa.payment_id WHERE pa.invoice_id = %s ORDER BY p.paid_on ASC, p.id ASC, pa.id ASC"
+      },
+      "result": "PLAN (EXPLAIN ANALYZE — actual rows and actual time)\n-> Sort: p.paid_on, p.id, pa.id  (actual time=0.427..0.427 rows=2 loops=1)\n    -> Stream results  (cost=1.4 rows=2) (actual time=0.268..0.369 rows=2 loops=1)\n        -> Nested loop left join  (cost=1.4 rows=2) (actual time=0.242..0.341 rows=2 loops=1)\n            -> Index lookup on pa using idx_payment_allocation_invoice_id (invoice_id=1)  (cost=0.7 rows=2) (actual time=0.105..0.114 rows=2 loops=1)\n            -> Single-row index lookup on p using PRIMARY (id=pa.payment_id)  (cost=0.3 rows=1) (actual time=0.0978..0.0978 rows=1 loops=2)\n\n\nSUMMARY\n  access        pa: type=ref, key=idx_payment_allocation_invoice_id · p: type=eq_ref, key=PRIMARY\n  rows examined 2   ->  rows returned 2   (1x read per row returned)\n  actual time   0.4 ms\n  index used    yes",
+      "tool": "explain"
+    },
+    {
+      "args": {
+        "params": [
+          "1"
+        ],
+        "sql": "SELECT i.amount, i.status, pa.id, p.paid_on, pa.allocated_amount, p.method FROM invoice i LEFT JOIN payment_allocation pa ON pa.invoice_id = i.id LEFT JOIN customer_payment p ON p.id = pa.payment_id WHERE i.id = %s ORDER BY p.paid_on ASC, p.id ASC, pa.id ASC"
+      },
+      "result": "PLAN (EXPLAIN ANALYZE — actual rows and actual time)\n-> Sort: p.paid_on, p.id, pa.id  (actual time=0.063..0.0633 rows=2 loops=1)\n    -> Stream results  (cost=1.4 rows=2) (actual time=0.0427..0.0495 rows=2 loops=1)\n        -> Nested loop left join  (cost=1.4 rows=2) (actual time=0.0355..0.0414 rows=2 loops=1)\n            -> Nested loop left join  (cost=0.7 rows=2) (actual time=0.0254..0.0273 rows=2 loops=1)\n                -> Rows fetched before execution  (cost=0..0 rows=1) (actual time=84e-6..126e-6 rows=1 loops=1)\n                -> Index lookup on pa using idx_payment_allocation_invoice_id (invoice_id=1)  (cost=0.7 rows=2) (actual time=0.0232..0.0248 rows=2 loops=1)\n            -> Single-row index lookup on p using PRIMARY (id=pa.payment_id)  (cost=0.3 rows=1) (actual time=0.00627..0.00629 rows=1 loops=2)\n\n\nSUMMARY\n  access        i: type=const, key=PRIMARY · pa: type=ref, key=idx_payment_allocation_invoice_id · p: type=eq_ref, key=PRIMARY\n  rows examined 2   ->  rows returned 2   (1x read per row returned)\n  actual time   0.1 ms\n  index used    yes",
+      "tool": "explain"
+    },
+    {
+      "args": {
+        "columns": [
+          "id",
+          "paid_on",
+          "method"
+        ],
+        "params": [
+          "1"
+        ],
+        "sql": "SELECT p.paid_on, p.method FROM customer_payment p WHERE p.id = %s",
+        "table": "customer_payment"
+      },
+      "result": "index_benefit('customer_payment', ['id', 'paid_on', 'method'])\n\n  BEFORE   p: type=const, key=PRIMARY\n           rows_examined=1   actual=0.0 ms\n  AFTER    p: type=const, key=PRIMARY\n           rows_examined=1   actual=0.0 ms\n  COST     creation 1.3 s · estimated size 38.6 MB\n  VERDICT  rows examined reduced 0.000%\n\n  The index was temporary (senapathy_tmp_e5a142bc9a) and has been dropped. Nothing was left on the schema.",
+      "tool": "index_benefit"
+    }
+  ]
+}

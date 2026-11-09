@@ -1,0 +1,122 @@
+{
+  "diagnose": [
+    {
+      "args": {
+        "iterations": 10,
+        "page_size": 1,
+        "request_id": "dense-req-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/customers/bios?page=0&size=1  (request_id='dense-req-p0-s100', page_size=1) iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 3.7 ms\n  p95 latency                  : 5.8 ms\n  result rows in response      : 1\n  response body size (median)  : 2064 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.1 ms (2.2 % of p50)\n  latency per result row       : 3.7 ms\n  body bytes per result row    : 2064",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 3,
+        "page_size": 100,
+        "request_id": "dense-req-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/customers/bios?page=0&size=100  (request_id='dense-req-p0-s100', page_size=100) iterations=3 (1 warmup discarded)\n  statuses                     : {'200': 3}\n  p50 latency                  : 14.6 ms\n  p95 latency                  : 16.6 ms\n  result rows in response      : 100\n  response body size (median)  : 206212 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.7 ms (4.5 % of p50)\n  latency per result row       : 0.1 ms\n  body bytes per result row    : 2062",
+      "tool": "run_probe"
+    }
+  ],
+  "plan": [
+    {
+      "args": {
+        "params": [
+          "0",
+          "50"
+        ],
+        "sql": "SELECT cp.id, cp.customer_name, cp.bio FROM customer_profile cp ORDER BY cp.id ASC LIMIT ?, ?"
+      },
+      "result": "ERROR: EXPLAIN failed: Not all parameters were used in the SQL statement\nStatement: SELECT cp.id, cp.customer_name, cp.bio FROM customer_profile cp ORDER BY cp.id ASC LIMIT ?, ?",
+      "tool": "explain"
+    },
+    {
+      "args": {
+        "params": [
+          "0",
+          "100"
+        ],
+        "sql": "SELECT cp.id, cp.customer_name, cp.bio FROM customer_profile cp ORDER BY cp.id ASC LIMIT ?, ?"
+      },
+      "result": "ERROR: EXPLAIN failed: Not all parameters were used in the SQL statement\nStatement: SELECT cp.id, cp.customer_name, cp.bio FROM customer_profile cp ORDER BY cp.id ASC LIMIT ?, ?",
+      "tool": "explain"
+    },
+    {
+      "args": {
+        "params": [
+          "0",
+          "100"
+        ],
+        "sql": "SELECT cp.id, cp.customer_name, cp.bio FROM customer_profile cp ORDER BY cp.id ASC LIMIT %s, %s"
+      },
+      "result": "PLAN (EXPLAIN ANALYZE — actual rows and actual time)\n-> Limit: 100 row(s)  (cost=26.4 rows=100) (actual time=0.143..0.799 rows=100 loops=1)\n    -> Index scan on cp using PRIMARY  (cost=26.4 rows=100) (actual time=0.14..0.788 rows=100 loops=1)\n\n\nSUMMARY\n  access        cp: type=index, key=PRIMARY\n  rows examined 100   ->  rows returned 100   (1x read per row returned)\n  actual time   0.8 ms\n  index used    yes",
+      "tool": "explain"
+    },
+    {
+      "args": {
+        "columns": [
+          "id",
+          "customer_name",
+          "bio"
+        ],
+        "params": [
+          "0",
+          "100"
+        ],
+        "sql": "SELECT cp.id, cp.customer_name, cp.bio FROM customer_profile cp ORDER BY cp.id ASC LIMIT %s, %s",
+        "table": "customer_profile"
+      },
+      "result": "ERROR: could not create senapathy_tmp_ab90681ed7 on customer_profile(id, customer_name, bio): 1170 (42000): BLOB/TEXT column 'bio' used in key specification without a key length",
+      "tool": "index_benefit"
+    },
+    {
+      "args": {
+        "columns": [
+          "id",
+          "customer_name"
+        ],
+        "params": [
+          "0",
+          "100"
+        ],
+        "sql": "SELECT cp.id, cp.customer_name, cp.bio FROM customer_profile cp ORDER BY cp.id ASC LIMIT %s, %s",
+        "table": "customer_profile"
+      },
+      "result": "index_benefit('customer_profile', ['id', 'customer_name'])\n\n  BEFORE   cp: type=index, key=PRIMARY\n           rows_examined=100   actual=0.1 ms\n  AFTER    cp: type=index, key=PRIMARY\n           rows_examined=100   actual=0.1 ms\n  COST     creation 0.2 s · estimated size 2.5 MB\n  VERDICT  rows examined reduced 0.000%\n\n  The index was temporary (senapathy_tmp_fd5b578a9e) and has been dropped. Nothing was left on the schema.",
+      "tool": "index_benefit"
+    },
+    {
+      "args": {
+        "columns": [
+          "customer_name"
+        ],
+        "params": [
+          "0",
+          "100"
+        ],
+        "sql": "SELECT cp.id, cp.customer_name, cp.bio FROM customer_profile cp ORDER BY cp.id ASC LIMIT %s, %s",
+        "table": "customer_profile"
+      },
+      "result": "index_benefit('customer_profile', ['customer_name'])\n\n  BEFORE   cp: type=index, key=PRIMARY\n           rows_examined=100   actual=0.2 ms\n  AFTER    cp: type=index, key=PRIMARY\n           rows_examined=100   actual=0.2 ms\n  COST     creation 0.1 s · estimated size 2.5 MB\n  VERDICT  rows examined reduced 0.000%\n\n  The index was temporary (senapathy_tmp_15fe108a65) and has been dropped. Nothing was left on the schema.",
+      "tool": "index_benefit"
+    },
+    {
+      "args": {
+        "columns": [
+          "id",
+          "customer_name",
+          "bio(255)"
+        ],
+        "params": [
+          "0",
+          "100"
+        ],
+        "sql": "SELECT cp.id, cp.customer_name, cp.bio FROM customer_profile cp ORDER BY cp.id ASC LIMIT %s, %s",
+        "table": "customer_profile"
+      },
+      "result": "ERROR: 'bio(255)' is not a column name.",
+      "tool": "index_benefit"
+    }
+  ]
+}

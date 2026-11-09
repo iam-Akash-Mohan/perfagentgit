@@ -283,16 +283,20 @@ def _run_provision(ctx: Context) -> PhaseOutcome:
         java_home=ctx.java_home,
         require_database=ctx.options.get("require_database", True),
         run_migrations=ctx.options.get("run_migrations", True),
+        run_id=ctx.run_id,
     )
     # The rest of the pipeline reads the ports off the context, so bind them
     # here rather than making every phase re-open the artifact.
     ctx.blue_port, ctx.green_port = record.blue.port, record.green.port
     artifact = save_provisioning(record, ctx.run_dir / "provisioning.json")
+    commit = record.blue.commit[:12] if record.blue.commit else "?"
     return PhaseOutcome(
         artifact=artifact,
-        summary=f"blue :{record.blue.port}  green :{record.green.port}",
+        summary=(f"blue :{record.blue.port}  green :{record.green.port}  "
+                 f"commit {commit}"),
         detail={"database_ready": record.database_ready,
-                "migrations": record.migrations_applied},
+                "migrations": record.migrations_applied,
+                "commit": record.blue.commit},
     )
 
 
@@ -372,13 +376,17 @@ def _run_workload(ctx: Context) -> PhaseOutcome:
     if base_url is not None:
         corpus = probe_corpus(corpus, base_url)
     else:
-        from .measure.arms import single_arm
+        from .measure.arms import assert_route_built, single_arm
 
         with single_arm(
             ctx.run_id, which="blue", repo=ctx.repo, port=ctx.blue_port,
             java_home=ctx.java_home, profile=ctx.profile(),
             build=ctx.options.get("build", True),
         ) as arm:
+            # Health proves the app started; it says nothing about whether
+            # THIS endpoint is in it. Checked once, here, before the probe
+            # set burns ten requests discovering the same 404 individually.
+            assert_route_built(model, arm)
             corpus = probe_corpus(corpus, arm.base_url)
 
     artifact = save_corpus(corpus, ctx.run_dir / "corpus.json")
@@ -1713,8 +1721,19 @@ def _failure_state(spec: PhaseSpec, error: str = "") -> TerminalState:
         # Same principle as the isolation guard: could-not-measure is not
         # did-not-work.
         return TerminalState.BEHAVIOUR_NOT_PRESERVED
-    if spec.phase in (Phase.PLAN, Phase.IMPLEMENT):
-        return TerminalState.BOTTLENECK_NOT_FIXABLE
+    # A genuine "nothing is shippable" verdict for PLAN or IMPLEMENT never
+    # reaches here at all: it is a NORMAL return (plan's own selected_id is
+    # None, patch's own document["outcome"] != "PATCHED"), handled by
+    # _run_plan/_run_patch directly, each already labelled BOTTLENECK_NOT_
+    # FIXABLE on its own terms. This function only runs when the phase's own
+    # agent loop RAISED instead of completing -- a forced tool_choice Groq
+    # rejected server-side, a provider timeout, a loop that never submitted
+    # anything -- which is "I could not run," not "I ran and found nothing
+    # shippable." Mapping every such crash to BOTTLENECK_NOT_FIXABLE made an
+    # infrastructure failure indistinguishable from a real refusal without
+    # opening the trace (UNB-01: a forced-tool_choice crash reported as the
+    # same terminal state TXN-01's correct refusal got). Falls through to the
+    # same INTERNAL_ERROR every other phase's crash already gets.
     return TerminalState.INTERNAL_ERROR
 
 

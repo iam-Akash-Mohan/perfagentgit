@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 import pytest
 
-from senapathy.contracts import HypothesisSet, Layer
+from senapathy.contracts import HypothesisSet, Layer, RequestCorpus, RequestSpec
 from senapathy.errors import ContractViolation, ToolError
 from senapathy.diagnose.agent import build_task
 from senapathy.diagnose.evidence import (
@@ -26,7 +26,8 @@ from senapathy.diagnose.evidence import (
     repeated_digests,
     unexplained_share_pct,
 )
-from senapathy.diagnose.probe import MAX_ITERATIONS, MAX_PAGE_SIZE, ProbeLog, make_run_probe
+from senapathy.diagnose.probe import (DEFAULT_MAX_PAGE_SIZE, MAX_ITERATIONS,
+                                      ProbeCatalog, ProbeLog, make_run_probe)
 from senapathy.diagnose.validate import ATTRIBUTION_TOLERANCE, validate_hypothesis_set
 
 P50 = 1000.0
@@ -84,6 +85,47 @@ def _endpoint_model() -> dict[str, Any]:
         ],
         "uncertainties": ["count query not visible in source"],
     }
+
+
+def _paginated_endpoint_model() -> dict[str, Any]:
+    """A GET endpoint with offset pagination -- run_probe's size axis applies."""
+    model = _endpoint_model()
+    model["route"] = "GET /api/customers/search"
+    model["pagination"] = {"mechanism": "offset", "max_page_size": 100}
+    model["response_shape"] = {"dto": "CustomerDto", "fields_returned": ["content"],
+                              "unbounded_collections": []}
+    return model
+
+
+def _paginated_corpus() -> RequestCorpus:
+    return RequestCorpus(benchmark=[
+        RequestSpec(id="dense-req", method="GET",
+                   path="/api/customers/search?name=a&page=0&size=50",
+                   note="dense: name=a"),
+    ], hash="x")
+
+
+def _unpaginated_endpoint_model() -> dict[str, Any]:
+    """A GET endpoint with no size parameter -- UNB-01's shape: the corpus's
+    own request_id choices are the only magnitude axis."""
+    model = _endpoint_model()
+    model["route"] = "GET /api/invoices/{id}/payment-history"
+    model["pagination"] = None
+    model["response_shape"] = {"dto": "InvoicePaymentHistoryDto",
+                              "fields_returned": ["invoiceId", "allocations"],
+                              "unbounded_collections": ["allocations"]}
+    return model
+
+
+def _unpaginated_corpus() -> RequestCorpus:
+    return RequestCorpus(benchmark=[
+        RequestSpec(id="dense-id1", method="GET",
+                   path="/api/invoices/1/payment-history",
+                   note="dense: id=1 (16 child rows)"),
+        RequestSpec(id="sparse-id9", method="GET",
+                   path="/api/invoices/9/payment-history",
+                   note="sparse: id=9 (0 child rows)"),
+    ], hash="y")
 
 
 def _h(i: int, ms: float, layer: str = "database_query") -> dict[str, Any]:
@@ -174,12 +216,22 @@ def test_rendered_evidence_carries_every_required_section() -> None:
 
 
 def test_task_states_the_open_question_with_computed_numbers() -> None:
-    task = build_task(_baseline(), _endpoint_model())
+    catalog = ProbeCatalog("http://app", _paginated_endpoint_model(), _paginated_corpus())
+    task = build_task(_baseline(), _paginated_endpoint_model(), catalog=catalog)
     assert "98.95" in task          # unexplained share, computed
     assert "500 ms of measured latency per result row" in task
-    assert "1, 5, 20, 50" in task   # the suggested sweep
+    assert "dense-req" in task      # the corpus's own request id, not invented
+    assert "SWEEPING page_size" in task   # this endpoint paginates
     assert "MEASURED FACTS" in task
     assert "must not exceed 1200 ms" in task   # p50 * 1.20
+
+
+def test_task_tells_a_non_paginated_endpoint_to_vary_request_id_instead() -> None:
+    catalog = ProbeCatalog("http://app", _unpaginated_endpoint_model(), _unpaginated_corpus())
+    task = build_task(_baseline(), _unpaginated_endpoint_model(), catalog=catalog)
+    assert "does not paginate" in task
+    assert "dense-id1" in task and "sparse-id9" in task
+    assert "SWEEPING page_size" not in task
 
 
 # ──────────────────────────  validation verdicts  ────────────────────────
@@ -329,7 +381,8 @@ class _FakeTarget:
     database = "mini"
 
 
-def _probe_runner(monkeypatch: pytest.MonkeyPatch, handler, digests=None) -> tuple:
+def _probe_runner(monkeypatch: pytest.MonkeyPatch, handler, *,
+                  endpoint_model=None, corpus=None, digests=None) -> tuple:
     import senapathy.diagnose.probe as probe_mod
 
     monkeypatch.setattr(probe_mod, "reset_digests", lambda target: None)
@@ -344,29 +397,50 @@ def _probe_runner(monkeypatch: pytest.MonkeyPatch, handler, digests=None) -> tup
 
     monkeypatch.setattr(probe_mod.httpx, "Client", fake_client)
     log = ProbeLog()
-    return make_run_probe("http://app", _FakeTarget(), log=log), log
+    return make_run_probe(
+        "http://app", _FakeTarget(),
+        endpoint_model=endpoint_model or _paginated_endpoint_model(),
+        corpus=corpus or _paginated_corpus(),
+        log=log,
+    ), log
+
+
+def test_probe_cannot_be_built_for_an_endpoint_with_no_corpus_requests() -> None:
+    """Refuse by name, at construction, rather than falling back to a
+    different endpoint -- this is the check that replaces the old hardcoded
+    '/api/customers/search' default."""
+    empty = RequestCorpus(benchmark=[], hash="x")
+    with pytest.raises(ContractViolation, match="no benchmark requests"):
+        ProbeCatalog("http://app", _paginated_endpoint_model(), empty)
+
+
+def test_probe_cannot_be_built_for_a_non_get_corpus_request() -> None:
+    non_get = RequestCorpus(benchmark=[
+        RequestSpec(id="c1", method="POST", path="/api/customers/search"),
+    ], hash="x")
+    with pytest.raises(ContractViolation, match="POST /api/customers/search"):
+        ProbeCatalog("http://app", _paginated_endpoint_model(), non_get)
 
 
 def test_probe_clamps_page_size_and_iterations_and_says_so(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen: list[dict[str, Any]] = []
+    seen: list[str] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
-        seen.append(json.loads(request.content))
+        seen.append(str(request.url))
         return httpx.Response(200, json={"content": [{"id": 1}]})
 
     run_probe, _ = _probe_runner(monkeypatch, handle)
-    out = run_probe(page_size=9999, name_filter="a", iterations=500)
+    out = run_probe(request_id="dense-req", page_size=9999, iterations=500)
 
-    assert f"page_size clamped from 9999 to {MAX_PAGE_SIZE}" in out
     assert f"iterations clamped from 500 to {MAX_ITERATIONS}" in out
-    assert all(body["size"] == MAX_PAGE_SIZE for body in seen)
+    assert all(f"size={DEFAULT_MAX_PAGE_SIZE}" in url for url in seen)
     # 1 warmup + MAX_ITERATIONS measured
     assert len(seen) == MAX_ITERATIONS + 1
 
 
-def test_probe_is_read_only_and_cannot_choose_a_url_or_verb(
+def test_probe_can_only_fire_this_run_s_own_corpus_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, str]] = []
@@ -376,10 +450,29 @@ def test_probe_is_read_only_and_cannot_choose_a_url_or_verb(
         return httpx.Response(200, json={"content": []})
 
     run_probe, _ = _probe_runner(monkeypatch, handle)
-    run_probe(page_size=1, name_filter="a", iterations=2)
+    run_probe(request_id="dense-req", iterations=2)
 
-    assert {c[0] for c in calls} == {"POST"}
+    assert {c[0] for c in calls} == {"GET"}
     assert {c[1] for c in calls} == {"/api/customers/search"}
+
+
+def test_an_unknown_request_id_is_refused_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_probe, _ = _probe_runner(monkeypatch, lambda r: httpx.Response(200, json={}))
+    with pytest.raises(ToolError, match="not one of this run's own corpus"):
+        run_probe(request_id="invented-id", iterations=1)
+
+
+def test_page_size_on_a_non_paginated_endpoint_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_probe, _ = _probe_runner(
+        monkeypatch, lambda r: httpx.Response(200, json={}),
+        endpoint_model=_unpaginated_endpoint_model(), corpus=_unpaginated_corpus(),
+    )
+    with pytest.raises(ToolError, match="has no size parameter to vary"):
+        run_probe(request_id="dense-id1", page_size=10)
 
 
 def test_probe_reports_the_signals_the_agent_needs(
@@ -396,8 +489,8 @@ def test_probe_reports_the_signals_the_agent_needs(
         SqlDigestStat.model_validate(_digest("SELECT SUM(`amount`) FROM `invoice`", 8, 40.0)),
         SqlDigestStat.model_validate(_digest("SET `autocommit` = ?", 100, 9.0)),
     ]
-    run_probe, log = _probe_runner(monkeypatch, handle, digests)
-    out = run_probe(page_size=4, name_filter="a", iterations=2)
+    run_probe, log = _probe_runner(monkeypatch, handle, digests=digests)
+    out = run_probe(request_id="dense-req", page_size=4, iterations=2)
 
     assert "result rows in response      : 4" in out
     # session control excluded: 8 app calls / 2 iterations
@@ -406,16 +499,33 @@ def test_probe_reports_the_signals_the_agent_needs(
     assert "response body size (median)" in out
     assert "latency per result row" in out
     assert len(log) == 1
-    assert log.entries[0]["args"] == {"page_size": 4, "name_filter": "a", "iterations": 2}
+    assert log.entries[0]["args"] == {"request_id": "dense-req", "iterations": 2,
+                                      "page_size": 4}
+    assert log.entries[0]["endpoint_called"] == "GET http://app/api/customers/search?name=a&page=0&size=4"
+
+
+def test_probe_counts_rows_via_the_endpoints_own_unbounded_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UNB-01's shape: the response is not a Page<> — the row count lives in
+    whatever field response_shape.unbounded_collections names."""
+    body = {"invoiceId": 1, "allocations": [{"id": 1}, {"id": 2}, {"id": 3}]}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=body)
+
+    run_probe, _ = _probe_runner(
+        monkeypatch, handle,
+        endpoint_model=_unpaginated_endpoint_model(), corpus=_unpaginated_corpus(),
+    )
+    out = run_probe(request_id="dense-id1", iterations=2)
+    assert "result rows in response      : 3" in out
 
 
 def test_probe_rejects_non_integer_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
-    def handle(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"content": []})
-
-    run_probe, _ = _probe_runner(monkeypatch, handle)
-    with pytest.raises(ToolError, match="must be integers"):
-        run_probe(page_size="big", name_filter="a")
+    run_probe, _ = _probe_runner(monkeypatch, lambda r: httpx.Response(200, json={}))
+    with pytest.raises(ToolError, match="page_size must be an integer"):
+        run_probe(request_id="dense-req", page_size="big")
 
 
 # ──────────────────────────────  loading  ───────────────────────────────
@@ -448,7 +558,8 @@ def test_no_runs_at_all_is_actionable(tmp_path: Path) -> None:
 
 # ─────────────────  durability of an accepted diagnosis  ────────────────
 
-def _recording_probe_factory(base_url, target, *, path=None, log=None):
+def _recording_probe_factory(base_url, target, *, endpoint_model=None,
+                             corpus=None, log=None, catalog=None):
     """Stand-in for make_run_probe that still writes to the ProbeLog, because
     validation checks the log to prove a reported probe really ran."""
     def run_probe(**kwargs: Any) -> str:
@@ -456,6 +567,12 @@ def _recording_probe_factory(base_url, target, *, path=None, log=None):
             log.record(kwargs, "p50 500ms")
         return "p50 500ms"
     return run_probe
+
+
+def _write_corpus(run_dir: Path) -> None:
+    from senapathy.measure.corpus import save_corpus
+
+    save_corpus(_paginated_corpus(), run_dir / "corpus.json")
 
 
 
@@ -470,8 +587,9 @@ def test_an_accepted_diagnosis_survives_a_later_loop_crash(
     run = tmp_path / "20260101T000000Z"
     run.mkdir()
     (run / "baseline.json").write_text(json.dumps(_baseline()))
+    _write_corpus(run)
     model_path = tmp_path / "endpoint_model.json"
-    model_path.write_text(json.dumps(_endpoint_model()))
+    model_path.write_text(json.dumps(_paginated_endpoint_model()))
 
     def fake_run_agent(*, handlers, **kw):
         # **kw, not a fixed list: a double that pins every keyword of the
@@ -522,8 +640,9 @@ def test_a_crash_before_any_acceptance_is_reported_not_swallowed(
     run = tmp_path / "20260101T000000Z"
     run.mkdir()
     (run / "baseline.json").write_text(json.dumps(_baseline()))
+    _write_corpus(run)
     model_path = tmp_path / "endpoint_model.json"
-    model_path.write_text(json.dumps(_endpoint_model()))
+    model_path.write_text(json.dumps(_paginated_endpoint_model()))
 
     def fake_run_agent(**kw):
         raise KeyError("choices")

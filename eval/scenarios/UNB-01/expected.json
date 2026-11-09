@@ -1,0 +1,16 @@
+{
+  "scenario": "UNB-01",
+  "endpoint": "GET /api/invoices/{id}/payment-history",
+  "measured_total_ms": 2.7,
+  "required_layers": [],
+  "forbidden_layers": [],
+  "dominant_layer_any_of": ["serialization", "orm_hydration", "application_logic"],
+  "plan": {
+    "selectable": false
+  },
+  "tier2": {
+    "terminal_state_any_of": ["BOTTLENECK_NOT_FIXABLE"],
+    "behaviour_preserved": true
+  },
+  "notes": "PREDICTED REFUSAL. The outcome asserted here is deliberately narrow, same bar as Scenario 7 (SER-01): no patch phase reached, no PR, a refusal recorded with a stated reason. `allocations` (the invoice's full payment history) is the response contract -- no page/size parameter anywhere on this path. Of 6 budgeted live orchestrator runs (UNB-01 through UNB-06): 2 crashed on operational/provider errors before reaching a plan verdict (UNB-01 hit a forced-tool_choice violation Groq rejects server-side, mapped to the same BOTTLENECK_NOT_FIXABLE label a genuine refusal gets -- see TESTING-PLAN.md's known-failure table; UNB-05 exhausted its diagnose step budget without ever submitting); 2 WRONGLY SELECTED a candidate before this session's fixes existed (UNB-03 via a response_link classifier bug scoring per-row work that fills `allocations` as 'genuinely removable'; UNB-04 via a verbatim no-op query_rewrite claiming to eliminate a SELECT the endpoint's own redesign had already removed) -- both root-caused and fixed this session (plan/fixability.py::response_link now also checks scales_with; plan/submit.py now refuses a sql_before==sql_after rewrite and requires an sql_count claim to cite a real baseline digest/call count); 2 refused cleanly end to end (UNB-02, pre-redesign two-query version; UNB-06, post-redesign, with every fix in place). This frozen case uses a fresh live_freeze.py sample taken on UNB-06's facts, which lands even more cleanly than UNB-06's own live run: h1 (serialization, fixability 0.05) and h3 (application_logic, fixability 0.10) both correctly cite 'allocations' by name as the blocking reason; the two candidates actually proposed target h2 (orm_hydration -- the same per-row-work hallucination documented as this session's headline finding, see TESTING-PLAN.md) and are refused for their OWN, independently legitimate reasons (EXPLAIN ANALYZE shows rows_examined flat 0->0; the other changes the schema, which blue/green cannot isolate). As with Scenario 7, the refusal's stated reason and the 0.05/'allocations' citation are both true and present in the artifact, but not tied to the same candidate on every sample -- recorded as context, not re-litigated as a stricter per-candidate gate, for the same reason that bar was withdrawn for Scenario 7: it specifies a reasoning path, not a behaviour. Re-freezing this scenario is not more reliable than Scenario 7's -- the same per-row-work hallucination recurs here too (4 of the 6 live samples ranked an invented orm_hydration/allocation hypothesis above the real one), the headline, not-yet-fixed finding of this sweep."
+}

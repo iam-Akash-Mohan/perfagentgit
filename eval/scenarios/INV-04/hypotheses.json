@@ -1,0 +1,110 @@
+{
+  "hypotheses": [
+    {
+      "id": "h1",
+      "claim": "ORM hydration of each Invoice entity (including lazy Customer proxy) dominates per‑row processing time.",
+      "mechanism": "Each row returned by the JPQL query is materialised into a managed Invoice entity; accessing invoice.getCustomer() creates a lazy Customer proxy which is later initialised, causing Hibernate to populate entity state and manage the persistence context.",
+      "layer": "orm_hydration",
+      "evidence": [
+        "application SQL per request rises from 3 to 102 statements when rows go from 1 to 100, yet server‑side SQL time only grows from 0.3 ms to 3.3 ms (≈3 ms total), leaving >30 ms unexplained.",
+        "latency per result row is ~0.4 ms (37.6 ms / 100 rows) while SQL per row is only ~0.03 ms, indicating another per‑row cost.",
+        "rows examined / rows sent = 30100 / 20100 shows most rows are read, but indexes are used, so DB work is minimal."
+      ],
+      "attributed_ms": 15.0,
+      "prediction": "If Hibernate’s byte‑code enhancement or lazy‑loading proxy creation is disabled (e.g., by configuring `hibernate.enable_lazy_load_no_trans=false` or using DTO projections), the per‑row latency should drop by roughly 0.3 ms, reducing total latency for 100 rows by ~30 ms.",
+      "confidence": 0.85
+    },
+    {
+      "id": "h2",
+      "claim": "JSON serialization of the DTO list consumes the bulk of the remaining per‑row latency.",
+      "mechanism": "InvoiceDtoMapper creates a new InvoiceDto for each Invoice, then Spring’s HttpMessageConverter (Jackson) walks the object graph, writes each field to a byte buffer, and builds the final JSON string, costing O(rows).",
+      "layer": "serialization",
+      "evidence": [
+        "response body size scales linearly: 115 bytes per row (115 bytes for 1 row, 11547 bytes for 100 rows).",
+        "latency per row (0.4 ms) exceeds the cost of the extra SQL (0.03 ms) by an order of magnitude, typical of Jackson’s object‑to‑JSON work.",
+        "Spring Boot’s default Jackson mapper incurs allocation and reflection for each field of every DTO."
+      ],
+      "attributed_ms": 10.0,
+      "prediction": "If the controller returns a pre‑built `MappingJacksonValue` with `SerializationFeature.FAIL_ON_EMPTY_BEANS` disabled, or if the DTO list is replaced by a stream that writes directly, the total latency for 100 rows should shrink by ~10 ms.",
+      "confidence": 0.8
+    },
+    {
+      "id": "h3",
+      "claim": "Application‑level enrichment (InvoiceEnricher + InvoiceDtoMapper) adds measurable per‑row overhead beyond hydration and serialization.",
+      "mechanism": "For every invoice the service invokes Enricher, which calls a repository method to fetch the customer name, then the mapper copies fields into a DTO; each call incurs Java method dispatch, stack manipulation, and temporary object creation.",
+      "layer": "application_logic",
+      "evidence": [
+        "Call chain shows each row passes through InvoiceEnricher.enrich and InvoiceDtoMapper.toDto, which perform a lookup `customerRepository.findNameById` (N+1 query) and field copying.",
+        "Even though the N+1 query’s SQL time is tiny (≈0.028 ms per row), the method call, exception handling and object allocation add CPU work.",
+        "Total non‑SQL, non‑serialization time (≈34 ms – 15 ms – 10 ms) aligns with this estimate."
+      ],
+      "attributed_ms": 5.0,
+      "prediction": "Replacing the Enricher with a pure in‑memory lookup (e.g., loading all needed customer names in a single query) should reduce the 100‑row latency by ~5 ms.",
+      "confidence": 0.7
+    }
+  ],
+  "probes_run": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 10,
+        "page_size": 1,
+        "request_id": "dense-id1-statusOPEN-p0-s100"
+      },
+      "discriminates_between": [
+        "h1",
+        "h2",
+        "h3"
+      ],
+      "result": "p50 latency 5.3 ms, 1 row, 115 B body, 3 SQL stmts, 0.3 ms SQL; latency scales roughly linearly with row count, indicating per‑row work beyond SQL."
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 10,
+        "request_id": "dense-id1-statusOPEN-p0-s100"
+      },
+      "discriminates_between": [
+        "h1",
+        "h2",
+        "h3"
+      ],
+      "result": "p50 latency 37.6 ms, 100 rows, 11547 B body, 102 SQL stmts, 3.3 ms SQL; latency grows ~7 ms per additional 10 rows, far exceeding SQL growth, supporting per‑row application cost."
+    }
+  ],
+  "ranked_ids": [
+    "h1",
+    "h2",
+    "h3"
+  ],
+  "measured_total_ms": 28.088,
+  "probes_executed": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-id1-statusOPEN-p0-s100",
+        "iterations": 10,
+        "page_size": 1
+      },
+      "result": "probe: GET http://localhost:18080/api/customers/1/invoices?status=OPEN&page=0&size=1  (request_id='dense-id1-statusOPEN-p0-s100', page_size=1) iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 5.3 ms\n  p95 latency                  : 8.2 ms\n  result rows in response      : 1\n  response body size (median)  : 115 bytes\n  application SQL per request  : 3.0 statements\n  server-side SQL per request  : 0.3 ms (5.8 % of p50)\n  latency per result row       : 5.3 ms\n  body bytes per result row    : 115",
+      "endpoint_called": "GET http://localhost:18080/api/customers/1/invoices?status=OPEN&page=0&size=1"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-id1-statusOPEN-p0-s100",
+        "iterations": 10
+      },
+      "result": "probe: GET http://localhost:18080/api/customers/1/invoices?status=OPEN&page=0&size=100  (request_id='dense-id1-statusOPEN-p0-s100') iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 37.6 ms\n  p95 latency                  : 59.7 ms\n  result rows in response      : 100\n  response body size (median)  : 11547 bytes\n  application SQL per request  : 102.0 statements\n  server-side SQL per request  : 3.3 ms (8.8 % of p50)\n  latency per result row       : 0.4 ms\n  body bytes per result row    : 115",
+      "endpoint_called": "GET http://localhost:18080/api/customers/1/invoices?status=OPEN&page=0&size=100"
+    }
+  ],
+  "baseline": "/Users/akashm/Documents/ak/perfagent/eval/scratch/INV-04/baseline.json",
+  "baseline_hash": "547aa9997c7e5b15",
+  "endpoint_model": "/Users/akashm/Documents/ak/perfagent/eval/scratch/INV-04/endpoint_model.json",
+  "submissions_rejected": 0,
+  "database_tools": [
+    "explain",
+    "list_indexes"
+  ]
+}

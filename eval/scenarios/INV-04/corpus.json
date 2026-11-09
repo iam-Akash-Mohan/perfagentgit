@@ -1,0 +1,547 @@
+{
+  "benchmark": [
+    {
+      "id": "dense-id1-statusOPEN-p0-s100",
+      "method": "GET",
+      "path": "/api/customers/1/invoices?status=OPEN&page=0&size=100",
+      "headers": {},
+      "body": null,
+      "note": "dense: id=1 (239,311 child rows); page depth 0, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id1-statusOPEN-p2-s100",
+      "method": "GET",
+      "path": "/api/customers/1/invoices?status=OPEN&page=2&size=100",
+      "headers": {},
+      "body": null,
+      "note": "dense: id=1 (239,311 child rows); page depth 2, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id2-statusOPEN-p0-s100",
+      "method": "GET",
+      "path": "/api/customers/2/invoices?status=OPEN&page=0&size=100",
+      "headers": {},
+      "body": null,
+      "note": "dense: id=2 (104,132 child rows); page depth 0, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id2-statusOPEN-p2-s100",
+      "method": "GET",
+      "path": "/api/customers/2/invoices?status=OPEN&page=2&size=100",
+      "headers": {},
+      "body": null,
+      "note": "dense: id=2 (104,132 child rows); page depth 2, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id3-statusOPEN-p0-s100",
+      "method": "GET",
+      "path": "/api/customers/3/invoices?status=OPEN&page=0&size=100",
+      "headers": {},
+      "body": null,
+      "note": "dense: id=3 (64,056 child rows); page depth 0, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id3-statusOPEN-p2-s100",
+      "method": "GET",
+      "path": "/api/customers/3/invoices?status=OPEN&page=2&size=100",
+      "headers": {},
+      "body": null,
+      "note": "dense: id=3 (64,056 child rows); page depth 2, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id4-statusOPEN-p0-s100",
+      "method": "GET",
+      "path": "/api/customers/4/invoices?status=OPEN&page=0&size=100",
+      "headers": {},
+      "body": null,
+      "note": "dense: id=4 (45,377 child rows); page depth 0, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id4-statusOPEN-p2-s100",
+      "method": "GET",
+      "path": "/api/customers/4/invoices?status=OPEN&page=2&size=100",
+      "headers": {},
+      "body": null,
+      "note": "dense: id=4 (45,377 child rows); page depth 2, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id5-statusOPEN-p0-s100",
+      "method": "GET",
+      "path": "/api/customers/5/invoices?status=OPEN&page=0&size=100",
+      "headers": {},
+      "body": null,
+      "note": "dense: id=5 (34,896 child rows); page depth 0, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id5-statusOPEN-p2-s100",
+      "method": "GET",
+      "path": "/api/customers/5/invoices?status=OPEN&page=2&size=100",
+      "headers": {},
+      "body": null,
+      "note": "dense: id=5 (34,896 child rows); page depth 2, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id6-statusOPEN-p0-s100",
+      "method": "GET",
+      "path": "/api/customers/6/invoices?status=OPEN&page=0&size=100",
+      "headers": {},
+      "body": null,
+      "note": "dense: id=6 (27,889 child rows); page depth 0, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id6-statusOPEN-p2-s100",
+      "method": "GET",
+      "path": "/api/customers/6/invoices?status=OPEN&page=2&size=100",
+      "headers": {},
+      "body": null,
+      "note": "dense: id=6 (27,889 child rows); page depth 2, page size 100",
+      "expected_status": 200
+    }
+  ],
+  "held_back": [
+    {
+      "id": "sparse-id1-statusOPEN-p0-s1",
+      "method": "GET",
+      "path": "/api/customers/1/invoices?status=OPEN&page=0&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=1 (239,311 child rows), held back for coverage; page depth 0, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id1-statusOPEN-p2-s1",
+      "method": "GET",
+      "path": "/api/customers/1/invoices?status=OPEN&page=2&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=1 (239,311 child rows), held back for coverage; page depth 2, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id1-statusOPEN-p0-s10",
+      "method": "GET",
+      "path": "/api/customers/1/invoices?status=OPEN&page=0&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=1 (239,311 child rows), held back for coverage; page depth 0, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id1-statusOPEN-p2-s10",
+      "method": "GET",
+      "path": "/api/customers/1/invoices?status=OPEN&page=2&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=1 (239,311 child rows), held back for coverage; page depth 2, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id1-statusOPEN-p0-s50",
+      "method": "GET",
+      "path": "/api/customers/1/invoices?status=OPEN&page=0&size=50",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=1 (239,311 child rows), held back for coverage; page depth 0, page size 50",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id1-statusOPEN-p2-s50",
+      "method": "GET",
+      "path": "/api/customers/1/invoices?status=OPEN&page=2&size=50",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=1 (239,311 child rows), held back for coverage; page depth 2, page size 50",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id1-statusOPEN-p0-s100",
+      "method": "GET",
+      "path": "/api/customers/1/invoices?status=OPEN&page=0&size=100",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=1 (239,311 child rows), held back for coverage; page depth 0, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id1-statusOPEN-p2-s100",
+      "method": "GET",
+      "path": "/api/customers/1/invoices?status=OPEN&page=2&size=100",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=1 (239,311 child rows), held back for coverage; page depth 2, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id8334-statusOPEN-p0-s1",
+      "method": "GET",
+      "path": "/api/customers/8334/invoices?status=OPEN&page=0&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=8334 (4 child rows), held back for coverage; page depth 0, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id8334-statusOPEN-p2-s1",
+      "method": "GET",
+      "path": "/api/customers/8334/invoices?status=OPEN&page=2&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=8334 (4 child rows), held back for coverage; page depth 2, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id8334-statusOPEN-p0-s10",
+      "method": "GET",
+      "path": "/api/customers/8334/invoices?status=OPEN&page=0&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=8334 (4 child rows), held back for coverage; page depth 0, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id8334-statusOPEN-p2-s10",
+      "method": "GET",
+      "path": "/api/customers/8334/invoices?status=OPEN&page=2&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=8334 (4 child rows), held back for coverage; page depth 2, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id8334-statusOPEN-p0-s50",
+      "method": "GET",
+      "path": "/api/customers/8334/invoices?status=OPEN&page=0&size=50",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=8334 (4 child rows), held back for coverage; page depth 0, page size 50",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id8334-statusOPEN-p2-s50",
+      "method": "GET",
+      "path": "/api/customers/8334/invoices?status=OPEN&page=2&size=50",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=8334 (4 child rows), held back for coverage; page depth 2, page size 50",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id8334-statusOPEN-p0-s100",
+      "method": "GET",
+      "path": "/api/customers/8334/invoices?status=OPEN&page=0&size=100",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=8334 (4 child rows), held back for coverage; page depth 0, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id8334-statusOPEN-p2-s100",
+      "method": "GET",
+      "path": "/api/customers/8334/invoices?status=OPEN&page=2&size=100",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=8334 (4 child rows), held back for coverage; page depth 2, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id16667-statusOPEN-p0-s1",
+      "method": "GET",
+      "path": "/api/customers/16667/invoices?status=OPEN&page=0&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=16667 (3 child rows), held back for coverage; page depth 0, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id16667-statusOPEN-p2-s1",
+      "method": "GET",
+      "path": "/api/customers/16667/invoices?status=OPEN&page=2&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=16667 (3 child rows), held back for coverage; page depth 2, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id16667-statusOPEN-p0-s10",
+      "method": "GET",
+      "path": "/api/customers/16667/invoices?status=OPEN&page=0&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=16667 (3 child rows), held back for coverage; page depth 0, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id16667-statusOPEN-p2-s10",
+      "method": "GET",
+      "path": "/api/customers/16667/invoices?status=OPEN&page=2&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=16667 (3 child rows), held back for coverage; page depth 2, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id16667-statusOPEN-p0-s50",
+      "method": "GET",
+      "path": "/api/customers/16667/invoices?status=OPEN&page=0&size=50",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=16667 (3 child rows), held back for coverage; page depth 0, page size 50",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id16667-statusOPEN-p2-s50",
+      "method": "GET",
+      "path": "/api/customers/16667/invoices?status=OPEN&page=2&size=50",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=16667 (3 child rows), held back for coverage; page depth 2, page size 50",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id16667-statusOPEN-p0-s100",
+      "method": "GET",
+      "path": "/api/customers/16667/invoices?status=OPEN&page=0&size=100",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=16667 (3 child rows), held back for coverage; page depth 0, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id16667-statusOPEN-p2-s100",
+      "method": "GET",
+      "path": "/api/customers/16667/invoices?status=OPEN&page=2&size=100",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=16667 (3 child rows), held back for coverage; page depth 2, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id25000-statusOPEN-p0-s1",
+      "method": "GET",
+      "path": "/api/customers/25000/invoices?status=OPEN&page=0&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=25000 (1 child rows), held back for coverage; page depth 0, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id25000-statusOPEN-p2-s1",
+      "method": "GET",
+      "path": "/api/customers/25000/invoices?status=OPEN&page=2&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=25000 (1 child rows), held back for coverage; page depth 2, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id25000-statusOPEN-p0-s10",
+      "method": "GET",
+      "path": "/api/customers/25000/invoices?status=OPEN&page=0&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=25000 (1 child rows), held back for coverage; page depth 0, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id25000-statusOPEN-p2-s10",
+      "method": "GET",
+      "path": "/api/customers/25000/invoices?status=OPEN&page=2&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=25000 (1 child rows), held back for coverage; page depth 2, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id25000-statusOPEN-p0-s50",
+      "method": "GET",
+      "path": "/api/customers/25000/invoices?status=OPEN&page=0&size=50",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=25000 (1 child rows), held back for coverage; page depth 0, page size 50",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id25000-statusOPEN-p2-s50",
+      "method": "GET",
+      "path": "/api/customers/25000/invoices?status=OPEN&page=2&size=50",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=25000 (1 child rows), held back for coverage; page depth 2, page size 50",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id25000-statusOPEN-p0-s100",
+      "method": "GET",
+      "path": "/api/customers/25000/invoices?status=OPEN&page=0&size=100",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=25000 (1 child rows), held back for coverage; page depth 0, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id25000-statusOPEN-p2-s100",
+      "method": "GET",
+      "path": "/api/customers/25000/invoices?status=OPEN&page=2&size=100",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=25000 (1 child rows), held back for coverage; page depth 2, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id33333-statusOPEN-p0-s1",
+      "method": "GET",
+      "path": "/api/customers/33333/invoices?status=OPEN&page=0&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=33333 (0 child rows), held back for coverage; page depth 0, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id33333-statusOPEN-p2-s1",
+      "method": "GET",
+      "path": "/api/customers/33333/invoices?status=OPEN&page=2&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=33333 (0 child rows), held back for coverage; page depth 2, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id33333-statusOPEN-p0-s10",
+      "method": "GET",
+      "path": "/api/customers/33333/invoices?status=OPEN&page=0&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=33333 (0 child rows), held back for coverage; page depth 0, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id33333-statusOPEN-p2-s10",
+      "method": "GET",
+      "path": "/api/customers/33333/invoices?status=OPEN&page=2&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=33333 (0 child rows), held back for coverage; page depth 2, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id33333-statusOPEN-p0-s50",
+      "method": "GET",
+      "path": "/api/customers/33333/invoices?status=OPEN&page=0&size=50",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=33333 (0 child rows), held back for coverage; page depth 0, page size 50",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id33333-statusOPEN-p2-s50",
+      "method": "GET",
+      "path": "/api/customers/33333/invoices?status=OPEN&page=2&size=50",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=33333 (0 child rows), held back for coverage; page depth 2, page size 50",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id33333-statusOPEN-p0-s100",
+      "method": "GET",
+      "path": "/api/customers/33333/invoices?status=OPEN&page=0&size=100",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=33333 (0 child rows), held back for coverage; page depth 0, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id33333-statusOPEN-p2-s100",
+      "method": "GET",
+      "path": "/api/customers/33333/invoices?status=OPEN&page=2&size=100",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=33333 (0 child rows), held back for coverage; page depth 2, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id41666-statusOPEN-p0-s1",
+      "method": "GET",
+      "path": "/api/customers/41666/invoices?status=OPEN&page=0&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=41666 (2 child rows), held back for coverage; page depth 0, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id41666-statusOPEN-p2-s1",
+      "method": "GET",
+      "path": "/api/customers/41666/invoices?status=OPEN&page=2&size=1",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=41666 (2 child rows), held back for coverage; page depth 2, page size 1",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id41666-statusOPEN-p0-s10",
+      "method": "GET",
+      "path": "/api/customers/41666/invoices?status=OPEN&page=0&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=41666 (2 child rows), held back for coverage; page depth 0, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id41666-statusOPEN-p2-s10",
+      "method": "GET",
+      "path": "/api/customers/41666/invoices?status=OPEN&page=2&size=10",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=41666 (2 child rows), held back for coverage; page depth 2, page size 10",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id41666-statusOPEN-p0-s50",
+      "method": "GET",
+      "path": "/api/customers/41666/invoices?status=OPEN&page=0&size=50",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=41666 (2 child rows), held back for coverage; page depth 0, page size 50",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id41666-statusOPEN-p2-s50",
+      "method": "GET",
+      "path": "/api/customers/41666/invoices?status=OPEN&page=2&size=50",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=41666 (2 child rows), held back for coverage; page depth 2, page size 50",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id41666-statusOPEN-p0-s100",
+      "method": "GET",
+      "path": "/api/customers/41666/invoices?status=OPEN&page=0&size=100",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=41666 (2 child rows), held back for coverage; page depth 0, page size 100",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id41666-statusOPEN-p2-s100",
+      "method": "GET",
+      "path": "/api/customers/41666/invoices?status=OPEN&page=2&size=100",
+      "headers": {},
+      "body": null,
+      "note": "sparse: id=41666 (2 child rows), held back for coverage; page depth 2, page size 100",
+      "expected_status": 200
+    }
+  ],
+  "hash": "fe839b7de77e5859"
+}

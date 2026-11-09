@@ -1,0 +1,395 @@
+{
+  "route": "GET /api/invoices/overdue-worklist",
+  "entry": {
+    "file": "src/main/java/com/ex/web/OverdueWorklistController.java",
+    "line": 21,
+    "symbol": "OverdueWorklistController.overdueWorklist"
+  },
+  "path": [
+    {
+      "file": "src/main/java/com/ex/web/OverdueWorklistController.java",
+      "line": 21,
+      "symbol": "OverdueWorklistController.overdueWorklist"
+    },
+    {
+      "file": "src/main/java/com/ex/service/OverdueWorklistService.java",
+      "line": 30,
+      "symbol": "OverdueWorklistService.overdueWorklist"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 41,
+      "symbol": "InvoiceRepository.findOverdueRows"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/FeeScheduleRepository.java",
+      "line": 10,
+      "symbol": "FeeScheduleRepository.findByActiveTrue"
+    }
+  ],
+  "call_chain": [
+    {
+      "method": "OverdueWorklistController.overdueWorklist",
+      "file": "src/main/java/com/ex/web/OverdueWorklistController.java",
+      "line": 21,
+      "does": "Controller method returns service result"
+    },
+    {
+      "method": "OverdueWorklistService.overdueWorklist",
+      "file": "src/main/java/com/ex/service/OverdueWorklistService.java",
+      "line": 30,
+      "does": "Service builds paged overdue invoice list with late fee calculation"
+    },
+    {
+      "method": "InvoiceRepository.findOverdueRows",
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 41,
+      "does": "Repository query returns overdue invoice rows (id, customer name, amount, due date) with pagination"
+    },
+    {
+      "method": "FeeScheduleRepository.findByActiveTrue",
+      "file": "src/main/java/com/ex/repo/FeeScheduleRepository.java",
+      "line": 10,
+      "does": "Repository query fetches the active fee schedule"
+    }
+  ],
+  "data_access": [
+    {
+      "trigger": "invoiceRepo.findOverdueRows",
+      "kind": "jpql_query",
+      "file": "src/main/java/com/ex/service/OverdueWorklistService.java",
+      "line": 33,
+      "sql": null,
+      "tables": [
+        "invoice",
+        "customer"
+      ],
+      "executes_per_row": false,
+      "note": "JPQL query defined in InvoiceRepository.findOverdueRows, paginated"
+    },
+    {
+      "trigger": "feeScheduleRepo.findByActiveTrue",
+      "kind": "derived_query",
+      "file": "src/main/java/com/ex/service/OverdueWorklistService.java",
+      "line": 38,
+      "sql": null,
+      "tables": [
+        "fee_schedule"
+      ],
+      "executes_per_row": true,
+      "note": "Derived query findByActiveTrue on FeeScheduleRepository, executed inside loop for each result row"
+    }
+  ],
+  "sql_sources": [
+    {
+      "method": "invoiceRepo.findOverdueRows",
+      "kind": "@Query JPQL",
+      "tables": [
+        "invoice",
+        "customer"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/service/OverdueWorklistService.java",
+        "line": 33,
+        "symbol": null
+      }
+    },
+    {
+      "method": "feeScheduleRepo.findByActiveTrue",
+      "kind": "derived query",
+      "tables": [
+        "fee_schedule"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/service/OverdueWorklistService.java",
+        "line": 38,
+        "symbol": null
+      }
+    }
+  ],
+  "entities": [
+    {
+      "name": "Invoice",
+      "table": "invoice",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/Invoice.java",
+        "line": 9,
+        "symbol": "Invoice"
+      },
+      "relations": [
+        {
+          "field": "customer",
+          "type": "ManyToOne",
+          "fetch": "LAZY",
+          "target": "Customer",
+          "batch_size": null,
+          "fetch_mode": null
+        }
+      ]
+    },
+    {
+      "name": "Customer",
+      "table": "customer",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/Customer.java",
+        "line": 9,
+        "symbol": "Customer"
+      },
+      "relations": [
+        {
+          "field": "invoices",
+          "type": "OneToMany",
+          "fetch": "LAZY",
+          "target": "Invoice",
+          "batch_size": null,
+          "fetch_mode": null
+        }
+      ]
+    },
+    {
+      "name": "FeeSchedule",
+      "table": "fee_schedule",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/FeeSchedule.java",
+        "line": 7,
+        "symbol": "FeeSchedule"
+      },
+      "relations": []
+    }
+  ],
+  "transactions": [
+    {
+      "method": "OverdueWorklistService.overdueWorklist",
+      "propagation": "REQUIRED",
+      "read_only": true,
+      "citation": {
+        "file": "src/main/java/com/ex/service/OverdueWorklistService.java",
+        "line": 30,
+        "symbol": "overdueWorklist"
+      }
+    }
+  ],
+  "external_calls": [],
+  "tables": [
+    {
+      "table": "invoice",
+      "entity": "Invoice",
+      "columns_read": [
+        "id",
+        "amount",
+        "due_date",
+        "status",
+        "customer_id"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "customer_id bigint NULL",
+        "amount decimal(19,2) NULL",
+        "status varchar(255) NULL",
+        "due_date date NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "idx_invoice_customer_id",
+          "columns": [
+            "customer_id"
+          ],
+          "unique": false,
+          "cardinality": 32931
+        },
+        {
+          "name": "idx_invoice_customer_id_status_due_date_id",
+          "columns": [
+            "customer_id",
+            "status",
+            "due_date",
+            "id"
+          ],
+          "unique": false,
+          "cardinality": 35666
+        },
+        {
+          "name": "idx_invoice_status_due_date_id",
+          "columns": [
+            "status",
+            "due_date",
+            "id"
+          ],
+          "unique": false,
+          "cardinality": 2
+        },
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 1196007
+        }
+      ],
+      "approx_rows": 1196007,
+      "foreign_keys": [
+        {
+          "direction": "out",
+          "constraint": "fk_invoice_customer",
+          "column": "customer_id",
+          "references": "customer.id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_payment_invoice",
+          "column": "payment.invoice_id",
+          "references": "id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_payment_allocation_invoice",
+          "column": "payment_allocation.invoice_id",
+          "references": "id"
+        }
+      ]
+    },
+    {
+      "table": "customer",
+      "entity": "Customer",
+      "columns_read": [
+        "id",
+        "name"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "name varchar(255) NOT NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 49936
+        }
+      ],
+      "approx_rows": 49936,
+      "foreign_keys": [
+        {
+          "direction": "in",
+          "constraint": "fk_customer_payment_customer",
+          "column": "customer_payment.customer_id",
+          "references": "id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_invoice_customer",
+          "column": "invoice.customer_id",
+          "references": "id"
+        }
+      ]
+    },
+    {
+      "table": "fee_schedule",
+      "entity": "FeeSchedule",
+      "columns_read": [
+        "rate_percentage",
+        "active"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "name varchar(64) NOT NULL",
+        "rate_percentage decimal(5,2) NOT NULL",
+        "effective_from date NOT NULL",
+        "active tinyint(1) NOT NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 3
+        }
+      ],
+      "approx_rows": 3,
+      "foreign_keys": []
+    }
+  ],
+  "per_row_work": [
+    {
+      "description": "creates OverdueInvoiceDto and computes late fee per invoice",
+      "file": "src/main/java/com/ex/service/OverdueWorklistService.java",
+      "line": 37,
+      "kind": "object_creation",
+      "scales_with": "invoices per page",
+      "bounded": true,
+      "bound": "page size, max 100"
+    }
+  ],
+  "response_shape": {
+    "dto": "OverdueInvoiceDto",
+    "fields_returned": [
+      "id",
+      "customerName",
+      "amount",
+      "dueDate",
+      "lateFeeAmount"
+    ],
+    "computed_fields": [
+      "lateFeeAmount"
+    ],
+    "unbounded_collections": [],
+    "citation": {
+      "file": "src/main/java/com/ex/dto/OverdueInvoiceDto.java",
+      "line": 8,
+      "symbol": "OverdueInvoiceDto"
+    }
+  },
+  "request_shape": {
+    "parameters": [
+      {
+        "name": "page",
+        "location": "query",
+        "type": "integer",
+        "required": false,
+        "default": 0,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/OverdueWorklistController.java",
+          "line": 22,
+          "symbol": "page"
+        }
+      },
+      {
+        "name": "size",
+        "location": "query",
+        "type": "integer",
+        "required": false,
+        "default": 50,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/OverdueWorklistController.java",
+          "line": 23,
+          "symbol": "size"
+        }
+      }
+    ]
+  },
+  "pagination": {
+    "mechanism": "offset",
+    "fires_count_query": false,
+    "max_page_size": 100,
+    "citation": {
+      "file": "src/main/java/com/ex/service/OverdueWorklistService.java",
+      "line": 32,
+      "symbol": "overdueWorklist"
+    }
+  },
+  "caching": [],
+  "hidden_query_triggers": [],
+  "tests_covering": [],
+  "uncertainties": [
+    "AUTOMATED CHECK: pagination is offset-based (pagination.mechanism='offset') and none of the declared per-request queries has an ORDER BY. MySQL makes no row-order guarantee without one, so page N can repeat or skip rows the planner returned in a different order on a later call. This is a PRE-EXISTING CORRECTNESS RISK in the target application — found while diagnosing performance, not introduced by any patch."
+  ],
+  "prompt_hash": "b4cf7ea7df5e8d57",
+  "base_commit": "6bd44ce97c30f0c96bda54772044e0e597c2229a"
+}

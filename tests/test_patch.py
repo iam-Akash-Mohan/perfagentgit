@@ -7,6 +7,7 @@ needs a JDK and a 90-second build is a test nobody runs.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -157,17 +158,98 @@ def test_editing_a_path_that_escapes_via_symlink_is_refused(
     assert (tmp_path / "OUTSIDE.txt").read_text() == "secret from outside the repo\n"
 
 
-def test_create_refuses_an_existing_green_directory(blue: Path, tmp_path: Path) -> None:
+def test_create_heals_a_leftover_directory_at_the_path(blue: Path, tmp_path: Path) -> None:
+    """Self-healing, not fatal: a plain directory left at the target path
+    (not even a git worktree — debris from something else entirely) must
+    not be the reason `create()` refuses. `add` is never the first thing
+    tried against a path that may be dirty."""
     existing = tmp_path / "already"
     existing.mkdir()
-    with pytest.raises(ContractViolation, match="already exists"):
-        GreenWorktree.create("r2", repo=blue, green=existing)
+    (existing / "junk.txt").write_text("leftover\n")
+
+    worktree = GreenWorktree.create("r2", repo=blue, green=existing)
+
+    assert worktree.path == existing.resolve()
+    assert (existing / "pom.xml").exists()
+    assert not (existing / "junk.txt").exists()
 
 
-def test_create_refuses_a_reused_run_id(green: GreenWorktree, blue: Path,
-                                        tmp_path: Path) -> None:
-    with pytest.raises(ContractViolation, match="already exists"):
+def test_create_refuses_a_run_id_that_already_produced_arms(
+    green: GreenWorktree, blue: Path, tmp_path: Path
+) -> None:
+    with pytest.raises(ContractViolation, match="already produced arms"):
         GreenWorktree.create("test-run", repo=blue, green=tmp_path / "green2")
+
+
+def test_a_stale_registration_with_a_missing_directory_is_healed(
+    blue: Path, tmp_path: Path
+) -> None:
+    """git's own bookkeeping still believes a worktree is at this path --
+    its directory was removed directly, not via `git worktree remove` --
+    and that must be healed, not the reason the next run fails."""
+    path = tmp_path / "green"
+    first = GreenWorktree.create("first", repo=blue, green=path)
+    shutil.rmtree(first.path)  # bypasses `git worktree remove` on purpose
+
+    second = GreenWorktree.create("second", repo=blue, green=path)
+
+    assert second.path == path.resolve()
+    assert (path / "pom.xml").exists()
+
+
+def test_a_failed_worktree_add_leaves_no_branch_behind(
+    blue: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`git worktree add -b` is two things, not one: the branch, then the
+    checkout. If the real git call fails after creating the branch, the
+    branch must not survive to poison the next attempt at this run id."""
+    import senapathy.patch.worktree as worktree_mod
+
+    real_git = worktree_mod._git
+
+    def flaky_git(repo, *args, check=True):
+        if args[:2] == ("worktree", "add"):
+            branch = args[3]
+            base = args[5]
+            # What a real partial failure leaves behind: the branch ref
+            # exists, the worktree does not.
+            real_git(repo, "branch", branch, base)
+            raise ContractViolation("simulated: worktree add failed after "
+                                    "the branch was created")
+        return real_git(repo, *args, check=check)
+
+    monkeypatch.setattr(worktree_mod, "_git", flaky_git)
+
+    with pytest.raises(ContractViolation, match="simulated"):
+        GreenWorktree.create("flaky", repo=blue, green=tmp_path / "green")
+
+    remaining = real_git(blue, "branch", "--list", "senapathy/flaky").strip()
+    assert remaining == ""
+
+
+def test_blue_on_a_stale_commit_is_recreated(blue: Path, tmp_path: Path) -> None:
+    from senapathy.measure.arms import prepare_blue_worktree
+
+    green_path = tmp_path / "blue-arm"
+    first = prepare_blue_worktree("r1", repo=blue, blue=green_path)
+    old_base = first.base_commit
+
+    # The target repo moves on -- a new commit lands after blue was built.
+    (blue / "src/main/java/com/ex/service/NewFeature.java").parent.mkdir(
+        parents=True, exist_ok=True)
+    (blue / "src/main/java/com/ex/service/NewFeature.java").write_text(
+        "package com.ex.service;\nclass NewFeature {}\n")
+    subprocess.run(["git", "-C", str(blue), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(blue), "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-qm", "a new commit blue has not seen"],
+        check=True,
+    )
+
+    second = prepare_blue_worktree("r2", repo=blue, blue=green_path)
+
+    assert second.base_commit != old_base
+    assert (second.path / "src/main/java/com/ex/service/NewFeature.java").exists()
 
 
 def test_reset_to_checkpoint_discards_a_bad_iteration(green: GreenWorktree) -> None:
@@ -1058,6 +1140,7 @@ def test_build_document_targets_the_selected_candidates_hypothesis(
         refusals: list[str] = []
         guardrail_violations: list[str] = []
         last_error = None
+        _granted_files: set[str] = set()
 
     document = _build_document(
         green=FakeGreen(), tools=FakeTools(), candidate=candidate,

@@ -1,0 +1,39 @@
+{
+  "diagnose": [
+    {
+      "args": {
+        "iterations": 5,
+        "page_size": 1,
+        "request_id": "dense-req-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/payments/recent-summary?page=0&size=1  (request_id='dense-req-p0-s100', page_size=1) iterations=5 (1 warmup discarded)\n  statuses                     : {'200': 5}\n  p50 latency                  : 12.4 ms\n  p95 latency                  : 14.8 ms\n  result rows in response      : 1\n  response body size (median)  : 152 bytes\n  application SQL per request  : 2.0 statements\n  server-side SQL per request  : 8.7 ms (70.1 % of p50)\n  latency per result row       : 12.4 ms\n  body bytes per result row    : 152",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 5,
+        "page_size": 100,
+        "request_id": "dense-req-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/payments/recent-summary?page=0&size=100  (request_id='dense-req-p0-s100', page_size=100) iterations=5 (1 warmup discarded)\n  statuses                     : {'200': 5}\n  p50 latency                  : 610.5 ms\n  p95 latency                  : 641.5 ms\n  result rows in response      : 100\n  response body size (median)  : 15178 bytes\n  application SQL per request  : 101.0 statements\n  server-side SQL per request  : 519.3 ms (85.1 % of p50)\n  latency per result row       : 6.1 ms\n  body bytes per result row    : 151",
+      "tool": "run_probe"
+    }
+  ],
+  "plan": [
+    {
+      "args": {
+        "columns": [
+          "customer_id",
+          "id"
+        ],
+        "params": [
+          "?"
+        ],
+        "sql": "SELECT COUNT(i.id) FROM invoice i WHERE i.customer_id = %s",
+        "table": "invoice"
+      },
+      "result": "index_benefit('invoice', ['customer_id', 'id'])\n\n  BEFORE   i: type=ref, key=idx_invoice_customer_id\n           rows_examined=1   actual=0.0 ms\n  AFTER    i: type=ref, key=idx_invoice_customer_id\n           rows_examined=1   actual=0.0 ms\n  COST     creation 1.0 s · estimated size 30.6 MB\n  VERDICT  rows examined reduced 0.000%, 2.2x faster\n\n  The index was temporary (senapathy_tmp_a90e609e1b) and has been dropped. Nothing was left on the schema.",
+      "tool": "index_benefit"
+    }
+  ]
+}

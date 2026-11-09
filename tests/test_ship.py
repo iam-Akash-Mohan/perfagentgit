@@ -256,6 +256,34 @@ def test_dry_run_ship_renders_ready_to_ship_not_bottleneck_not_fixable(
     assert "gate_decision" in gate_doc["artifacts"]
 
 
+def test_report_shows_planned_versus_granted_versus_final_scope(
+    tmp_path: Path, repo: Path
+) -> None:
+    """STM-01's complaint: a silent widening would be worse than the
+    current failure. The report must say a grant happened, which file it
+    was, and the planned/final counts -- not just the union the final
+    diff happens to touch."""
+    base = _base_commit(repo)
+    branch = "senapathy/fixture"
+    (repo / "V2.sql").write_text("CREATE INDEX idx_x ON invoice (customer_id, status);\n")
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_all_passing_run(run_dir, base_commit=base, branch=branch)
+
+    patch_doc = json.loads((run_dir / "patch.json").read_text())
+    patch_doc["patch"]["granted_files"] = ["src/main/java/com/ex/Other.java"]
+    (run_dir / "patch.json").write_text(json.dumps(patch_doc))
+
+    run_ship(run_dir, green_path=repo, client=_NoNetworkClient(), dry_run=True)
+
+    report_text = (run_dir / "report.md").read_text()
+    assert "Planned scope: 1 file(s)" in report_text
+    assert "Granted during patching: 1" in report_text
+    assert "`src/main/java/com/ex/Other.java`" in report_text
+    assert "Final scope: 2 file(s)" in report_text
+
+
 # ─────────────────────  the reworked report body  ─────────────────────────
 
 

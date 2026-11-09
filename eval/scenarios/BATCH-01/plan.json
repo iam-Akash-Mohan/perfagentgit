@@ -1,0 +1,187 @@
+{
+  "endpoint": "GET /api/payments/recent-summary",
+  "measured_total_ms": 584.016,
+  "ranked": [
+    {
+      "hypothesis_id": "h0",
+      "claim": "N+1 count queries (InvoiceRepository.countByCustomerId) dominate latency, taking ~5.2 ms per row.",
+      "layer": "database_query",
+      "attributed_ms": 525.0,
+      "fixability": {
+        "hypothesis_id": "h0",
+        "fixability": 0.9,
+        "reason": "batchable: fetch join, @EntityGraph, or an IN query (invoiceRepo.countByCustomerId executes once per result row, src/main/java/com/ex/repo/InvoiceRepository.java:20)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 472.5
+    },
+    {
+      "hypothesis_id": "h1",
+      "claim": "ORM hydration of CustomerPayment entities adds ~0.4 ms per row.",
+      "layer": "orm_hydration",
+      "attributed_ms": 40.0,
+      "fixability": {
+        "hypothesis_id": "h1",
+        "fixability": 0.9,
+        "reason": "batchable: fetch join, @EntityGraph, or an IN query (invoiceRepo.countByCustomerId executes once per result row, src/main/java/com/ex/repo/InvoiceRepository.java:20)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 36.0
+    },
+    {
+      "hypothesis_id": "h3",
+      "claim": "JSON serialization adds ~0.2 ms per row.",
+      "layer": "serialization",
+      "attributed_ms": 20.0,
+      "fixability": {
+        "hypothesis_id": "h3",
+        "fixability": 0.3,
+        "reason": "library-level, rarely beatable by hand (no unbounded response collection is implicated)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 6.0
+    },
+    {
+      "hypothesis_id": "h2",
+      "claim": "Per‑row application‑level aggregation logic costs ~0.3 ms per row.",
+      "layer": "application_logic",
+      "attributed_ms": 30.0,
+      "fixability": {
+        "hypothesis_id": "h2",
+        "fixability": 0.4,
+        "reason": "UNCLASSIFIED: no policy row matched this hypothesis, so 0.40 is a placeholder rather than an assessment",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": false
+      },
+      "expected_value_ms": 12.0
+    }
+  ],
+  "considered": [
+    "h0",
+    "h1"
+  ],
+  "candidates": [
+    {
+      "id": "c1",
+      "targets_hypothesis": "h0",
+      "approach": "batch_query",
+      "description": "Replace the per‑row `invoiceRepo.countByCustomerId` calls with a single batched query that returns counts for all customer IDs in the result set. The service collects the customer IDs from the recent‑payment rows, runs a single `SELECT i.customer_id, COUNT(*) FROM invoice i WHERE i.customer_id IN (:ids) GROUP BY i.customer_id` query, builds a map, and populates `RecentPaymentSummaryDto` using that map instead of invoking the count method in the loop.",
+      "mechanism": "rows_examined",
+      "mechanism_changed": "rows examined",
+      "predicted_effect": "rows examined drop from ~726 630 200 (total across N+1 counts) to ~32 931 (single grouped count scan) per request",
+      "files_to_touch": [
+        "src/main/java/com/ex/service/RecentPaymentSummaryService.java",
+        "src/main/java/com/ex/repo/InvoiceRepository.java",
+        "src/main/java/com/ex/web/RecentPaymentSummaryController.java",
+        "src/main/java/com/ex/repo/CustomerPaymentRepository.java"
+      ],
+      "sql_change": null,
+      "sql_before": "SELECT COUNT(`i1_0`.`id`) FROM `invoice` `i1_0` WHERE `i1_0`.`customer_id` = ?",
+      "sql_after": "SELECT cp.id, cp.customer_id, c.name, cp.paid_on, cp.amount, cp.method, ic.cnt FROM customer_payment cp JOIN customer c ON cp.customer_id = c.id LEFT JOIN (SELECT i.customer_id, COUNT(*) cnt FROM invoice i GROUP BY i.customer_id) ic ON cp.customer_id = ic.customer_id WHERE cp.method = ? ORDER BY cp.paid_on DESC, cp.id DESC LIMIT ? OFFSET ?",
+      "sql_params": [
+        "method",
+        "limit",
+        "offset"
+      ],
+      "baseline_digest": null,
+      "baseline_calls": null,
+      "what_could_break": [
+        "If the IN‑list of customer IDs is larger than MySQL's limit for a single query, the batched count could fail.",
+        "Changes to the ordering or pagination logic must stay identical; any mismatch could alter the contract.",
+        "If a customer has no invoices, the left join must produce a null count; the code must treat null as zero."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 2,
+      "requires_flag": false,
+      "expected_value_ms": 472.5,
+      "sql_verification": {
+        "verified": false,
+        "attempted": true,
+        "rows_examined_before": 0,
+        "rows_examined_after": 0,
+        "rows_delta_pct": 0.0,
+        "actual_ms_before": 0.0,
+        "actual_ms_after": 0.0,
+        "scored": false,
+        "note": "EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: Not all parameters were used in the SQL statement\nStatement: SELECT COUNT(`i1_0`.`id`) FROM `invoice` `i1_0` WHERE `i1_0`.`customer_id` = ?  /  SELECT cp.id, cp.customer_id, c.name, cp.paid_on, cp.amount, cp.method, ic.cnt FROM customer_payment cp JOIN customer c ON cp.customer_id = c.id LEFT JOIN (SELECT i.customer_id, COUNT(*) cnt FROM invoice i GROUP BY i.",
+        "assessed_by": "code"
+      },
+      "not_selectable_because": "EXPLAIN ANALYZE could not verify this candidate's own sql_before/sql_after before a patch exists (EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: Not all parameters were used in the SQL statement\nStatement: SELECT COUNT(`i1_0`.`id`) FROM `invoice` `i1_0` WHERE `i1_0`.`customer_id` = ?  /  SELECT cp.id, cp.customer_id, c.name, cp.paid_on, cp.amount, cp.method, ic.cnt FROM customer_payment cp JOIN customer c ON cp.customer_id = c.id LEFT JOIN (SELECT i.customer_id, COUNT(*) cnt FROM invoice i GROUP BY i.). An instrumented mechanism has not earned selection without evidence — this is unverifiable, not disproven, but it still disqualifies until it can be checked.",
+      "scope_reasons": {
+        "src/main/java/com/ex/web/RecentPaymentSummaryController.java": "on this endpoint's own traced call path to src/main/java/com/ex/repo/InvoiceRepository.java, which this candidate already touches — included so a change to src/main/java/com/ex/repo/InvoiceRepository.java has its caller in scope",
+        "src/main/java/com/ex/repo/CustomerPaymentRepository.java": "on this endpoint's own traced call path to src/main/java/com/ex/repo/InvoiceRepository.java, which this candidate already touches — included so a change to src/main/java/com/ex/repo/InvoiceRepository.java has its caller in scope"
+      }
+    },
+    {
+      "id": "c2",
+      "targets_hypothesis": "h0",
+      "approach": "query_rewrite",
+      "description": "Rewrite the whole recent‑payment summary query to a single native SQL that joins `customer_payment`, `customer` and a derived table of invoice counts, eliminating the N+1 count calls entirely. The query returns all fields required by `RecentPaymentSummaryDto` (including the pre‑aggregated invoice count) in one round‑trip.",
+      "mechanism": "rows_examined",
+      "mechanism_changed": "rows examined",
+      "predicted_effect": "rows examined reduced from ~726 630 200 (hundreds of separate count scans) to ~32 931 (single grouped scan) per request",
+      "files_to_touch": [
+        "src/main/java/com/ex/service/RecentPaymentSummaryService.java",
+        "src/main/java/com/ex/web/RecentPaymentSummaryController.java"
+      ],
+      "sql_change": null,
+      "sql_before": "SELECT COUNT(`i1_0`.`id`) FROM `invoice` `i1_0` WHERE `i1_0`.`customer_id` = ?",
+      "sql_after": "SELECT cp.id, cp.customer_id, c.name, cp.paid_on, cp.amount, cp.method, ic.cnt FROM customer_payment cp JOIN customer c ON cp.customer_id = c.id LEFT JOIN (SELECT i.customer_id, COUNT(*) cnt FROM invoice i GROUP BY i.customer_id) ic ON cp.customer_id = ic.customer_id WHERE cp.method = ? ORDER BY cp.paid_on DESC, cp.id DESC LIMIT ? OFFSET ?",
+      "sql_params": [
+        "method",
+        "limit",
+        "offset"
+      ],
+      "baseline_digest": null,
+      "baseline_calls": null,
+      "what_could_break": [
+        "The native query must produce columns in the exact order expected by `RecentPaymentSummaryDto`; a mismatch would break deserialization.",
+        "If the derived counts sub‑query returns null for customers without invoices, the service must convert null to zero to keep the contract.",
+        "Any change in SQL syntax or MySQL version could affect the query plan; thorough testing is required."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 2,
+      "requires_flag": false,
+      "expected_value_ms": 472.5,
+      "sql_verification": {
+        "verified": false,
+        "attempted": true,
+        "rows_examined_before": 0,
+        "rows_examined_after": 0,
+        "rows_delta_pct": 0.0,
+        "actual_ms_before": 0.0,
+        "actual_ms_after": 0.0,
+        "scored": false,
+        "note": "EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: Not all parameters were used in the SQL statement\nStatement: SELECT COUNT(`i1_0`.`id`) FROM `invoice` `i1_0` WHERE `i1_0`.`customer_id` = ?  /  SELECT cp.id, cp.customer_id, c.name, cp.paid_on, cp.amount, cp.method, ic.cnt FROM customer_payment cp JOIN customer c ON cp.customer_id = c.id LEFT JOIN (SELECT i.customer_id, COUNT(*) cnt FROM invoice i GROUP BY i.",
+        "assessed_by": "code"
+      },
+      "not_selectable_because": "EXPLAIN ANALYZE could not verify this candidate's own sql_before/sql_after before a patch exists (EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: Not all parameters were used in the SQL statement\nStatement: SELECT COUNT(`i1_0`.`id`) FROM `invoice` `i1_0` WHERE `i1_0`.`customer_id` = ?  /  SELECT cp.id, cp.customer_id, c.name, cp.paid_on, cp.amount, cp.method, ic.cnt FROM customer_payment cp JOIN customer c ON cp.customer_id = c.id LEFT JOIN (SELECT i.customer_id, COUNT(*) cnt FROM invoice i GROUP BY i.). An instrumented mechanism has not earned selection without evidence — this is unverifiable, not disproven, but it still disqualifies until it can be checked.",
+      "scope_reasons": {
+        "src/main/java/com/ex/web/RecentPaymentSummaryController.java": "on this endpoint's own traced call path to src/main/java/com/ex/service/RecentPaymentSummaryService.java, which this candidate already touches — included so a change to src/main/java/com/ex/service/RecentPaymentSummaryService.java has its caller in scope"
+      }
+    }
+  ],
+  "selected_id": null,
+  "selection_reason": "no candidate cleared the selection rule: every one was either above risk tier T2 or did not claim to preserve the response bytes",
+  "not_selected": [
+    {
+      "candidate_id": "c1",
+      "reason": "EXPLAIN ANALYZE could not verify this candidate's own sql_before/sql_after before a patch exists (EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: Not all parameters were used in the SQL statement\nStatement: SELECT COUNT(`i1_0`.`id`) FROM `invoice` `i1_0` WHERE `i1_0`.`customer_id` = ?  /  SELECT cp.id, cp.customer_id, c.name, cp.paid_on, cp.amount, cp.method, ic.cnt FROM customer_payment cp JOIN customer c ON cp.customer_id = c.id LEFT JOIN (SELECT i.customer_id, COUNT(*) cnt FROM invoice i GROUP BY i.). An instrumented mechanism has not earned selection without evidence — this is unverifiable, not disproven, but it still disqualifies until it can be checked."
+    },
+    {
+      "candidate_id": "c2",
+      "reason": "EXPLAIN ANALYZE could not verify this candidate's own sql_before/sql_after before a patch exists (EXPLAIN ANALYZE could not run both statements: EXPLAIN failed: Not all parameters were used in the SQL statement\nStatement: SELECT COUNT(`i1_0`.`id`) FROM `invoice` `i1_0` WHERE `i1_0`.`customer_id` = ?  /  SELECT cp.id, cp.customer_id, c.name, cp.paid_on, cp.amount, cp.method, ic.cnt FROM customer_payment cp JOIN customer c ON cp.customer_id = c.id LEFT JOIN (SELECT i.customer_id, COUNT(*) cnt FROM invoice i GROUP BY i.). An instrumented mechanism has not earned selection without evidence — this is unverifiable, not disproven, but it still disqualifies until it can be checked."
+    }
+  ],
+  "prompt_hash": "5f311954ae548093",
+  "base_commit": "e3da01b1e945f20c6d33f8d5b78baf3172d84c26",
+  "decided_by": "code",
+  "baseline_hash": "1159c06fe266b720"
+}

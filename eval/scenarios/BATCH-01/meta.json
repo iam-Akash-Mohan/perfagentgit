@@ -1,0 +1,6 @@
+{
+  "scenario": "BATCH-01",
+  "endpoint": "GET /api/payments/recent-summary",
+  "mini_spring_commit": "e3da01b1e945f20c6d33f8d5b78baf3172d84c26",
+  "mini_spring_tag": "eval/BATCH-01"
+}

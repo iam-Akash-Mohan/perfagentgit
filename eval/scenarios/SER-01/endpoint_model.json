@@ -1,0 +1,201 @@
+{
+  "route": "GET /api/customers/bios",
+  "entry": {
+    "file": "src/main/java/com/ex/web/CustomerBioController.java",
+    "line": 21,
+    "symbol": "CustomerBioController.bios"
+  },
+  "path": [
+    {
+      "file": "src/main/java/com/ex/web/CustomerBioController.java",
+      "line": 21,
+      "symbol": "CustomerBioController.bios"
+    },
+    {
+      "file": "src/main/java/com/ex/service/CustomerBioService.java",
+      "line": 22,
+      "symbol": "CustomerBioService.bios"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/CustomerProfileRepository.java",
+      "line": 24,
+      "symbol": "CustomerProfileRepository.findBioRows"
+    }
+  ],
+  "call_chain": [
+    {
+      "method": "CustomerBioController.bios",
+      "file": "src/main/java/com/ex/web/CustomerBioController.java",
+      "line": 21,
+      "does": "controller method returns bios DTO list"
+    },
+    {
+      "method": "CustomerBioService.bios",
+      "file": "src/main/java/com/ex/service/CustomerBioService.java",
+      "line": 22,
+      "does": "service validates page size and calls repository"
+    },
+    {
+      "method": "CustomerProfileRepository.findBioRows",
+      "file": "src/main/java/com/ex/repo/CustomerProfileRepository.java",
+      "line": 24,
+      "does": "repository executes JPQL query returning DTOs"
+    }
+  ],
+  "data_access": [
+    {
+      "trigger": "repo.findBioRows",
+      "kind": "jpql_query",
+      "file": "src/main/java/com/ex/repo/CustomerProfileRepository.java",
+      "line": 24,
+      "sql": "SELECT cp.id, cp.customer_name, cp.bio FROM customer_profile cp ORDER BY cp.id ASC",
+      "tables": [
+        "customer_profile"
+      ],
+      "executes_per_row": false,
+      "note": "select new com.ex.dto.CustomerBioDto(cp.id, cp.customerName, cp.bio) from CustomerProfile cp order by cp.id asc"
+    }
+  ],
+  "sql_sources": [
+    {
+      "method": "repo.findBioRows",
+      "kind": "@Query JPQL",
+      "tables": [
+        "customer_profile"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/repo/CustomerProfileRepository.java",
+        "line": 24,
+        "symbol": null
+      }
+    }
+  ],
+  "entities": [
+    {
+      "name": "CustomerProfile",
+      "table": "customer_profile",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/CustomerProfile.java",
+        "line": 8,
+        "symbol": "CustomerProfile"
+      },
+      "relations": []
+    }
+  ],
+  "transactions": [
+    {
+      "method": "CustomerBioService.bios",
+      "propagation": "REQUIRED",
+      "read_only": true,
+      "citation": {
+        "file": "src/main/java/com/ex/service/CustomerBioService.java",
+        "line": 21,
+        "symbol": "bios"
+      }
+    }
+  ],
+  "external_calls": [],
+  "tables": [
+    {
+      "table": "customer_profile",
+      "entity": "CustomerProfile",
+      "columns_read": [
+        "id",
+        "customer_name",
+        "bio"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "customer_name varchar(255) NOT NULL",
+        "joined_on date NOT NULL",
+        "bio text NULL",
+        "internal_notes text NULL",
+        "raw_import_payload mediumtext NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 23752
+        }
+      ],
+      "approx_rows": 23752,
+      "foreign_keys": []
+    }
+  ],
+  "per_row_work": [
+    {
+      "description": "creates a CustomerBioDto object for each row returned by the query",
+      "file": "src/main/java/com/ex/repo/CustomerProfileRepository.java",
+      "line": 24,
+      "kind": "object_creation",
+      "scales_with": "page size",
+      "bounded": true,
+      "bound": "page size, max 100"
+    }
+  ],
+  "response_shape": {
+    "dto": "CustomerBioDto",
+    "fields_returned": [
+      "id",
+      "customerName",
+      "bio"
+    ],
+    "computed_fields": [],
+    "unbounded_collections": [],
+    "citation": {
+      "file": "src/main/java/com/ex/web/CustomerBioController.java",
+      "line": 21,
+      "symbol": "List<CustomerBioDto>"
+    }
+  },
+  "request_shape": {
+    "parameters": [
+      {
+        "name": "page",
+        "location": "query",
+        "type": "integer",
+        "required": false,
+        "default": 0,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/CustomerBioController.java",
+          "line": 22,
+          "symbol": "page"
+        }
+      },
+      {
+        "name": "size",
+        "location": "query",
+        "type": "integer",
+        "required": false,
+        "default": 50,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/CustomerBioController.java",
+          "line": 23,
+          "symbol": "size"
+        }
+      }
+    ]
+  },
+  "pagination": {
+    "mechanism": "offset",
+    "fires_count_query": false,
+    "max_page_size": 100,
+    "citation": {
+      "file": "src/main/java/com/ex/service/CustomerBioService.java",
+      "line": 23,
+      "symbol": "boundedSize"
+    }
+  },
+  "caching": [],
+  "hidden_query_triggers": [],
+  "tests_covering": [],
+  "uncertainties": [],
+  "prompt_hash": "b4cf7ea7df5e8d57",
+  "base_commit": "13ca852f5151a0870b16298bbb84d87d92633416"
+}

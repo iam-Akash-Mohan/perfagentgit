@@ -1,0 +1,262 @@
+{
+  "route": "GET /api/invoices/paid-summary",
+  "entry": {
+    "file": "src/main/java/com/ex/web/PaidInvoiceSummaryController.java",
+    "line": 21,
+    "symbol": "PaidInvoiceSummaryController.paidSummary"
+  },
+  "path": [
+    {
+      "file": "src/main/java/com/ex/web/PaidInvoiceSummaryController.java",
+      "line": 21,
+      "symbol": "PaidInvoiceSummaryController.paidSummary"
+    },
+    {
+      "file": "src/main/java/com/ex/service/PaidInvoiceSummaryService.java",
+      "line": 24,
+      "symbol": "PaidInvoiceSummaryService.summary"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 51,
+      "symbol": "InvoiceRepository.findByStatusOnly"
+    }
+  ],
+  "call_chain": [
+    {
+      "method": "PaidInvoiceSummaryController.paidSummary",
+      "file": "src/main/java/com/ex/web/PaidInvoiceSummaryController.java",
+      "line": 21,
+      "does": "calls PaidInvoiceSummaryService.summary"
+    },
+    {
+      "method": "PaidInvoiceSummaryService.summary",
+      "file": "src/main/java/com/ex/service/PaidInvoiceSummaryService.java",
+      "line": 24,
+      "does": "computes bounded page size, queries invoices by PAID status with pagination, maps each Invoice to PaidInvoiceSummaryDto"
+    },
+    {
+      "method": "InvoiceRepository.findByStatusOnly",
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 51,
+      "does": "executes JPQL query selecting Invoice entities with status = :status and ordering by dueDate, id"
+    }
+  ],
+  "data_access": [
+    {
+      "trigger": "invoiceRepo.findByStatusOnly",
+      "kind": "jpql_query",
+      "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+      "line": 51,
+      "sql": "select i.* from invoice i where i.status = ? order by i.due_date asc, i.id asc limit ?, ?",
+      "tables": [
+        "invoice"
+      ],
+      "executes_per_row": false,
+      "note": "select i from Invoice i where i.status = :status order by i.dueDate asc, i.id asc"
+    }
+  ],
+  "sql_sources": [
+    {
+      "method": "invoiceRepo.findByStatusOnly",
+      "kind": "@Query JPQL",
+      "tables": [
+        "invoice"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/repo/InvoiceRepository.java",
+        "line": 51,
+        "symbol": null
+      }
+    }
+  ],
+  "entities": [
+    {
+      "name": "Invoice",
+      "table": "invoice",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/Invoice.java",
+        "line": 7,
+        "symbol": "Invoice"
+      },
+      "relations": [
+        {
+          "field": "customer",
+          "type": "ManyToOne",
+          "fetch": "LAZY",
+          "target": "Customer",
+          "batch_size": null,
+          "fetch_mode": null
+        }
+      ]
+    }
+  ],
+  "transactions": [
+    {
+      "method": "PaidInvoiceSummaryService.summary",
+      "propagation": "REQUIRED",
+      "read_only": false,
+      "citation": {
+        "file": "src/main/java/com/ex/service/PaidInvoiceSummaryService.java",
+        "line": 24,
+        "symbol": "summary"
+      }
+    }
+  ],
+  "external_calls": [],
+  "tables": [
+    {
+      "table": "invoice",
+      "entity": "Invoice",
+      "columns_read": [
+        "id",
+        "amount",
+        "dueDate",
+        "status"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "customer_id bigint NULL",
+        "amount decimal(19,2) NULL",
+        "status varchar(255) NULL",
+        "due_date date NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "idx_invoice_customer_id",
+          "columns": [
+            "customer_id"
+          ],
+          "unique": false,
+          "cardinality": 32931
+        },
+        {
+          "name": "idx_invoice_customer_id_status_due_date_id",
+          "columns": [
+            "customer_id",
+            "status",
+            "due_date",
+            "id"
+          ],
+          "unique": false,
+          "cardinality": 35666
+        },
+        {
+          "name": "idx_invoice_status_due_date_id",
+          "columns": [
+            "status",
+            "due_date",
+            "id"
+          ],
+          "unique": false,
+          "cardinality": 2
+        },
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 1196007
+        }
+      ],
+      "approx_rows": 1196007,
+      "foreign_keys": [
+        {
+          "direction": "out",
+          "constraint": "fk_invoice_customer",
+          "column": "customer_id",
+          "references": "customer.id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_payment_invoice",
+          "column": "payment.invoice_id",
+          "references": "id"
+        },
+        {
+          "direction": "in",
+          "constraint": "fk_payment_allocation_invoice",
+          "column": "payment_allocation.invoice_id",
+          "references": "id"
+        }
+      ]
+    }
+  ],
+  "per_row_work": [
+    {
+      "description": "creates a PaidInvoiceSummaryDto for each invoice in the result set",
+      "file": "src/main/java/com/ex/service/PaidInvoiceSummaryService.java",
+      "line": 32,
+      "kind": "object_creation",
+      "scales_with": "page size",
+      "bounded": true,
+      "bound": "page size, max 100"
+    }
+  ],
+  "response_shape": {
+    "dto": "PaidInvoiceSummaryDto",
+    "fields_returned": [
+      "id",
+      "amount",
+      "dueDate"
+    ],
+    "computed_fields": [],
+    "unbounded_collections": [],
+    "citation": {
+      "file": "src/main/java/com/ex/dto/PaidInvoiceSummaryDto.java",
+      "line": 6,
+      "symbol": "PaidInvoiceSummaryDto"
+    }
+  },
+  "request_shape": {
+    "parameters": [
+      {
+        "name": "page",
+        "location": "query",
+        "type": "integer",
+        "required": false,
+        "default": 0,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/PaidInvoiceSummaryController.java",
+          "line": 22,
+          "symbol": "page"
+        }
+      },
+      {
+        "name": "size",
+        "location": "query",
+        "type": "integer",
+        "required": false,
+        "default": 50,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/PaidInvoiceSummaryController.java",
+          "line": 23,
+          "symbol": "size"
+        }
+      }
+    ]
+  },
+  "pagination": {
+    "mechanism": "offset",
+    "fires_count_query": false,
+    "max_page_size": 100,
+    "citation": {
+      "file": "src/main/java/com/ex/service/PaidInvoiceSummaryService.java",
+      "line": 26,
+      "symbol": "summary"
+    }
+  },
+  "caching": [],
+  "hidden_query_triggers": [],
+  "tests_covering": [
+    "src/test/java/com/ex/PaidInvoiceSummaryIT.java"
+  ],
+  "uncertainties": [
+    "AUTOMATED CHECK: pagination is offset-based and the declared ORDER BY (due_date, id asc limit ?, ?) names no column that any UNIQUE index on the tables involved covers. Ties on due_date, id asc limit ?, ? can still be ordered inconsistently between two requests, which has the same effect as no ordering at all: page N can repeat or skip a row. This is a PRE-EXISTING CORRECTNESS RISK in the target application, independent of any patch."
+  ],
+  "prompt_hash": "b4cf7ea7df5e8d57",
+  "base_commit": "ef3ce6db470838056e167017f57a1ec11f7269cc"
+}

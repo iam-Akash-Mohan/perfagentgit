@@ -1,0 +1,115 @@
+{
+  "benchmark": [
+    {
+      "id": "dense-id1",
+      "method": "GET",
+      "path": "/api/invoices/1/payment-history",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id200001",
+      "method": "GET",
+      "path": "/api/invoices/200001/payment-history",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id400001",
+      "method": "GET",
+      "path": "/api/invoices/400001/payment-history",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id600001",
+      "method": "GET",
+      "path": "/api/invoices/600001/payment-history",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id800001",
+      "method": "GET",
+      "path": "/api/invoices/800001/payment-history",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model",
+      "expected_status": 200
+    },
+    {
+      "id": "dense-id1000001",
+      "method": "GET",
+      "path": "/api/invoices/1000001/payment-history",
+      "headers": {},
+      "body": null,
+      "note": "generated: path/query params from the comprehension model",
+      "expected_status": 200
+    }
+  ],
+  "held_back": [
+    {
+      "id": "sparse-id1",
+      "method": "GET",
+      "path": "/api/invoices/1/payment-history",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id200001",
+      "method": "GET",
+      "path": "/api/invoices/200001/payment-history",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id400001",
+      "method": "GET",
+      "path": "/api/invoices/400001/payment-history",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id600001",
+      "method": "GET",
+      "path": "/api/invoices/600001/payment-history",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id800001",
+      "method": "GET",
+      "path": "/api/invoices/800001/payment-history",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage",
+      "expected_status": 200
+    },
+    {
+      "id": "sparse-id1000001",
+      "method": "GET",
+      "path": "/api/invoices/1000001/payment-history",
+      "headers": {},
+      "body": null,
+      "note": "sparse: held back for coverage",
+      "expected_status": 200
+    }
+  ],
+  "hash": "5b852ab4f35225de"
+}

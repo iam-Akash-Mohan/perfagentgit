@@ -1,0 +1,6 @@
+{
+  "scenario": "PROJ-01",
+  "endpoint": "GET /api/customers/directory",
+  "mini_spring_commit": "480e46a67f1c2ee750795165efc9878cd3fcc825",
+  "mini_spring_tag": "eval/PROJ-01"
+}

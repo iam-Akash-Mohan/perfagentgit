@@ -1,0 +1,177 @@
+{
+  "endpoint": "GET /api/customers/{id}/statement",
+  "measured_total_ms": 7.037,
+  "ranked": [
+    {
+      "hypothesis_id": "h0",
+      "claim": "The majority of latency is spent executing the aggregated SQL statements, especially the N+1 query that aggregates payments per customer.",
+      "layer": "database_query",
+      "attributed_ms": 6.0,
+      "fixability": {
+        "hypothesis_id": "h0",
+        "fixability": 0.95,
+        "reason": "additive index, zero behaviour risk (customer is read on name and no existing index leads with that column)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 5.7
+    },
+    {
+      "hypothesis_id": "h3",
+      "claim": "Hibernate entity hydration for each statement row adds a minor cost.",
+      "layer": "orm_hydration",
+      "attributed_ms": 0.5,
+      "fixability": {
+        "hypothesis_id": "h3",
+        "fixability": 0.8,
+        "reason": "DTO projection returns the same values (customer_payment: 2 of 6 columns are read)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 0.4
+    },
+    {
+      "hypothesis_id": "h1",
+      "claim": "Jackson serialization of the statement DTO adds the bulk of the remaining non‑SQL time.",
+      "layer": "serialization",
+      "attributed_ms": 1.0,
+      "fixability": {
+        "hypothesis_id": "h1",
+        "fixability": 0.3,
+        "reason": "library-level, rarely beatable by hand (no unbounded response collection is implicated)",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 0.3
+    },
+    {
+      "hypothesis_id": "h2",
+      "claim": "Per‑row application logic in StatementNarrator.describe contributes a small overhead.",
+      "layer": "application_logic",
+      "attributed_ms": 0.5,
+      "fixability": {
+        "hypothesis_id": "h2",
+        "fixability": 0.4,
+        "reason": "UNCLASSIFIED: no policy row matched this hypothesis, so 0.40 is a placeholder rather than an assessment",
+        "blocked_by": null,
+        "assessed_by": "code",
+        "classified": false
+      },
+      "expected_value_ms": 0.2
+    }
+  ],
+  "considered": [
+    "h0",
+    "h3"
+  ],
+  "candidates": [
+    {
+      "id": "c1",
+      "targets_hypothesis": "h0",
+      "approach": "remove_redundant_call",
+      "description": "Remove the redundant call to CustomerRepository.findProfile in OutstandingCalculator.outstandingFor. The profile is already fetched once in StatementService; the existence check can rely on that, eliminating one identical SELECT per request.",
+      "mechanism": "sql_count",
+      "mechanism_changed": "SQL statements per request",
+      "predicted_effect": "queries per request drop from 2 to 1",
+      "files_to_touch": [
+        "src/main/java/com/ex/service/OutstandingCalculator.java",
+        "src/main/java/com/ex/web/StatementController.java",
+        "src/main/java/com/ex/service/StatementService.java",
+        "src/main/java/com/ex/repo/CustomerRepository.java",
+        "src/main/java/com/ex/repo/InvoiceRepository.java",
+        "src/main/java/com/ex/service/StatementNarrator.java"
+      ],
+      "sql_change": null,
+      "sql_before": "SELECT c.id, c.name, COUNT(cp.id), COALESCE(SUM(cp.amount), ?) FROM customer c LEFT JOIN customer_payment cp ON cp.customer_id = c.id WHERE c.id = %s GROUP BY c.id, c.name",
+      "sql_after": "SELECT %s",
+      "sql_params": [
+        "1"
+      ],
+      "baseline_digest": "c94dffb879627e05c857d6a08f1950c493bc3598bf1a967f0025a0587b784f4b",
+      "baseline_calls": 300,
+      "what_could_break": [
+        "If a non‑existent customerId is supplied, OutstandingCalculator will no longer throw IllegalArgumentException, potentially returning a zero balance instead of an error."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 2,
+      "requires_flag": false,
+      "expected_value_ms": 5.7,
+      "sql_verification": null,
+      "not_selectable_because": null,
+      "scope_reasons": {
+        "src/main/java/com/ex/web/StatementController.java": "on this endpoint's own traced call path to src/main/java/com/ex/service/OutstandingCalculator.java, which this candidate already touches — included so a change to src/main/java/com/ex/service/OutstandingCalculator.java has its caller in scope",
+        "src/main/java/com/ex/service/StatementService.java": "on this endpoint's own traced call path to src/main/java/com/ex/service/OutstandingCalculator.java, which this candidate already touches — included so a change to src/main/java/com/ex/service/OutstandingCalculator.java has its caller in scope",
+        "src/main/java/com/ex/repo/CustomerRepository.java": "on this endpoint's own traced call path to src/main/java/com/ex/service/OutstandingCalculator.java, which this candidate already touches — included so a change to src/main/java/com/ex/service/OutstandingCalculator.java has its caller in scope",
+        "src/main/java/com/ex/repo/InvoiceRepository.java": "on this endpoint's own traced call path to src/main/java/com/ex/service/OutstandingCalculator.java, which this candidate already touches — included so a change to src/main/java/com/ex/service/OutstandingCalculator.java has its caller in scope",
+        "src/main/java/com/ex/service/StatementNarrator.java": "CustomerRepository.findProfile is called from here too, on this endpoint's own traced call path — a candidate touching one of its callers needs every one of them, or the fix only removes the repetition at the site it happened to name"
+      }
+    },
+    {
+      "id": "c2",
+      "targets_hypothesis": "h0",
+      "approach": "query_rewrite",
+      "description": "Combine the open‑invoice count and open‑invoice sum into a single query. Add a new repository method returning both values and use it in StatementService, removing the separate countByCustomerIdAndStatus call.",
+      "mechanism": "sql_count",
+      "mechanism_changed": "SQL statements per request",
+      "predicted_effect": "queries per request drop from 2 to 1 (the separate count query is eliminated)",
+      "files_to_touch": [
+        "src/main/java/com/ex/repo/InvoiceRepository.java",
+        "src/main/java/com/ex/service/StatementService.java",
+        "src/main/java/com/ex/web/StatementController.java",
+        "src/main/java/com/ex/repo/CustomerRepository.java",
+        "src/main/java/com/ex/service/OutstandingCalculator.java",
+        "src/main/java/com/ex/service/StatementNarrator.java"
+      ],
+      "sql_change": null,
+      "sql_before": "SELECT COUNT(i.id) FROM invoice i WHERE i.customer_id = %s AND i.status = %s",
+      "sql_after": "SELECT COUNT(i.id), COALESCE(SUM(i.amount),0) FROM invoice i WHERE i.customer_id = %s AND i.status = %s",
+      "sql_params": [
+        "1",
+        "OPEN"
+      ],
+      "baseline_digest": "ace503634d4070964b527389e6563c74a48026b4d29191a9f98e7c144d6fda80",
+      "baseline_calls": 100,
+      "what_could_break": [
+        "Changing the repository method signature may affect other callers; ensure only StatementService uses the new method. The combined query returns two columns; mismatched mapping could cause type errors."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 2,
+      "requires_flag": false,
+      "expected_value_ms": 5.7,
+      "sql_verification": {
+        "verified": true,
+        "attempted": true,
+        "rows_examined_before": 52765,
+        "rows_examined_after": 52765,
+        "rows_delta_pct": 0.0,
+        "actual_ms_before": 18.3,
+        "actual_ms_after": 77.0,
+        "scored": false,
+        "note": "EXPLAIN ANALYZE: rows examined 52,765 -> 52,765 (+0.0%), actual time 18.3 ms -> 77.0 ms. Mechanism is sql_count: a single EXPLAIN ANALYZE of each statement does not capture a call-count fix, so this delta is reported but not used to score or disqualify.",
+        "assessed_by": "code"
+      },
+      "not_selectable_because": null,
+      "scope_reasons": {
+        "src/main/java/com/ex/web/StatementController.java": "on this endpoint's own traced call path to src/main/java/com/ex/repo/InvoiceRepository.java, which this candidate already touches — included so a change to src/main/java/com/ex/repo/InvoiceRepository.java has its caller in scope",
+        "src/main/java/com/ex/repo/CustomerRepository.java": "on this endpoint's own traced call path to src/main/java/com/ex/repo/InvoiceRepository.java, which this candidate already touches — included so a change to src/main/java/com/ex/repo/InvoiceRepository.java has its caller in scope",
+        "src/main/java/com/ex/service/OutstandingCalculator.java": "CustomerRepository.findProfile is called from here too, on this endpoint's own traced call path — a candidate touching one of its callers needs every one of them, or the fix only removes the repetition at the site it happened to name",
+        "src/main/java/com/ex/service/StatementNarrator.java": "CustomerRepository.findProfile is called from here too, on this endpoint's own traced call path — a candidate touching one of its callers needs every one of them, or the fix only removes the repetition at the site it happened to name"
+      }
+    }
+  ],
+  "selected_id": "c1",
+  "selection_reason": "highest expected value (5.7 ms) among candidates at risk tier T2 or below that preserve the response bytes; approach remove_redundant_call, tier T2. TIE: c2 scored identically and lost only to candidate-id order, not to a measured difference — a human should read both before merging.",
+  "not_selected": [
+    {
+      "candidate_id": "c2",
+      "reason": "tied with c1 at expected value 5.7 ms and risk tier T2 — code found no measurable difference between them; c1 was chosen only because it sorted first by candidate id, not because it scored higher."
+    }
+  ],
+  "prompt_hash": "5f311954ae548093",
+  "base_commit": "fee0fa56fd0e35bea716a4642d59269fa31d0b5d",
+  "decided_by": "code",
+  "baseline_hash": "e7846638c916d86b"
+}

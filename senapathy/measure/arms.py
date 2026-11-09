@@ -15,6 +15,7 @@ same kind of tree.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from contextlib import contextmanager
@@ -24,9 +25,11 @@ from typing import Iterator
 
 import httpx
 
+from ..contracts.comprehension import EndpointModel
 from ..contracts.repo import RepoProfile
 from ..errors import ContractViolation, ToolError
-from ..patch.worktree import GreenWorktree, build_env, target_repo
+from ..patch.worktree import (GreenWorktree, build_env, is_current_worktree,
+                              target_repo)
 
 BLUE_DIR = Path(".senapathy/blue")
 GREEN_DIR = Path(".senapathy/green")
@@ -77,6 +80,7 @@ class Arm:
     argv: list[str]
     process: subprocess.Popen | None = None
     log_path: Path | None = None
+    commit: str | None = None
 
     @property
     def base_url(self) -> str:
@@ -113,10 +117,23 @@ def prepare_blue_worktree(
     reasons: invariant 7 keeps the original tree unwritten, and an arm built
     from a tree with uncommitted edits is not the baseline the oracle was
     recorded against.
+
+    Resolved from the target repo's CURRENT HEAD every call, not merely
+    adopted because something is already on disk at `blue`: a blue left
+    over from an earlier run, on a commit the repo has since moved past,
+    served stale code to every phase that measured against it (COL-01,
+    PAY-01, PAY-02 all failed deep into the run -- corpus generation 404ing
+    on every probe -- because the route under test did not exist yet on
+    the commit blue happened to be pinned at). Recreated, not reused, the
+    moment it is behind.
     """
     path = Path(blue)
+    blue_repo = target_repo(repo)
     if path.exists():
-        return existing_worktree(path, repo=repo)
+        worktree = existing_worktree(path, repo=repo)
+        if is_current_worktree(worktree.path, blue_repo):
+            return worktree
+        worktree.remove()
     return GreenWorktree.create(
         f"blue-{run_id}", repo=repo, green=path, carry_uncommitted=True
     )
@@ -135,10 +152,28 @@ def existing_worktree(path: str | Path, *, repo: str | Path | None = None) -> Gr
         ["git", "-C", str(directory), "rev-parse", "--abbrev-ref", "HEAD"],
         capture_output=True, text=True, timeout=30,
     ).stdout.strip()
-    base = subprocess.run(
+    worktree_head = subprocess.run(
         ["git", "-C", str(directory), "rev-parse", "HEAD"],
         capture_output=True, text=True, timeout=30,
     ).stdout.strip()
+    # Not `worktree_head` itself: a worktree gains its own commits the
+    # moment it exists (the carry-over checkpoint, every patch iteration),
+    # so its current HEAD is never literally the commit it started from.
+    # The merge-base with blue_repo's HEAD is -- it is the one commit of
+    # blue_repo's that ever entered this worktree's history. Falls back to
+    # the worktree's own HEAD only if the two share no history at all,
+    # which should not happen for a worktree of this same repository.
+    repo_head = subprocess.run(
+        ["git", "-C", str(blue_repo), "rev-parse", "HEAD"],
+        capture_output=True, text=True, timeout=30,
+    ).stdout.strip()
+    merge_base = subprocess.run(
+        ["git", "-C", str(directory), "merge-base", "HEAD", repo_head],
+        capture_output=True, text=True, timeout=30,
+    ) if repo_head else None
+    base = (merge_base.stdout.strip()
+           if merge_base is not None and merge_base.returncode == 0
+           else worktree_head)
     return GreenWorktree(path=directory, branch=branch, base_commit=base, repo=blue_repo)
 
 
@@ -356,6 +391,54 @@ def await_health(arm: Arm, timeout_s: float = HEALTH_TIMEOUT_S) -> dict:
     )
 
 
+_PATH_PARAM = re.compile(r"\{[^}]+\}")
+
+
+def assert_route_built(model: EndpointModel, arm: Arm) -> None:
+    """Refuse, by name, when the comprehension model's route is not on
+    this arm -- rather than let it surface as a corpus of nothing but
+    404s two phases later.
+
+    COL-01, PAY-01 and PAY-02 all failed this way: blue was healthy (the
+    app started fine — it is still a real Spring Boot app, just built from
+    an older commit), understand traced a route against the CURRENT
+    repository, and workload's probes against blue got {404: 10} because
+    that route did not exist on the commit blue happened to be pinned at.
+    A health check only proves the app started; it says nothing about
+    whether the specific endpoint this run is about is in it.
+
+    Path parameters are filled with a placeholder, not sampled from the
+    database — this checks that the ROUTE resolves at all, same as
+    `find_route` does from source, not that a particular id is valid.
+    """
+    from ..provision import ProvisioningRefusal
+
+    method, _, path = model.route.partition(" ")
+    sample_path = _PATH_PARAM.sub("1", path)
+    url = arm.base_url.rstrip("/") + sample_path
+    try:
+        response = httpx.request(method or "GET", url, timeout=10.0)
+    except httpx.HTTPError as exc:
+        raise ProvisioningRefusal(
+            what=f"the {arm.name} arm could not be reached to confirm its "
+                 f"route",
+            detail=f"{method} {url}: {type(exc).__name__}: {exc}",
+            advice=f"Check {arm.name}'s own log: {arm.tail_log()}",
+        ) from exc
+    if response.status_code == 404:
+        commit = arm.commit[:12] if arm.commit else "unknown"
+        raise ProvisioningRefusal(
+            what="the comprehension model's route is absent from the built "
+                 "arm",
+            detail=f"{model.route} returned 404 from the {arm.name} arm at "
+                   f"commit {commit} ({url})",
+            advice="The endpoint was traced against a different commit than "
+                   f"the one {arm.name} was built from. Confirm the target "
+                   "repository is on the commit the endpoint actually "
+                   "exists at, then re-run.",
+        )
+
+
 def stop_arm(arm: Arm) -> None:
     """SIGTERM, then SIGKILL. Always called, including on failure."""
     if arm.process is None or arm.process.poll() is not None:
@@ -425,7 +508,7 @@ def single_arm(
 
     arm = Arm(which, worktree.path, port,
               arm_argv(worktree.path, port, java_home=java_home,
-                       profile=profile))
+                       profile=profile), commit=worktree.base_commit)
     try:
         start_arm(arm, log_dir)
         await_health(arm)
@@ -474,10 +557,10 @@ def both_arms(
 
     blue = Arm("blue", blue_worktree.path, blue_port,
                arm_argv(blue_worktree.path, blue_port, java_home=java_home,
-                        profile=profile))
+                        profile=profile), commit=blue_worktree.base_commit)
     green = Arm("green", green_worktree.path, green_port,
                 arm_argv(green_worktree.path, green_port, java_home=java_home,
-                         profile=profile))
+                         profile=profile), commit=green_worktree.base_commit)
     assert_flags_identical(blue, green)
 
     pair = ArmPair(blue=blue, green=green)

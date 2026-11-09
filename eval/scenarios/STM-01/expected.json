@@ -1,0 +1,19 @@
+{
+  "scenario": "STM-01",
+  "endpoint": "GET /api/customers/{id}/statement",
+  "measured_total_ms": 6.059,
+  "required_layers": ["database_query"],
+  "forbidden_layers": [],
+  "dominant_layer_any_of": ["database_query"],
+  "plan": {
+    "selectable": true,
+    "mechanism_any_of": ["sql_count", "rows_examined"],
+    "files_to_touch_contains": ["src/main/java/com/ex/service/StatementNarrator.java"],
+    "approach_context": ["remove_redundant_call", "query_rewrite"]
+  },
+  "tier2": {
+    "terminal_state_any_of": ["PR_OPENED"],
+    "behaviour_preserved": true
+  },
+  "notes": "Three independent service layers (StatementService, OutstandingCalculator, StatementNarrator) each call CustomerRepository.findProfile, an aggregate over customer_payment, not a cheap PK read. The outcome this scenario actually tests is derive_scope's repeated_callers() expansion, not an approach label: the three call sites are siblings, not a linear chain, so a candidate naming any ONE of them must still end up scoped to all three, or the gate's own diff_minimality check fails on exactly the site a partial scope omitted (which is what happened the first time this scenario ran for real, STM-01's own patch.json). files_to_touch_contains asserts the sibling StatementNarrator.java is in the SELECTED candidate's scope regardless of which of its two siblings the candidate's own approach is framed around. mechanism_any_of allows both sql_count and rows_examined: the live run that actually shipped this PR chose a different cheap-existence-check-plus-direct-sum fix than literally sharing one fetch across all three calls, moving rows_examined (2,002,594 -> 1,405,494) with sql_count unchanged (72 -> 72) -- a legitimate alternative remedy for the same redundancy, not a misclassification, so both mechanisms are accepted here rather than re-narrowed on every re-sample."
+}

@@ -12,13 +12,13 @@ from __future__ import annotations
 
 from .agent import EMIT_HYPOTHESES_TOOL, build_task, render_diagnosis, run_diagnosis
 from .evidence import latest_run_dir, load_baseline, load_endpoint_model, render_evidence
-from .probe import RUN_PROBE_TOOL, ProbeLog, make_run_probe
+from .probe import ProbeCatalog, ProbeLog, make_run_probe, run_probe_tool
 from .validate import validate_hypothesis_set
 
 __all__ = [
     "EMIT_HYPOTHESES_TOOL",
+    "ProbeCatalog",
     "ProbeLog",
-    "RUN_PROBE_TOOL",
     "build_task",
     "latest_run_dir",
     "load_baseline",
@@ -27,5 +27,6 @@ __all__ = [
     "render_diagnosis",
     "render_evidence",
     "run_diagnosis",
+    "run_probe_tool",
     "validate_hypothesis_set",
 ]

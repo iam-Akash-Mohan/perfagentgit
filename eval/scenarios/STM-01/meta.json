@@ -1,0 +1,6 @@
+{
+  "scenario": "STM-01",
+  "endpoint": "GET /api/customers/{id}/statement",
+  "mini_spring_commit": "fee0fa56fd0e35bea716a4642d59269fa31d0b5d",
+  "mini_spring_tag": "eval/STM-01"
+}

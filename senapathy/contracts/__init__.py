@@ -20,7 +20,7 @@ from .comprehension import (CacheInfo, CallHop, DataAccess, DataAccessKind,
                             TransactionInfo)
 from .plan import (APPROACHES, BLOCKED_BELOW, MECHANISMS, Approach,
                    CandidateFix, FixabilityAssessment, Mechanism, Plan,
-                   RankedHypothesis, Rejection, RiskTier)
+                   RankedHypothesis, Rejection, RiskTier, SqlVerification)
 from .primitives import ArtifactRef, Citation
 
 __all__ = [
@@ -35,7 +35,7 @@ __all__ = [
     # plan
     "APPROACHES", "BLOCKED_BELOW", "MECHANISMS", "Approach", "CandidateFix",
     "FixabilityAssessment", "Mechanism", "Plan", "RankedHypothesis",
-    "Rejection",
+    "Rejection", "SqlVerification",
     # everything defined below
     "RequestSpec", "RequestCorpus", "RecordedResponse", "TolerancePolicy",
     "BehaviourOracle", "FieldDiff", "EquivalenceVerdict", "LatencyStats",
@@ -305,6 +305,14 @@ class Patch(BaseModel):
     build_iterations: int
     tests_passed: int
     tests_before: int
+    granted_files: list[str] = Field(
+        default_factory=list,
+        description="Files request_file_access granted during patching, "
+                    "beyond the plan's own files_to_touch. DIFF_MINIMALITY "
+                    "checks the diff against files_to_touch PLUS this list "
+                    "— the effective scope the patch actually used, not "
+                    "the narrower one the plan alone declared. Never set "
+                    "by the model; copied from PatchTools' own grant log.")
 
 
 # ────────────────────────────  P14 measure  ──────────────────────────────

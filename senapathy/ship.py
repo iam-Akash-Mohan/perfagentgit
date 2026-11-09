@@ -293,7 +293,22 @@ def build_ledger(
         "endpoint": "corpus.requests.0.path",
     })
 
-    file_list = "\n".join(f"- `{f}`" for f in gated["patch"].files_changed)
+    # Planned vs. granted vs. final, not just the final diff: a file
+    # reaches the patch either because the plan named it or because
+    # request_file_access granted it mid-patch, and a reviewer should see
+    # which happened, not just the union the diff ends up touching.
+    planned = set(gated["plan"].files_to_touch)
+    granted = set(gated["patch"].granted_files)
+    file_list_lines = [f"- `{f}`" for f in gated["patch"].files_changed]
+    if granted:
+        file_list_lines.append("")
+        file_list_lines.append(
+            f"Planned scope: {len(planned)} file(s). "
+            f"Granted during patching: {len(granted)} "
+            f"({', '.join(f'`{f}`' for f in sorted(granted))}). "
+            f"Final scope: {len(planned | granted)} file(s)."
+        )
+    file_list = "\n".join(file_list_lines)
     ledger.record("file_list", file_list, refs["patch"])
 
     gate_rows = "\n".join(

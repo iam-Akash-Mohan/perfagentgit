@@ -72,12 +72,13 @@ DIFF = """diff --git a/src/main/java/com/ex/dto/CustomerDto.java b/src/main/java
 """
 
 
-def patch(diff: str = DIFF, added: int = 22, removed: int = 0) -> Patch:
+def patch(diff: str = DIFF, added: int = 22, removed: int = 0,
+         granted: list[str] | None = None) -> Patch:
     return Patch(
         plan_id="h1", branch="senapathy/p12-004", diff=diff,
         files_changed=["src/main/java/com/ex/dto/CustomerDto.java"],
         lines_added=added, lines_removed=removed, build_iterations=4,
-        tests_passed=0, tests_before=0,
+        tests_passed=0, tests_before=0, granted_files=granted or [],
     )
 
 
@@ -203,6 +204,37 @@ def test_a_file_outside_the_plan_fails_minimality() -> None:
     result = result_for(decision, GateName.DIFF_MINIMALITY)
     assert result.passed is False
     assert "outside the plan" in result.detail
+
+
+def test_a_file_granted_during_patching_passes_minimality() -> None:
+    """request_file_access's whole point: a file the plan did not name but
+    the patch agent was GRANTED access to is not "outside the plan" --
+    it is the bounded escape hatch working as designed."""
+    decision = evaluate_gates(
+        verdict(), perf(),
+        patch(granted=["src/main/java/com/ex/dto/CustomerDto.java"]),
+        plan(files=["src/main/java/com/ex/Other.java"]),
+        paired_p_value=0.001,
+    )
+    result = result_for(decision, GateName.DIFF_MINIMALITY)
+    assert result.passed is True
+    assert "granted during patching: 1" in result.actual
+
+
+def test_a_file_neither_planned_nor_granted_still_fails_minimality() -> None:
+    """A grant for some OTHER file does not excuse one that was never
+    planned and never granted -- the touched file in `patch()`'s own DIFF
+    is CustomerDto.java, not whatever this grants."""
+    decision = evaluate_gates(
+        verdict(), perf(),
+        patch(granted=["src/main/java/com/ex/SomethingElse.java"]),
+        plan(files=["src/main/java/com/ex/Other.java"]),
+        paired_p_value=0.001,
+    )
+    result = result_for(decision, GateName.DIFF_MINIMALITY)
+    assert result.passed is False
+    assert "outside the plan" in result.detail
+    assert "CustomerDto.java" in result.detail
 
 
 def test_a_touched_test_file_fails_minimality_and_forbidden_change() -> None:

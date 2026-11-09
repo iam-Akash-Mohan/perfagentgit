@@ -355,10 +355,25 @@ def response_link(work: PerRowWork,
     contract, so it falls through to the default rather than being called
     "genuinely removable". None means the work's output never reaches the
     caller.
+
+    Checked against `description` AND `scales_with` — not `description`
+    alone. UNB-01 is why: `scales_with` is comprehension's own answer to
+    "what drives the count", in the singular where `unbounded_fields` names
+    the plural ("allocations per invoice" vs. "allocations"), so it is the
+    more reliable of the two when they disagree. There, `description`
+    ("iterate each AllocationRowDto, subtract allocatedAmount from remaining
+    balance and create a PaymentHistoryLineDto") never names the field as a
+    standalone word — "allocation" only appears fused into the identifier
+    "AllocationRowDto", which `mentions()`'s word-boundary match correctly
+    refuses (the same boundary that keeps "invoice" from matching
+    "invoiced") — while `scales_with` ("allocations per invoice") says it
+    plainly. Checking description alone scored that work "genuinely
+    removable" (0.7) for per-row work that produces a field inside the
+    endpoint's own unbounded response collection — backwards.
     """
     if shape is None:
         return None
-    text = normalise(work.description)
+    text = normalise(f"{work.description} {work.scales_with}")
     for field in unbounded_fields(shape):
         if mentions(text, field.rstrip("s")):
             return ("unbounded", field)

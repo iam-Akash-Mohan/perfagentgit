@@ -246,9 +246,21 @@ def _statistical_significance(paired_p: float | None) -> GateResult:
 
 
 def _diff_minimality(patch: Patch, plan: CandidatePlan) -> GateResult:
+    """A file the patch agent was GRANTED, via request_file_access, is not
+    "outside the plan" — it is the plan's own bounded escape hatch doing
+    its job. Checked against planned-plus-granted, never planned alone: a
+    plan that under-scoped a candidate (STM-01: h4 implicated three call
+    sites, the plan named two) gets rescued by `derive_scope` when it can
+    be, and by a granted file when it could not be foreseen — and this
+    gate has to recognise BOTH as legitimate, or the expansion mechanism
+    can never produce a passing patch. Every grant still shows in the
+    report: planned vs. granted vs. final scope, never a silent widening.
+    """
     actually_touched = touched_files(patch.diff) or list(patch.files_changed)
-    allowed = set(plan.files_to_touch)
-    outside = sorted(set(actually_touched) - allowed)
+    planned = set(plan.files_to_touch)
+    granted = set(patch.granted_files)
+    effective = planned | granted
+    outside = sorted(set(actually_touched) - effective)
     tests = sorted(f for f in actually_touched if f.startswith(TEST_TREE))
     total_lines = patch.lines_added + patch.lines_removed
 
@@ -261,16 +273,23 @@ def _diff_minimality(patch: Patch, plan: CandidatePlan) -> GateResult:
     if total_lines >= MAX_CHANGED_LINES:
         problems.append(f"{total_lines} changed lines is not a minimal fix")
 
+    scope_line = (
+        f"planned scope: {len(planned)} file(s); "
+        f"files granted during patching: {len(granted)}"
+        + (f" ({', '.join(sorted(granted))})" if granted else "")
+        + f"; final scope: {len(effective)} file(s)"
+    )
+
     return GateResult(
         name=GateName.DIFF_MINIMALITY,
         passed=passed,
-        threshold=f"only planned files, no {TEST_TREE}/**, "
+        threshold=f"only planned-or-granted files, no {TEST_TREE}/**, "
                   f"< {MAX_CHANGED_LINES} changed lines",
         actual=f"{len(actually_touched)} file(s), +{patch.lines_added} "
-               f"-{patch.lines_removed} = {total_lines} line(s)",
+               f"-{patch.lines_removed} = {total_lines} line(s). {scope_line}",
         detail="; ".join(problems) if problems else
-               "The diff stays inside the planned files and is small enough to "
-               "review in one sitting.",
+               "The diff stays inside the planned-or-granted files and is "
+               "small enough to review in one sitting.",
     )
 
 

@@ -102,30 +102,49 @@ class GreenWorktree:
         green: str | Path = GREEN_DIR,
         carry_uncommitted: bool = True,
     ) -> "GreenWorktree":
-        """Add a worktree at `green` on a new branch `senapathy/<run_id>`."""
+        """Add a worktree at `green` on a new branch `senapathy/<run_id>`.
+
+        Self-healing by design: `git worktree add` is never the first thing
+        tried on `green_path`. A prior run's directory deleted by hand, or a
+        prior attempt's half-built worktree, is cleared before `add` runs,
+        not discovered BY `add` as a confusing failure.
+        """
         blue = target_repo(repo)
         if not (blue / ".git").exists():
             raise ContractViolation(f"{blue} is not a git repository")
 
         green_path = Path(green).resolve()
-        if green_path.exists():
-            raise ContractViolation(
-                f"{green_path} already exists. Remove the previous worktree first: "
-                f"git -C {blue} worktree remove --force {green_path}"
-            )
-
-        base = _git(blue, "rev-parse", "HEAD").strip()
         branch = f"senapathy/{run_id}"
+
+        _heal_stale_path(blue, green_path)
 
         existing = _git(blue, "branch", "--list", branch).strip()
         if existing:
-            raise ContractViolation(
-                f"branch {branch} already exists in {blue}. Runs are identified by "
-                "run_id; this one has been used."
-            )
+            attached = _branch_worktree_path(blue, branch)
+            if attached is not None and attached.exists():
+                raise ContractViolation(
+                    f"run {run_id} already produced arms: branch {branch} is "
+                    f"checked out at {attached}. Runs are identified by "
+                    f"run_id; this one has already run. Use a different run "
+                    f"id, or remove {attached} first if you mean to redo it."
+                )
+            # The branch outlived whatever created it. `worktree add -b` is
+            # two steps, not one -- the branch, then the worktree -- and a
+            # failure between them leaves exactly this: a ref with nothing
+            # built from it. Debris from a failed attempt, not a conflict
+            # with a real one; clear it and proceed under the same run id.
+            _git(blue, "branch", "-D", branch, check=False)
 
+        base = _git(blue, "rev-parse", "HEAD").strip()
         green_path.parent.mkdir(parents=True, exist_ok=True)
-        _git(blue, "worktree", "add", "-b", branch, str(green_path), base)
+        try:
+            _git(blue, "worktree", "add", "-b", branch, str(green_path), base)
+        except ContractViolation:
+            # Not atomic: a failure here can still have created the branch.
+            # Left behind, it poisons every future attempt at this run id.
+            _git(blue, "branch", "-D", branch, check=False)
+            _git(blue, "worktree", "prune", check=False)
+            raise
 
         worktree = cls(
             path=green_path, branch=branch, base_commit=base, repo=blue
@@ -274,6 +293,59 @@ class GreenWorktree:
     def blue_status(self) -> str:
         """Blue's porcelain status, for the untouched-working-copy check."""
         return _git(self.repo, "status", "--porcelain")
+
+
+def _heal_stale_path(blue: Path, green_path: Path) -> None:
+    """Clear whatever is at `green_path` before `worktree add` ever runs.
+
+    `git worktree prune` first: a registration whose directory was removed
+    by hand (not via `git worktree remove`) leaves git's own bookkeeping
+    believing a worktree exists there, and `add` on that path fails with a
+    message about a directory that, as far as an operator can see, is not
+    there. Then, if something IS actually on disk at `green_path` -- a
+    registered worktree, or plain debris `git` never knew about -- remove
+    it outright. `create()`'s whole job is a fresh worktree at this exact
+    path; anything already there belongs to a run that is over.
+    """
+    _git(blue, "worktree", "prune", check=False)
+    if green_path.exists():
+        _git(blue, "worktree", "remove", "--force", str(green_path), check=False)
+        if green_path.exists():
+            shutil.rmtree(green_path, ignore_errors=True)
+        _git(blue, "worktree", "prune", check=False)
+
+
+def _branch_worktree_path(blue: Path, branch: str) -> Path | None:
+    """The worktree path currently registered for `branch`, or None."""
+    listing = _git(blue, "worktree", "list", "--porcelain", check=False)
+    current: Path | None = None
+    for line in listing.splitlines():
+        if line.startswith("worktree "):
+            current = Path(line[len("worktree "):])
+        elif line == f"branch refs/heads/{branch}":
+            return current
+    return None
+
+
+def is_current_worktree(worktree_path: str | Path, repo: str | Path) -> bool:
+    """Was `worktree_path` built from `repo`'s CURRENT HEAD?
+
+    Not checked by comparing recorded commits: the worktree gains its own
+    history the moment it exists (the carry-over checkpoint, every patch
+    iteration), so its own HEAD is never literally equal to the commit it
+    started from. `repo`'s current HEAD is an ancestor of the worktree's
+    HEAD if and only if the worktree was built from it -- no other commit
+    of `repo`'s ever enters that worktree's history, so this is exact
+    rather than a heuristic.
+    """
+    repo_head = _git(Path(repo), "rev-parse", "HEAD", check=False).strip()
+    if not repo_head:
+        return False
+    result = subprocess.run(
+        ["git", "-C", str(worktree_path), "merge-base", "HEAD", repo_head],
+        capture_output=True, text=True, timeout=_GIT_TIMEOUT_S,
+    )
+    return result.returncode == 0 and result.stdout.strip() == repo_head
 
 
 def existing_green_branch(path: str | Path, *, repo: str | Path | None = None) -> str:

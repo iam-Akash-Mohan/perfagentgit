@@ -104,7 +104,20 @@ class LLMHTTPError(SenapathyError):
 
 
 class CassetteMiss(SenapathyError):
-    """offline=True and this exact request has never been recorded."""
+    """offline=True and this exact request has never been recorded.
+
+    `recorded_correction`, when set, is not a guess: `Cassette.
+    recover_self_correction()` found exactly one recorded conversation whose
+    messages are this exact request plus one more `user`-role message, read
+    verbatim from that cassette file. See that method's docstring for why
+    this situation exists at all and why reading it back, rather than
+    inventing it, is the only honest recovery.
+    """
+
+    def __init__(self, message: str, *,
+                recorded_correction: str | None = None) -> None:
+        super().__init__(message)
+        self.recorded_correction = recorded_correction
 
 
 def normalise_tools(tools: Iterable[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -159,12 +172,35 @@ def backoff_seconds(attempt: int, jitter: Callable[[], float] = random.random) -
     return float(ceiling * (0.5 + 0.5 * jitter()))
 
 
+#  Fields from `build_body()`'s output that do not belong in the cassette
+# key: they bound or shape the WIRE CALL, not what is being asked. Diverging
+# on one of these must never read as "this is a different request" -- the
+# semantic request (model, messages, tools, tool_choice) is unchanged, and a
+# cached response is still the right answer. `max_tokens` is the clean
+# example: it is a response-length ceiling, resolved from `senapathy.yml`/
+# `SENAPATHY_LLM_MAX_TOKENS`/a CLI flag at CLIENT-CONSTRUCTION time, wholly
+# unrelated to the conversation's content -- yet because key() used to hash
+# the full body wholesale, any future change to that config (a different
+# default, a different working directory failing to find senapathy.yml, a
+# flag passed in one invocation but not another) silently invalidated every
+# existing cassette, with a miss that could land on the first, a middle, or
+# the last turn of a conversation depending on nothing about the
+# conversation itself. Add a field here only when it is TRULY incidental to
+# wire transport, never semantic to the request -- `model` and `tool_choice`
+# stay IN the key on purpose: switching models or forcing a different tool
+# genuinely changes what is being asked, and reusing a cached answer across
+# that difference would be a bug, not a convenience.
+_KEY_EXCLUDED_BODY_FIELDS = frozenset({"max_tokens"})
+
+
 class Cassette:
     """Recorded request/response pairs, keyed by the hash of the request body.
 
     This is what makes agent tests deterministic and free. It is keyed on the
-    FULL body — system prompt, every message, every tool schema — so a prompt
-    edit is a cassette miss rather than a stale replay.
+    SEMANTIC body — system prompt, every message, every tool schema, the
+    model, tool_choice — so a prompt edit is a cassette miss rather than a
+    stale replay, but a change to incidental wire configuration
+    (`_KEY_EXCLUDED_BODY_FIELDS`) is not.
     """
 
     def __init__(self, directory: Path | str, *, offline: bool = False) -> None:
@@ -172,7 +208,9 @@ class Cassette:
         self.offline = offline
 
     def key(self, provider: str, url: str, body: dict[str, Any]) -> str:
-        return content_hash({"provider": provider, "url": url, "body": body})
+        semantic = {k: v for k, v in body.items()
+                   if k not in _KEY_EXCLUDED_BODY_FIELDS}
+        return content_hash({"provider": provider, "url": url, "body": semantic})
 
     def path(self, key: str) -> Path:
         return self.dir / f"{key}.json"
@@ -200,6 +238,47 @@ class Cassette:
             json.dumps(document, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+
+    def recover_self_correction(self, messages: list[dict[str, Any]]) -> str | None:
+        """Why a cassette miss can be a replay bug, not a stale recording.
+
+        When the LIVE recording hit a malformed tool call, `run_agent`
+        appended a `{"role": "user", "content": <the provider's own schema
+        complaint>}` message and retried -- see `agent.py`'s
+        `_correction_for`. That first, REJECTED attempt produced no 200
+        response, so nothing was ever cassette-written for it; only the
+        SECOND, corrected attempt succeeded and got recorded, with the
+        correction message already sitting inside its own `request.messages`.
+        A fresh replay reconstructs the conversation by appending exactly
+        what `run_agent` itself appends -- the assistant's reply and the
+        tool's result -- which is correct but is missing that one
+        correction message the live run only added because of a rejection
+        replay never triggers. The request replay computes is one message
+        short of the one that was actually recorded next, and it stays
+        short forever after, because nothing told it to catch up.
+
+        This does not invent that message: it is read back VERBATIM from
+        whichever later cassette file recorded it, by finding the one whose
+        own request is this exact conversation plus exactly one more
+        `user`-role message. If more than one file matches (ambiguous) or
+        none does (this really is just a stale cassette), returns None --
+        a wrong guess here would corrupt the replayed conversation instead
+        of fixing it.
+        """
+        candidates: list[str] = []
+        for path in self.dir.glob("*.json"):
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8"))
+                recorded = doc["request"]["messages"]
+            except (OSError, json.JSONDecodeError, KeyError, TypeError):
+                continue
+            if (len(recorded) == len(messages) + 1
+                    and recorded[:len(messages)] == messages
+                    and recorded[len(messages)].get("role") == "user"):
+                candidates.append(str(recorded[len(messages)].get("content") or ""))
+        if len(candidates) != 1:
+            return None
+        return candidates[0]
 
 
 class HTTPLLMClient(ABC):
@@ -298,11 +377,14 @@ class HTTPLLMClient(ABC):
             return response
 
         if self.offline:
+            correction = self.cassette.recover_self_correction(
+                body.get("messages") or [])
             raise CassetteMiss(
                 f"offline=True and no cassette matches request {key} "
                 f"({self.provider}/{self.model}). Expected it at "
                 f"{self.cassette.path(key)}. Re-run once without --offline to "
-                f"record it, or check whether a prompt change invalidated it."
+                f"record it, or check whether a prompt change invalidated it.",
+                recorded_correction=correction,
             )
 
         started = time.perf_counter()

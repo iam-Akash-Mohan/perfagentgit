@@ -1,0 +1,17 @@
+{
+  "scenario": "BATCH-01",
+  "endpoint": "GET /api/payments/recent-summary",
+  "measured_total_ms": 589.522,
+  "required_layers": ["database_query"],
+  "forbidden_layers": [],
+  "dominant_layer_any_of": ["database_query"],
+  "plan": {
+    "selectable": false,
+    "not_selectable_because_contains": "unverifiable"
+  },
+  "tier2": {
+    "terminal_state_any_of": ["PR_OPENED"],
+    "behaviour_preserved": true
+  },
+  "notes": "Per-customer invoice count executed once per row of the page (invoiceRepo.countByCustomerId), fixable by one IN(...) GROUP BY query plus an in-memory join — not fetch_join, since Invoice.customer_id is not a mapped association on CustomerPayment's side. This is the only frozen coverage for batch_query. The first live run against this exact code (BATCH-01, see TESTING-PLAN.md) shipped a correlated-subquery query_rewrite candidate that tied on expected_value_ms with the correct batch_query candidate and won only on arbitrary candidate-id order — its own rows_examined never moved (MySQL re-executes a correlated subquery once per outer row) and the gate correctly refused it, NO_SIGNIFICANT_IMPROVEMENT. The re-run (BATCH-02, same code, new run id) measured rows_examined -100.0% on its own plan-time EXPLAIN ANALYZE and went on to ship PR_OPENED with the live gate measuring -83.5%.\n\nUPDATED after both the cassette-replay-divergence fix (this scenario's long-standing quarantine for a diagnose-replay CassetteMiss is LIFTED — see TESTING-PLAN.md's known-failure table: the real cause was a live self-correction message, inserted by run_agent after a malformed tool call, that was never itself cassette-recorded; replay now recovers it by reading the correction text back from whichever later cassette file succeeded) and the verification-gate fix (plan/risk.py::sql_verification_failure's attempted/verified distinction, fixed in response to Scenario 7). A fresh sample's candidates now submit `sql_before` using Hibernate's own `?` positional placeholder convention (`WHERE i1_0.customer_id = ?`) rather than this tool's `%s` convention, so EXPLAIN ANALYZE cannot bind it (\"Not all parameters were used\") — a THIRD distinct statement-format mismatch, alongside INV-04's JPQL `:named`/`?` parameters and PROJ-01's placeholder-names-submitted-as-values, logged in TESTING-PLAN.md's known-failure table, not fixed. Both candidates are correctly refused as unverifiable, not disproven. The shipped PR's real numbers above come from the live gate's independent post-patch measurement and are not in question."
+}

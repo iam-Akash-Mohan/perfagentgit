@@ -1,0 +1,112 @@
+{
+  "hypotheses": [
+    {
+      "id": "h1",
+      "claim": "ORM hydration of each row into DTO objects dominates the per‑row cost.",
+      "mechanism": "CustomerProfileRepository.findBioRows returns a JPQL DTO projection; JPA creates a new DTO instance per row, invoking the DTO constructor and populating fields for each of the 100 rows.",
+      "layer": "orm_hydration",
+      "evidence": [
+        "SQL time is only 0.7 ms for 100 rows (4.5 % of p50) while total latency is 14.6 ms, leaving >13 ms to be spent elsewhere.",
+        "Rows examined / rows sent = 20000 / 10000 indicates the query returns full DTO data, which must be materialised by JPA.",
+        "Latency grows roughly linearly with row count (+10.9 ms for +99 rows). ORM hydration typically adds a small constant per entity."
+      ],
+      "attributed_ms": 3.0,
+      "prediction": "If we replace the JPQL DTO projection with a native query that returns a raw Object[] and manually map only needed fields, the per‑row latency will drop by at least 0.08 ms per row.",
+      "confidence": 0.7
+    },
+    {
+      "id": "h2",
+      "claim": "JSON serialization of the DTO list consumes most of the remaining per‑row time.",
+      "mechanism": "Spring Boot’s Jackson ObjectMapper serialises the list of DTOs to JSON; each ~2 KB DTO incurs parsing of fields and generation of JSON strings, dominating the per‑row overhead.",
+      "layer": "serialization",
+      "evidence": [
+        "Response body size scales linearly: 1 row → 2064 B, 100 rows → 206 212 B (≈2062 B per row).",
+        "Latency per row for 100 rows is ~0.11 ms, matching typical Jackson serialization cost for ~2 KB objects.",
+        "Server‑side SQL time is only 0.7 ms, far below the 14.6 ms total latency, so the extra ~13.9 ms must be spent after data retrieval, consistent with serialization."
+      ],
+      "attributed_ms": 2.5,
+      "prediction": "Disabling JSON serialization (e.g., returning a plain String with pre‑computed JSON) will reduce the p50 latency for 100 rows by roughly the same amount as the body size increase (~0.1 ms per row).",
+      "confidence": 0.8
+    },
+    {
+      "id": "h3",
+      "claim": "Application‑level collection building and controller handling adds a modest constant overhead per request.",
+      "mechanism": "The service method iterates over the JPQL result set, constructs DTOs (already done by JPA) and adds them to a List, plus controller wrapping, contributing a fixed ~3‑4 ms per request.",
+      "layer": "application_logic",
+      "evidence": [
+        "Even with 1 row the latency is 3.7 ms, while SQL accounts for only 0.1 ms, leaving ~3.6 ms of non‑SQL work.",
+        "The overhead does not grow proportionally with rows (baseline ~3.6 ms remains for 100 rows), indicating a fixed cost in controller/service layers.",
+        "Call chain shows only one method that creates the DTO list (CustomerBioService.bios) which iterates over results to add them to a List."
+      ],
+      "attributed_ms": 1.0,
+      "prediction": "If we bypass the service layer and return the repository result directly, the fixed overhead will drop by ~1 ms, reducing p50 latency for both 1‑row and 100‑row cases.",
+      "confidence": 0.6
+    }
+  ],
+  "probes_run": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 10,
+        "page_size": 1,
+        "request_id": "dense-req-p0-s100"
+      },
+      "discriminates_between": [
+        "h1",
+        "h2",
+        "h3"
+      ],
+      "result": "p50 latency 3.7 ms, 1 row, response 2064 B, SQL 0.1 ms. Shows large baseline cost and tiny per‑row increase."
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 3,
+        "page_size": 100,
+        "request_id": "dense-req-p0-s100"
+      },
+      "discriminates_between": [
+        "h1",
+        "h2",
+        "h3"
+      ],
+      "result": "p50 latency 14.6 ms, 100 rows, response 206212 B, SQL 0.7 ms. Demonstrates linear growth with rows and response size."
+    }
+  ],
+  "ranked_ids": [
+    "h1",
+    "h2",
+    "h3"
+  ],
+  "measured_total_ms": 5.681,
+  "probes_executed": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-req-p0-s100",
+        "iterations": 10,
+        "page_size": 1
+      },
+      "result": "probe: GET http://localhost:18080/api/customers/bios?page=0&size=1  (request_id='dense-req-p0-s100', page_size=1) iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 3.7 ms\n  p95 latency                  : 5.8 ms\n  result rows in response      : 1\n  response body size (median)  : 2064 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.1 ms (2.2 % of p50)\n  latency per result row       : 3.7 ms\n  body bytes per result row    : 2064",
+      "endpoint_called": "GET http://localhost:18080/api/customers/bios?page=0&size=1"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-req-p0-s100",
+        "iterations": 3,
+        "page_size": 100
+      },
+      "result": "probe: GET http://localhost:18080/api/customers/bios?page=0&size=100  (request_id='dense-req-p0-s100', page_size=100) iterations=3 (1 warmup discarded)\n  statuses                     : {'200': 3}\n  p50 latency                  : 14.6 ms\n  p95 latency                  : 16.6 ms\n  result rows in response      : 100\n  response body size (median)  : 206212 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.7 ms (4.5 % of p50)\n  latency per result row       : 0.1 ms\n  body bytes per result row    : 2062",
+      "endpoint_called": "GET http://localhost:18080/api/customers/bios?page=0&size=100"
+    }
+  ],
+  "baseline": "/Users/akashm/Documents/ak/perfagent/eval/scratch/SER-01/baseline.json",
+  "baseline_hash": "98c8d640b0e735fa",
+  "endpoint_model": "/Users/akashm/Documents/ak/perfagent/eval/scratch/SER-01/endpoint_model.json",
+  "submissions_rejected": 0,
+  "database_tools": [
+    "explain",
+    "list_indexes"
+  ]
+}

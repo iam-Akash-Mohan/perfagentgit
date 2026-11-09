@@ -1,0 +1,896 @@
+{
+  "schema_version": 1,
+  "kind": "baseline",
+  "arm": "blue",
+  "captured_at": "20261108T151217Z",
+  "corpus_hash": "dd0eae719a6d0ca9",
+  "target": {
+    "base_url": "http://localhost:54683",
+    "health": {
+      "url": "http://localhost:54683/actuator/health",
+      "http_status": 200,
+      "status": "UP",
+      "body": {
+        "status": "UP",
+        "components": {
+          "db": {
+            "status": "UP",
+            "details": {
+              "database": "MySQL",
+              "validationQuery": "isValid()"
+            }
+          },
+          "diskSpace": {
+            "status": "UP",
+            "details": {
+              "total": 494384795648,
+              "free": 145946546176,
+              "threshold": 10485760,
+              "path": "/Users/akashm/Documents/ak/perfagent/.senapathy/blue/.",
+              "exists": true
+            }
+          },
+          "livenessState": {
+            "status": "UP"
+          },
+          "ping": {
+            "status": "UP"
+          },
+          "readinessState": {
+            "status": "UP"
+          }
+        },
+        "groups": [
+          "liveness",
+          "readiness"
+        ]
+      }
+    },
+    "mysql": "root@localhost:3307/mini"
+  },
+  "corpus": {
+    "path": ".senapathy/runs/TXN-01/corpus.json",
+    "hash": "dd0eae719a6d0ca9",
+    "requests": [
+      {
+        "id": "dense-req-p0-s100",
+        "method": "GET",
+        "path": "/api/invoices/paid-summary?page=0&size=100",
+        "headers": {},
+        "body": null,
+        "note": "generated: path/query params from the comprehension model; page depth 0, page size 100",
+        "expected_status": 200
+      },
+      {
+        "id": "dense-req-p2-s100",
+        "method": "GET",
+        "path": "/api/invoices/paid-summary?page=2&size=100",
+        "headers": {},
+        "body": null,
+        "note": "generated: path/query params from the comprehension model; page depth 2, page size 100",
+        "expected_status": 200
+      }
+    ]
+  },
+  "benchmark": {
+    "base_url": "http://localhost:54683",
+    "corpus_hash": "dd0eae719a6d0ca9",
+    "requests_in_corpus": 2,
+    "warmup": 20,
+    "iterations": 100,
+    "started_at": "2026-11-08T15:12:16.530398+00:00",
+    "finished_at": "2026-11-08T15:12:17.118254+00:00",
+    "wall_ms": 587.876,
+    "latency": {
+      "n": 100,
+      "p50_ms": 5.301,
+      "p95_ms": 8.696,
+      "p99_ms": 14.763,
+      "mean_ms": 5.858,
+      "stdev_ms": 2.033
+    },
+    "status_counts": {
+      "200": 100
+    },
+    "first_non_2xx": null,
+    "transport_failures": 0,
+    "warmup_discarded": {
+      "n": 20,
+      "failures": 0,
+      "mean_ms": 11.948
+    },
+    "per_request": {
+      "dense-req-p0-s100": {
+        "n": 50,
+        "statuses": {
+          "200": 50
+        },
+        "latency": {
+          "n": 50,
+          "p50_ms": 5.258,
+          "p95_ms": 8.376,
+          "p99_ms": 16.585,
+          "mean_ms": 5.947,
+          "stdev_ms": 2.494
+        }
+      },
+      "dense-req-p2-s100": {
+        "n": 50,
+        "statuses": {
+          "200": 50
+        },
+        "latency": {
+          "n": 50,
+          "p50_ms": 5.301,
+          "p95_ms": 8.71,
+          "p99_ms": 9.949,
+          "mean_ms": 5.769,
+          "stdev_ms": 1.455
+        }
+      }
+    },
+    "samples": [
+      {
+        "i": 0,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 6.866,
+        "error": null
+      },
+      {
+        "i": 1,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 6.881,
+        "error": null
+      },
+      {
+        "i": 2,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 6.306,
+        "error": null
+      },
+      {
+        "i": 3,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 8.471,
+        "error": null
+      },
+      {
+        "i": 4,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 7.654,
+        "error": null
+      },
+      {
+        "i": 5,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 8.905,
+        "error": null
+      },
+      {
+        "i": 6,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 8.685,
+        "error": null
+      },
+      {
+        "i": 7,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 6.936,
+        "error": null
+      },
+      {
+        "i": 8,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 6.106,
+        "error": null
+      },
+      {
+        "i": 9,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 6.35,
+        "error": null
+      },
+      {
+        "i": 10,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 6.05,
+        "error": null
+      },
+      {
+        "i": 11,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 7.707,
+        "error": null
+      },
+      {
+        "i": 12,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 7.999,
+        "error": null
+      },
+      {
+        "i": 13,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.953,
+        "error": null
+      },
+      {
+        "i": 14,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 5.757,
+        "error": null
+      },
+      {
+        "i": 15,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 8.115,
+        "error": null
+      },
+      {
+        "i": 16,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 6.095,
+        "error": null
+      },
+      {
+        "i": 17,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.585,
+        "error": null
+      },
+      {
+        "i": 18,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 5.177,
+        "error": null
+      },
+      {
+        "i": 19,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.013,
+        "error": null
+      },
+      {
+        "i": 20,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 7.642,
+        "error": null
+      },
+      {
+        "i": 21,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 7.555,
+        "error": null
+      },
+      {
+        "i": 22,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 6.082,
+        "error": null
+      },
+      {
+        "i": 23,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 9.71,
+        "error": null
+      },
+      {
+        "i": 24,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 5.125,
+        "error": null
+      },
+      {
+        "i": 25,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.548,
+        "error": null
+      },
+      {
+        "i": 26,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.958,
+        "error": null
+      },
+      {
+        "i": 27,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.612,
+        "error": null
+      },
+      {
+        "i": 28,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.858,
+        "error": null
+      },
+      {
+        "i": 29,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.994,
+        "error": null
+      },
+      {
+        "i": 30,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.841,
+        "error": null
+      },
+      {
+        "i": 31,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 6.012,
+        "error": null
+      },
+      {
+        "i": 32,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 5.53,
+        "error": null
+      },
+      {
+        "i": 33,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.242,
+        "error": null
+      },
+      {
+        "i": 34,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 7.503,
+        "error": null
+      },
+      {
+        "i": 35,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.323,
+        "error": null
+      },
+      {
+        "i": 36,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 5.017,
+        "error": null
+      },
+      {
+        "i": 37,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.804,
+        "error": null
+      },
+      {
+        "i": 38,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.884,
+        "error": null
+      },
+      {
+        "i": 39,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.72,
+        "error": null
+      },
+      {
+        "i": 40,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 7.609,
+        "error": null
+      },
+      {
+        "i": 41,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.948,
+        "error": null
+      },
+      {
+        "i": 42,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.77,
+        "error": null
+      },
+      {
+        "i": 43,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 6.644,
+        "error": null
+      },
+      {
+        "i": 44,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 5.167,
+        "error": null
+      },
+      {
+        "i": 45,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.045,
+        "error": null
+      },
+      {
+        "i": 46,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.815,
+        "error": null
+      },
+      {
+        "i": 47,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 10.179,
+        "error": null
+      },
+      {
+        "i": 48,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.987,
+        "error": null
+      },
+      {
+        "i": 49,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.892,
+        "error": null
+      },
+      {
+        "i": 50,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.572,
+        "error": null
+      },
+      {
+        "i": 51,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.784,
+        "error": null
+      },
+      {
+        "i": 52,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 18.371,
+        "error": null
+      },
+      {
+        "i": 53,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.681,
+        "error": null
+      },
+      {
+        "i": 54,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 5.736,
+        "error": null
+      },
+      {
+        "i": 55,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.857,
+        "error": null
+      },
+      {
+        "i": 56,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 5.352,
+        "error": null
+      },
+      {
+        "i": 57,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.953,
+        "error": null
+      },
+      {
+        "i": 58,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.524,
+        "error": null
+      },
+      {
+        "i": 59,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.015,
+        "error": null
+      },
+      {
+        "i": 60,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.839,
+        "error": null
+      },
+      {
+        "i": 61,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.035,
+        "error": null
+      },
+      {
+        "i": 62,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.95,
+        "error": null
+      },
+      {
+        "i": 63,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.355,
+        "error": null
+      },
+      {
+        "i": 64,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 5.878,
+        "error": null
+      },
+      {
+        "i": 65,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.964,
+        "error": null
+      },
+      {
+        "i": 66,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.538,
+        "error": null
+      },
+      {
+        "i": 67,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.022,
+        "error": null
+      },
+      {
+        "i": 68,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 7.274,
+        "error": null
+      },
+      {
+        "i": 69,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.478,
+        "error": null
+      },
+      {
+        "i": 70,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 5.397,
+        "error": null
+      },
+      {
+        "i": 71,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.691,
+        "error": null
+      },
+      {
+        "i": 72,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 5.644,
+        "error": null
+      },
+      {
+        "i": 73,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.282,
+        "error": null
+      },
+      {
+        "i": 74,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 5.098,
+        "error": null
+      },
+      {
+        "i": 75,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 7.162,
+        "error": null
+      },
+      {
+        "i": 76,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 5.338,
+        "error": null
+      },
+      {
+        "i": 77,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 7.595,
+        "error": null
+      },
+      {
+        "i": 78,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 5.43,
+        "error": null
+      },
+      {
+        "i": 79,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.838,
+        "error": null
+      },
+      {
+        "i": 80,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 6.079,
+        "error": null
+      },
+      {
+        "i": 81,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.496,
+        "error": null
+      },
+      {
+        "i": 82,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.198,
+        "error": null
+      },
+      {
+        "i": 83,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.378,
+        "error": null
+      },
+      {
+        "i": 84,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 3.921,
+        "error": null
+      },
+      {
+        "i": 85,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.446,
+        "error": null
+      },
+      {
+        "i": 86,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.441,
+        "error": null
+      },
+      {
+        "i": 87,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.235,
+        "error": null
+      },
+      {
+        "i": 88,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 3.92,
+        "error": null
+      },
+      {
+        "i": 89,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 3.893,
+        "error": null
+      },
+      {
+        "i": 90,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 14.727,
+        "error": null
+      },
+      {
+        "i": 91,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.32,
+        "error": null
+      },
+      {
+        "i": 92,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.306,
+        "error": null
+      },
+      {
+        "i": 93,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.443,
+        "error": null
+      },
+      {
+        "i": 94,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.215,
+        "error": null
+      },
+      {
+        "i": 95,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 4.263,
+        "error": null
+      },
+      {
+        "i": 96,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 3.931,
+        "error": null
+      },
+      {
+        "i": 97,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 5.151,
+        "error": null
+      },
+      {
+        "i": 98,
+        "request_id": "dense-req-p0-s100",
+        "status": 200,
+        "latency_ms": 4.186,
+        "error": null
+      },
+      {
+        "i": 99,
+        "request_id": "dense-req-p2-s100",
+        "status": 200,
+        "latency_ms": 3.99,
+        "error": null
+      }
+    ],
+    "errors": []
+  },
+  "sql_digests": [
+    {
+      "digest": "39617a062ed197067bfef7bfb86633098d6f5a1bc72896f6a867fea78d4abfed",
+      "sample_sql": "SELECT `i1_0` . `id` , `i1_0` . `amount` , `i1_0` . `customer_id` , `i1_0` . `due_date` , `i1_0` . `status` FROM `invoice` `i1_0` WHERE `i1_0` . `status` = ? ORDER BY `i1_0` . `due_date` , `i1_0` . `id` LIMIT ?, ...",
+      "calls": 100,
+      "total_ms": 29.185,
+      "mean_ms": 0.2918,
+      "rows_examined": 20000,
+      "rows_sent": 10000,
+      "no_index_used": false,
+      "sample_params": []
+    },
+    {
+      "digest": "158bfe3d4b4b0a372a4acdb38affe2cb4f6b3cb21a9af0ea9fad9a9a083ac18a",
+      "sample_sql": "SET `autocommit` = ?",
+      "calls": 200,
+      "total_ms": 6.191,
+      "mean_ms": 0.031,
+      "rows_examined": 0,
+      "rows_sent": 0,
+      "no_index_used": false,
+      "sample_params": []
+    },
+    {
+      "digest": "f2b9be5f0f32ca7507e4ddf133cd2fad0993a1c26fde9caa6f067b1af2b7603c",
+      "sample_sql": "COMMIT",
+      "calls": 100,
+      "total_ms": 3.529,
+      "mean_ms": 0.0353,
+      "rows_examined": 0,
+      "rows_sent": 0,
+      "no_index_used": false,
+      "sample_params": []
+    }
+  ],
+  "derived": {
+    "measured_requests": 100,
+    "measured_latency_ms": 585.819,
+    "total_sql_statements": 400,
+    "statements_per_request": 4.0,
+    "app_sql_statements": 100,
+    "app_statements_per_request": 1.0,
+    "session_control_statements": 300,
+    "total_sql_ms": 38.905,
+    "sql_share_of_latency_pct": 6.64,
+    "total_rows_examined": 20000,
+    "total_rows_sent": 10000,
+    "distinct_digests": 3,
+    "distinct_app_digests": 1,
+    "distinct_session_digests": 2,
+    "digests_without_index": 0,
+    "busiest_digest": {
+      "digest": "39617a062ed197067bfef7bfb86633098d6f5a1bc72896f6a867fea78d4abfed",
+      "sample_sql": "SELECT `i1_0` . `id` , `i1_0` . `amount` , `i1_0` . `customer_id` , `i1_0` . `due_date` , `i1_0` . `status` FROM `invoice` `i1_0` WHERE `i1_0` . `status` = ? ORDER BY `i1_0` . `due_date` , `i1_0` . `id` LIMIT ?, ...",
+      "calls": 100,
+      "calls_per_request": 1.0,
+      "total_ms": 29.185,
+      "rows_examined": 20000
+    }
+  }
+}

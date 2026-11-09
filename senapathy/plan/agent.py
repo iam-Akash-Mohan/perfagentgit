@@ -17,7 +17,7 @@ from typing import Any
 
 from ..agent import LoopBudget, LoopStatus, run_agent
 from ..contracts import (EndpointModel, Hypothesis, HypothesisSet, Plan,
-                         RankedHypothesis, TableInfo)
+                         RankedHypothesis, SqlDigestStat, TableInfo)
 from ..errors import ContractViolation
 from ..ids import content_hash
 from ..measure.baseline import baseline_hash
@@ -61,6 +61,7 @@ def build_registry(
     measured_tables: dict[str, TableInfo] | None = None,
     prompt_hash: str | None = None,
     on_tool_error: Any = None,
+    baseline_digests: list[SqlDigestStat] | None = None,
 ) -> ToolRegistry:
     """The tools this phase offers: the read surface, plus one terminal call.
 
@@ -80,7 +81,8 @@ def build_registry(
                            considered=considered, sink=sink, endpoint=endpoint,
                            measured_total_ms=measured_total_ms,
                            measured_tables=measured_tables,
-                           prompt_hash=prompt_hash),
+                           prompt_hash=prompt_hash, mysql=mysql,
+                           baseline_digests=baseline_digests),
     ]
     rank = {name: i for i, name in enumerate(PROMPT_ORDER)}
     specs.sort(key=lambda spec: rank.get(spec.name, len(rank)))
@@ -131,6 +133,8 @@ def plan(
                        for r in ranked],
                considered=considered)
 
+    baseline_digests = _load_baseline_digests(run_dir)
+
     system = load_prompt(
         "plan.system", directory=prompts_directory, trace=trace, phase=PHASE,
         unbounded_collections=_unbounded_summary(model),
@@ -140,7 +144,8 @@ def plan(
         repo_root=str(root), stack=stack, endpoint=endpoint,
         measured_total_ms=f"{hypotheses.measured_total_ms:.1f}",
         brief=render_brief(ranked=ranked, hypotheses=by_id,
-                           considered=considered, model=model),
+                           considered=considered, model=model,
+                           baseline_digests=baseline_digests),
     )
     prompt_hash = content_hash({"system": system.hash, "user": user.hash})
 
@@ -155,6 +160,7 @@ def plan(
         mysql=mysql, measured_tables=measured, prompt_hash=prompt_hash,
         on_tool_error=lambda note: trace.emit(EventType.NOTE, phase=PHASE,
                                               note=note),
+        baseline_digests=baseline_digests,
     )
 
     outcome = run_agent(
@@ -219,6 +225,23 @@ def _unbounded_summary(model: EndpointModel) -> str:
         return ("none recorded — treat every returned field as frozen anyway, "
                 "because the oracle does")
     return ", ".join(fields)
+
+
+def _load_baseline_digests(run_dir: Path) -> list[SqlDigestStat]:
+    """This endpoint's own measured SQL digests, if baseline.json exists.
+
+    A `sql_count` candidate must cite one of these by hash — see
+    `brief.py::_baseline_sql` and `submit.py`'s check against it. Missing
+    entirely (a caller that never ran baseline, or a test fixture) degrades
+    to an empty list rather than raising: the brief then shows "none
+    recorded", and every `sql_count` candidate is refused as unsupported,
+    which is the honest answer when there is no baseline to cite at all.
+    """
+    path = Path(run_dir) / "baseline.json"
+    if not path.exists():
+        return []
+    document = json.loads(path.read_text(encoding="utf-8"))
+    return [SqlDigestStat.model_validate(d) for d in document.get("sql_digests") or []]
 
 
 # ──────────────────────────────  artifacts  ──────────────────────────────

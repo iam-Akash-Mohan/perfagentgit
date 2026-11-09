@@ -238,6 +238,7 @@ class ArmEndpoint(BaseModel):
     path: str
     port: int
     base_url: str
+    commit: str | None = None
 
 
 class Provisioning(BaseModel):
