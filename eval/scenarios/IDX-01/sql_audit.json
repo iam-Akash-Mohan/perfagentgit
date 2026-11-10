@@ -1,0 +1,78 @@
+{
+  "endpoint": "GET /api/payments/by-date",
+  "measured_total_ms": 2528.43,
+  "baseline_hash": "fd3077b8ae7ab9f5",
+  "statements": [
+    {
+      "digest": "1a06948f18f2b7d8df242006caa89c2649687cc623552c1aec54eaefba75549f",
+      "digest_text": "SELECT `p1_0` . `id` , `p1_0` . `invoice_id` , `p1_0` . `amount` , `p1_0` . `paid_date` FROM `payment` `p1_0` WHERE `p1_0` . `paid_date` = ? ORDER BY `p1_0` . `id` LIMIT ?, ...",
+      "executable_sql": "select p1_0.id,p1_0.invoice_id,p1_0.amount,p1_0.paid_date from payment p1_0 where p1_0.paid_date='2023-07-02' order by p1_0.id limit 0,50",
+      "resolved_params": [],
+      "calls": 100,
+      "total_ms": 1895.976,
+      "limit_offset_source": "digest",
+      "limit_offset_request_id": null,
+      "classification": "MISSING_INDEX",
+      "unanalysable_reason": null,
+      "non_sargable_marker": null,
+      "access_types": {
+        "p1_0": "index"
+      },
+      "keys_used": {
+        "p1_0": "PRIMARY"
+      },
+      "rows_examined": 51301,
+      "rows_returned": 50,
+      "actual_ms": 9.19,
+      "uses_filesort": false,
+      "uses_temporary": false,
+      "index_candidate": {
+        "table": "payment",
+        "columns": [
+          "paid_date"
+        ],
+        "column_rationale": "paid_date leads the index because it is filtered by equality in this statement's own WHERE clause, in the order the predicate names them — a composite index can only use its leading columns for an equality seek, so a range or sort column has to come after them, never before.",
+        "plan_before": "payment: p1_0: type=index, key=PRIMARY",
+        "plan_after": "payment: p1_0: type=ref, key=senapathy_tmp_a96f9b4043",
+        "access_type_before": "index",
+        "access_type_after": "ref",
+        "rows_examined_before": 51301,
+        "rows_examined_after": 50,
+        "actual_ms_before": 7.92,
+        "actual_ms_after": 0.397,
+        "already_covered_by": null,
+        "size_bytes": 18399232,
+        "table_writes_since_reset": {
+          "insert": 0,
+          "update": 0,
+          "delete": 0,
+          "fetch": 0
+        },
+        "benchmark_rounds": 8,
+        "without_index_ms_samples": [
+          6.2560419901274145,
+          5.690291989594698,
+          5.463625013362616,
+          5.677416978869587,
+          5.81466598669067,
+          5.642084055580199,
+          5.560333025641739,
+          5.568458000198007
+        ],
+        "with_index_ms_samples": [
+          0.9006249601952732,
+          0.5535000236704946,
+          0.6084999768063426,
+          0.7989170262590051,
+          0.8125000167638063,
+          0.7079159840941429,
+          0.714458990842104,
+          0.7153330370783806
+        ],
+        "benchmark_p_value": 0.0078125,
+        "improvement_pct": 87.4
+      },
+      "rewrite_candidate": null
+    }
+  ]
+}

@@ -34,6 +34,17 @@ DataAccessKind = Literal[
     "lazy_collection", "lazy_association", "criteria", "jdbc_template", "other",
 ]
 
+# Not the SAME fact as `kind`: a jpql_query can return managed entities
+# (`select e from Entity e`) or a constructor projection (`select new
+# SomeDto(...)`) that never hydrates one -- the query shape alone does not
+# say which. Recording that one query RUNS tells diagnosis nothing about
+# whether it also materialises an object graph; "zero per-row data
+# accesses" survived both the probe-hardcoding fix and the per-row
+# reconciliation check for exactly this reason, on three separate
+# endpoints whose single query was a projection diagnosis kept assuming
+# hydrated entities regardless.
+DataAccessReturns = Literal["entities", "projection", "scalar"]
+
 # How a data access maps onto the older SqlSource vocabulary. Derived in code
 # so the model is never asked to fill in two overlapping fields.
 _SQL_SOURCE_KIND: dict[str, str] = {
@@ -62,6 +73,16 @@ class DataAccess(BaseModel):
     sql: str | None = None
     tables: list[str] = []
     executes_per_row: bool
+    returns: DataAccessReturns | None = Field(
+        default=None,
+        description="What this access's own query returns: a managed "
+                    "entity (hydration happens), a constructor "
+                    "projection/DTO (it does not), or a scalar/aggregate "
+                    "(a count, a sum -- nothing to hydrate at all). None "
+                    "only for an access recorded before this field existed "
+                    "-- the comprehension agent must always set it; the "
+                    "diagnosis reconciliation that reads it treats an "
+                    "unset value as unknown, never as a negative.")
     note: str | None = None
 
     def citation(self) -> "Citation":

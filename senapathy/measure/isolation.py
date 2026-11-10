@@ -142,10 +142,18 @@ def arms_share_one_schema(blue: Path, green: Path) -> str | None:
         f"index and report no improvement for a change that may be worth a "
         f"great deal. That is a false negative, and it looks exactly like the "
         f"system working.\n"
-        f"The measurement was NOT run. This is not a statement that the patch "
-        f"does not help — it is a statement that this harness cannot currently "
-        f"find out. Give each arm its own schema and run again; "
-        f"docs/schema-changes.md says what that requires."
+        f"The ENDPOINT-level measurement was NOT run — that is specifically "
+        f"what this guard refuses, not a statement that the patch does not "
+        f"help. An add_index candidate that cites a matching SQL-audit "
+        f"finding (CandidateFix.audit_digest) never reaches this guard at "
+        f"all: it is proven at the STATEMENT level instead (EXPLAIN's own "
+        f"plan, rows examined, an interleaved direct-statement benchmark — "
+        f"gate.rules.evaluate_schema_gates), which needs no per-arm "
+        f"isolation because it never compares the two arms. This message "
+        f"means someone tried to prove THIS candidate by an endpoint-level "
+        f"A/B anyway. Either cite the audit's own measurement, or give each "
+        f"arm its own schema; docs/schema-changes.md says what the second "
+        f"option would require."
     )
 
 

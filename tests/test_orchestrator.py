@@ -97,17 +97,18 @@ def test_the_phase_order_is_a_constant_and_matches_the_pipeline() -> None:
         # ONBOARD and PROVISION lead: a repository this harness cannot read
         # or cannot start must fail before a single token is spent.
         "onboard", "provision",
-        "understand", "workload", "oracle", "baseline", "diagnose",
+        "understand", "workload", "oracle", "baseline", "audit", "diagnose",
         "plan", "patch", "verify", "measure", "gate", "ship",
     ]
     # Phase enum values, in ascending order. PLAN sits between DIAGNOSE and
     # IMPLEMENT: ranking by fixability has to happen before anything is
     # written, or the patch agent attacks the biggest number rather than the
-    # fixable one.
+    # fixable one. AUDIT sits between BASELINE and DIAGNOSE: every captured
+    # digest gets analysed before diagnosis reconciles against it.
     assert [s.phase for s in PIPELINE] == [
         Phase.ONBOARD, Phase.PROVISION,
         Phase.COMPREHEND, Phase.WORKLOAD, Phase.ORACLE, Phase.BASELINE,
-        Phase.DIAGNOSE, Phase.PLAN, Phase.IMPLEMENT, Phase.VERIFY,
+        Phase.AUDIT, Phase.DIAGNOSE, Phase.PLAN, Phase.IMPLEMENT, Phase.VERIFY,
         Phase.MEASURE, Phase.GATE, Phase.SHIP,
     ]
 
@@ -238,7 +239,7 @@ def test_resume_restarts_after_the_last_completed_phase(
     )
     state = run_pipeline(run_id="r3", runs_dir=runs)
     assert first == ["onboard", "provision", "understand", "workload",
-                     "oracle", "baseline", "diagnose"]
+                     "oracle", "baseline", "audit", "diagnose"]
     assert state.terminal == TerminalState.INTERNAL_ERROR
     assert Phase.BASELINE in state.completed_phases
     assert Phase.DIAGNOSE not in state.completed_phases
@@ -250,8 +251,9 @@ def test_resume_restarts_after_the_last_completed_phase(
     )
     resumed = run_pipeline(runs_dir=runs, resume="r3")
 
-    # The four phases that already produced artifacts are not re-run.
+    # The phases that already produced artifacts are not re-run.
     assert "understand" not in second and "baseline" not in second
+    assert "audit" not in second
     assert second[0] == "diagnose"
     assert resumed.terminal == TerminalState.NO_SIGNIFICANT_IMPROVEMENT
 
@@ -421,6 +423,132 @@ def test_gate_and_ship_need_the_upstream_artifacts(
     reason = orch._preconditions(BY_NAME[phase_name], context_for(tmp_path), None)
     assert reason is not None
     assert "has not been produced" in reason
+
+
+# ─────────────────────  the schema-candidate path  ────────────────────────
+
+
+def _write_plan_with_schema_proof(run_dir: Path, *, proof=None) -> None:
+    """A minimal, self-validating plan.json whose selected candidate
+    carries `schema_proof` — the one field every schema-path precondition
+    and runner branch reads via `_selected_schema_proof`."""
+    from senapathy.contracts import CandidateFix, Plan, RiskTier
+    from senapathy.contracts.audit import IndexCandidate
+
+    proof = proof or IndexCandidate(
+        table="invoice", columns=["customer_id"],
+        rows_examined_before=1_500_000, rows_examined_after=3,
+        actual_ms_before=900.0, actual_ms_after=0.9,
+    )
+    candidate = CandidateFix(
+        id="c1", targets_hypothesis="h1", approach="add_index",
+        description="index invoice on (customer_id)",
+        mechanism="rows_examined", mechanism_changed="rows examined",
+        predicted_effect="rows examined per request drop",
+        files_to_touch=["V3__x.sql"], what_could_break=[],
+        preserves_response_bytes=True, risk_tier=RiskTier.LOW,
+        audit_digest="d1", schema_proof=proof,
+    )
+    plan = Plan(
+        endpoint="e", measured_total_ms=1000.0, ranked=[], considered=["h1"],
+        candidates=[candidate], selected_id="c1", selection_reason="r",
+    )
+    (run_dir / "plan.json").write_text(json.dumps(plan.model_dump(mode="json")))
+
+
+def _write_plan_without_schema_proof(run_dir: Path) -> None:
+    from senapathy.contracts import CandidateFix, Plan, RiskTier
+
+    candidate = CandidateFix(
+        id="c1", targets_hypothesis="h1", approach="fetch_join",
+        description="d", mechanism_changed="SQL statements per request",
+        predicted_effect="e", files_to_touch=["X.java"],
+        what_could_break=[], preserves_response_bytes=True,
+        risk_tier=RiskTier.LOW,
+    )
+    plan = Plan(
+        endpoint="e", measured_total_ms=1000.0, ranked=[], considered=["h1"],
+        candidates=[candidate], selected_id="c1", selection_reason="r",
+    )
+    (run_dir / "plan.json").write_text(json.dumps(plan.model_dump(mode="json")))
+
+
+def test_selected_schema_proof_is_none_without_a_plan(tmp_path: Path) -> None:
+    ctx = context_for(tmp_path)
+    assert orch._selected_schema_proof(ctx) is None
+
+
+def test_selected_schema_proof_is_none_for_an_ordinary_candidate(
+    tmp_path: Path
+) -> None:
+    _write_plan_without_schema_proof(tmp_path)
+    ctx = context_for(tmp_path)
+    assert orch._selected_schema_proof(ctx) is None
+
+
+def test_selected_schema_proof_reads_the_selected_candidates_proof(
+    tmp_path: Path
+) -> None:
+    _write_plan_with_schema_proof(tmp_path)
+    ctx = context_for(tmp_path)
+    proof = orch._selected_schema_proof(ctx)
+    assert proof is not None
+    assert proof.table == "invoice"
+    assert proof.rows_examined_before == 1_500_000
+
+
+def test_measure_precondition_skips_isolation_for_a_schema_proof_candidate(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The actual point of this whole path: an add_index candidate proven
+    at the statement level must never be told the arms are unisolated --
+    it never compares the two arms at all."""
+    monkeypatch.setattr(
+        "senapathy.measure.arms.existing_worktree",
+        lambda path, repo=None: type("W", (), {"source_diff": lambda self: "d"})(),
+    )
+    monkeypatch.setattr("senapathy.measure.verify.require_verified",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(orch, "_isolation_problem",
+                        lambda ctx: "the arms share one schema")
+    _write_plan_with_schema_proof(tmp_path)
+
+    reason = orch._preconditions(BY_NAME["measure"], context_for(tmp_path), None)
+
+    assert reason is None
+
+
+def test_measure_precondition_still_checks_isolation_without_a_schema_proof(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Unchanged behaviour for every other candidate."""
+    monkeypatch.setattr(
+        "senapathy.measure.arms.existing_worktree",
+        lambda path, repo=None: type("W", (), {"source_diff": lambda self: "d"})(),
+    )
+    monkeypatch.setattr("senapathy.measure.verify.require_verified",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(orch, "_isolation_problem",
+                        lambda ctx: "the arms share one schema")
+    _write_plan_without_schema_proof(tmp_path)
+
+    reason = orch._preconditions(BY_NAME["measure"], context_for(tmp_path), None)
+
+    assert reason is not None and "ISOLATION" in reason
+
+
+@pytest.mark.parametrize("phase_name", ["gate", "ship"])
+def test_gate_and_ship_accept_schema_measurement_in_place_of_perf_report(
+    tmp_path: Path, phase_name: str,
+) -> None:
+    (tmp_path / "verification.json").write_text("{}")
+    (tmp_path / "schema_measurement.json").write_text("{}")
+    (tmp_path / "patch.json").write_text("{}")
+    _write_plan_with_schema_proof(tmp_path)
+
+    reason = orch._preconditions(BY_NAME[phase_name], context_for(tmp_path), None)
+
+    assert reason is None
 
 
 def test_a_blocked_transition_stops_the_run_cleanly(monkeypatch, runs: Path) -> None:

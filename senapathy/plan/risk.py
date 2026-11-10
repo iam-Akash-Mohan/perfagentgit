@@ -15,7 +15,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from ..contracts import CandidateFix, EndpointModel, RiskTier, SqlVerification
+from ..contracts import (CandidateFix, EndpointModel, IndexCandidate,
+                         RiskTier, SqlAudit, SqlVerification)
 from ..gate.rules import MECHANISM_MOVE_PCT
 from ..tools.db import DbToolbox
 
@@ -336,6 +337,16 @@ def schema_change_blocked(*, approach: str, sql_change: str | None,
     named in the brief: the approach is `add_index`, the migration directory
     appears among the files to touch, OR `sql_change` is set at all (a
     candidate can in principle carry DDL without declaring `add_index`).
+
+    NOT called at all for an `add_index` candidate whose `audit_digest`
+    resolves to a proof via `audit_proof_for` — that candidate takes the
+    schema-candidate gate path instead, proven at the STATEMENT level
+    (plan shape, rows examined, an interleaved direct-statement benchmark),
+    which needs no per-arm isolation because it never compares the two
+    arms at all. This function is still exactly correct for every OTHER
+    schema-touching candidate: a hand-written index with no audit
+    citation, or any other DDL this design does not have a statement-level
+    proof mechanism for yet.
     """
     from ..measure.isolation import arms_share_one_schema, touches_schema
 
@@ -344,6 +355,68 @@ def schema_change_blocked(*, approach: str, sql_change: str | None,
     if not changes_schema:
         return None
     return arms_share_one_schema(repo, repo)
+
+
+def audit_proof_for(
+    *, table: str, columns: list[str], audit_digest: str | None,
+    sql_audit: SqlAudit | None,
+) -> tuple[IndexCandidate | None, str | None]:
+    """(proof, problem) for an `add_index` candidate's `audit_digest`
+    citation.
+
+    `proof` is the SQL audit's OWN already-measured `IndexCandidate` —
+    EXPLAIN plan before/after, rows examined, an interleaved statement-
+    level benchmark, redundancy, write cost, size — copied onto this
+    candidate rather than re-measured, exactly the "reuse what exists"
+    discipline the audit phase itself was built on. `problem` names why
+    the citation does not resolve, so a mismatched or invented digest is
+    refused by name rather than silently falling back to the (currently
+    unmeasurable) ordinary schema path.
+
+    Returns `(None, None)` — not an error — when `audit_digest` is not
+    set at all: citing the audit is optional, and a candidate that does
+    not attempt it is not making a claim this function can confirm or
+    refuse; it falls through to `schema_change_blocked` as before.
+    """
+    if audit_digest is None:
+        return None, None
+    if sql_audit is None:
+        return None, (
+            f"cites audit digest {audit_digest!r}, but no SQL audit "
+            f"evidence (sql_audit.json) is available for this run."
+        )
+    found = sql_audit.by_digest(audit_digest)
+    if found is None:
+        return None, (
+            f"cites audit digest {audit_digest!r}, which is not among the "
+            f"statements this run's SQL audit analysed."
+        )
+    if found.classification != "MISSING_INDEX" or found.index_candidate is None:
+        return None, (
+            f"cites audit digest {audit_digest!r}, which the SQL audit "
+            f"classified {found.classification!r}, not MISSING_INDEX with "
+            f"a measured candidate."
+        )
+    proof = found.index_candidate
+    if proof.already_covered_by is not None:
+        return None, (
+            f"the SQL audit's own candidate for digest {audit_digest!r} is "
+            f"already covered by {proof.already_covered_by} — this "
+            f"statement is not actually missing an index."
+        )
+    if proof.table.lower() != table.lower():
+        return None, (
+            f"cites audit digest {audit_digest!r}, whose own measured "
+            f"candidate indexes {proof.table!r}, not {table!r}."
+        )
+    if [c.lower() for c in columns] != [c.lower() for c in proof.columns]:
+        return None, (
+            f"cites audit digest {audit_digest!r}, whose own measured "
+            f"candidate indexes ({', '.join(proof.columns)}), not "
+            f"({', '.join(columns)}) — the statement-level proof is for "
+            f"the exact column list the audit measured, not a different one."
+        )
+    return proof, None
 
 
 # ────────────────────────────────  selection  ────────────────────────────

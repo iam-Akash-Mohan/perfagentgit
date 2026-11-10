@@ -247,6 +247,38 @@ def test_the_real_tree_is_read_correctly() -> None:
     assert (examined, returned, elapsed) == (2645, 1, 176.0)
 
 
+def test_sort_and_temporary_are_detected_from_real_tree_wording() -> None:
+    """Verified directly against a live MySQL 8 server, not assumed: the
+    EXPLAIN ANALYZE TREE format spells these differently from classic
+    EXPLAIN's 'Extra' column ('Using filesort'/'Using temporary') -- the
+    tree says '-> Sort: ...' and '<temporary>'/'Temporary table', never the
+    word 'filesort' anywhere."""
+    from senapathy.tools.db import PlanReading
+
+    sort_only = PlanReading(tree=(
+        "-> Limit: 10 row(s)  (actual time=349..349 rows=10 loops=1)\n"
+        "    -> Sort: customer_payment.amount, limit input to 10 row(s) "
+        "per chunk  (actual time=349..349 rows=10 loops=1)\n"
+        "        -> Index scan on customer_payment  (actual time=0.04..248 "
+        "rows=1.5e+6 loops=1)\n"
+    ))
+    assert sort_only.uses_filesort is True
+    assert sort_only.uses_temporary is False
+
+    sort_and_temp = PlanReading(tree=(
+        "-> Sort: a.method DESC, b.method  (actual time=3.02..3.02 rows=16 loops=1)\n"
+        "    -> Table scan on <temporary>  (actual time=2.71..2.72 rows=16 loops=1)\n"
+        "        -> Temporary table with deduplication  (actual time=2.71..2.71 "
+        "rows=16 loops=1)\n"
+    ))
+    assert sort_and_temp.uses_filesort is True
+    assert sort_and_temp.uses_temporary is True
+
+    neither = PlanReading(tree=TREE)
+    assert neither.uses_filesort is False
+    assert neither.uses_temporary is False
+
+
 def test_explain_reports_what_the_server_said(connected) -> None:
     box = toolbox(script(), connected)
     rendered = box.explain(SQL, ["42"])
@@ -255,6 +287,36 @@ def test_explain_reports_what_the_server_said(connected) -> None:
     assert "actual time   176.0 ms" in rendered
     assert "index used    yes" in rendered
     assert "type=ref" in rendered
+
+
+def test_benchmark_interleaved_alternates_and_never_runs_sequentially(
+    connected
+) -> None:
+    """The SQL audit's own benchmark discipline: A, B, A, B, ... recorded
+    in exactly that order, not every A then every B -- a sequential
+    comparison would credit B with whatever buffer-pool warming A already
+    paid for."""
+    server = script()
+    box = toolbox(server, connected)
+    a_times, b_times = box.benchmark_interleaved(
+        "select 1 from invoice where customer_id = %s",
+        "select 1 from invoice i where i.customer_id = %s",
+        ["42"], rounds=3,
+    )
+    assert len(a_times) == 3 and len(b_times) == 3
+    executed = [s for s in server.executed if "from invoice" in s.lower()]
+    assert len(executed) == 6
+    # A, B, A, B, A, B -- not A, A, A, B, B, B.
+    assert "i.customer_id" not in executed[0]
+    assert "i.customer_id" in executed[1]
+    assert "i.customer_id" not in executed[2]
+    assert "i.customer_id" in executed[3]
+
+
+def test_benchmark_interleaved_only_accepts_selects(connected) -> None:
+    box = toolbox(script(), connected)
+    with pytest.raises(ToolError, match="accepts a single SELECT"):
+        box.benchmark_interleaved("select 1", "DROP TABLE invoice")
 
 
 # ──────────────────────────────  plan_delta  ──────────────────────────────
@@ -377,6 +439,116 @@ def test_index_benefit_measures_before_and_after_then_drops(connected) -> None:
     dropped = server.ran("DROP INDEX")
     assert len(created) == 1 and len(dropped) == 1
     assert TEMP_PREFIX in created[0] and TEMP_PREFIX in dropped[0]
+
+
+def test_table_write_volume_reads_the_io_waits_summary(connected) -> None:
+    server = script(rows=[(5, 12, 1, 38_000)])
+    box = toolbox(server, connected)
+    volume = box.table_write_volume("invoice")
+    assert volume == {"insert": 5, "update": 12, "delete": 1, "fetch": 38_000}
+
+
+def test_table_write_volume_degrades_to_none_without_the_privilege(connected) -> None:
+    server = script()
+    server.errors["table_io_waits_summary_by_table"] = RuntimeError("access denied")
+    box = toolbox(server, connected)
+    assert box.table_write_volume("invoice") is None
+
+
+def test_table_write_volume_refuses_a_table_outside_the_allowlist(connected) -> None:
+    box = toolbox(script(), connected)
+    with pytest.raises(GuardrailError):
+        box.table_write_volume("some_other_table")
+
+
+def test_index_benefit_measured_returns_structured_numbers_not_text(
+    connected
+) -> None:
+    """The SQL audit phase needs the before/after numbers directly, not a
+    rendered string to parse back apart — same measurement, same guardrails
+    (index_benefit itself is now a thin wrapper over this)."""
+    server = script(indexes=[("idx_invoice_customer_id", 1, "customer_id", 1, 28691)])
+    box = toolbox(server, connected)
+
+    calls = {"n": 0}
+    original = FakeCursor.execute
+
+    def counting(self, sql, params=()):
+        if "EXPLAIN ANALYZE" in sql:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                self.server.rows["EXPLAIN ANALYZE"] = [(FAST_TREE,)]
+        return original(self, sql, params)
+
+    FakeCursor.execute = counting                      # type: ignore[assignment]
+    try:
+        result = box.index_benefit_measured(
+            "invoice", ["customer_id", "status"], SQL, ["42"])
+    finally:
+        FakeCursor.execute = original                  # type: ignore[assignment]
+
+    assert result.covered_by is None
+    assert result.timed_out is False
+    assert result.before.rows_examined == 2645
+    assert result.after.rows_examined == 571
+    assert result.dropped is True
+
+
+def test_index_benefit_measured_runs_an_interleaved_benchmark_when_asked(
+    connected,
+) -> None:
+    """`benchmark_hint_position` turns on the real-execution A,B,A,B
+    comparison WHILE the candidate index still exists -- the only way to
+    measure with-vs-without without a second create/drop cycle."""
+    server = script(indexes=[("idx_invoice_customer_id", 1, "customer_id", 1, 28691)])
+    box = toolbox(server, connected)
+    position = SQL.index(" where")   # right after "from invoice"
+
+    result = box.index_benefit_measured(
+        "invoice", ["customer_id", "status"], SQL, ["42"],
+        benchmark_hint_position=position, benchmark_rounds=3,
+    )
+
+    assert len(result.without_index_ms_samples) == 3
+    assert len(result.with_index_ms_samples) == 3
+    ignored = server.ran("IGNORE INDEX")
+    assert len(ignored) == 3
+    assert all(TEMP_PREFIX in sql for sql in ignored)
+    # The index must still be gone afterwards -- the benchmark runs INSIDE
+    # the same create/drop lifecycle, not as a reason to skip the drop.
+    assert result.dropped is True
+    assert server.ran("DROP INDEX")
+
+
+def test_index_benefit_measured_skips_the_benchmark_without_a_hint_position(
+    connected,
+) -> None:
+    server = script(indexes=[("idx_invoice_customer_id", 1, "customer_id", 1, 28691)])
+    box = toolbox(server, connected)
+    result = box.index_benefit_measured(
+        "invoice", ["customer_id", "status"], SQL, ["42"], benchmark_rounds=3)
+    assert result.without_index_ms_samples == []
+    assert result.with_index_ms_samples == []
+    assert not server.ran("IGNORE INDEX")
+    assert TEMP_PREFIX in result.index_name
+
+    created = server.ran("CREATE INDEX")
+    dropped = server.ran("DROP INDEX")
+    assert len(created) == 1 and len(dropped) == 1
+
+
+def test_index_benefit_measured_reports_an_already_covered_refusal_structurally(
+    connected
+) -> None:
+    server = script(indexes=[("idx_invoice_customer_id_status", 1, "customer_id", 1, 28691),
+                            ("idx_invoice_customer_id_status", 2, "status", 1, 4)])
+    box = toolbox(server, connected)
+    result = box.index_benefit_measured("invoice", ["customer_id"], SQL, ["42"])
+
+    assert result.covered_by == "idx_invoice_customer_id_status"
+    assert result.covered_by_columns == ["customer_id", "status"]
+    assert result.before is None and result.after is None
+    assert server.ran("CREATE INDEX") == []
 
 
 def test_the_index_is_dropped_even_when_everything_after_it_fails(

@@ -69,9 +69,12 @@ def test_an_index_on_two_arms_sharing_one_schema_is_refused(tmp_path: Path) -> N
     assert problem is not None
     assert "SAME schema: mysql://localhost:3307/mini" in problem
     assert "false negative" in problem
-    assert "was NOT run" in problem
-    # It must not read as a verdict on the patch.
-    assert "does not help" in problem and "is a statement that this harness" in problem
+    assert "ENDPOINT-level measurement was NOT run" in problem
+    # It must not read as a verdict on the patch -- and it must name the
+    # escape hatch: an add_index candidate proven at the statement level
+    # (via an audit_digest citation) never reaches this guard at all.
+    assert "not a statement that the patch does not help" in problem
+    assert "audit_digest" in problem and "STATEMENT level" in problem
 
 
 def test_isolated_arms_are_allowed_to_measure_an_index(tmp_path: Path) -> None:

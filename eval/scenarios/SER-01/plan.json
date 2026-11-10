@@ -1,147 +1,133 @@
 {
   "endpoint": "GET /api/customers/bios",
-  "measured_total_ms": 5.681,
+  "measured_total_ms": 5.654,
   "ranked": [
     {
       "hypothesis_id": "h1",
-      "claim": "ORM hydration of each row into DTO objects dominates the per‑row cost.",
-      "layer": "orm_hydration",
-      "attributed_ms": 3.0,
+      "claim": "JSON serialization of each CustomerBio DTO dominates the per‑row latency.",
+      "layer": "serialization",
+      "attributed_ms": 3.5,
       "fixability": {
         "hypothesis_id": "h1",
-        "fixability": 0.95,
-        "reason": "additive index, zero behaviour risk (customer_profile is read on customer_name, bio and no existing index leads with those columns)",
-        "blocked_by": null,
-        "assessed_by": "code",
-        "classified": true
-      },
-      "expected_value_ms": 2.85
-    },
-    {
-      "hypothesis_id": "h2",
-      "claim": "JSON serialization of the DTO list consumes most of the remaining per‑row time.",
-      "layer": "serialization",
-      "attributed_ms": 2.5,
-      "fixability": {
-        "hypothesis_id": "h2",
         "fixability": 0.3,
         "reason": "library-level, rarely beatable by hand (no unbounded response collection is implicated)",
         "blocked_by": null,
         "assessed_by": "code",
         "classified": true
       },
-      "expected_value_ms": 0.75
+      "expected_value_ms": 1.05
     },
     {
       "hypothesis_id": "h3",
-      "claim": "Application‑level collection building and controller handling adds a modest constant overhead per request.",
-      "layer": "application_logic",
-      "attributed_ms": 1.0,
+      "claim": "Writing the JSON payload to the HTTP socket adds a per‑byte cost that contributes to total latency.",
+      "layer": "network",
+      "attributed_ms": 0.5,
       "fixability": {
         "hypothesis_id": "h3",
+        "fixability": 0.15,
+        "reason": "out of scope for a code change",
+        "blocked_by": "transfer time is not changed by a patch to this endpoint's code",
+        "assessed_by": "code",
+        "classified": true
+      },
+      "expected_value_ms": 0.075
+    },
+    {
+      "hypothesis_id": "h2",
+      "claim": "The service layer maps the JPA projection objects to response DTOs, incurring per‑row allocation and copy cost.",
+      "layer": "application_logic",
+      "attributed_ms": 1.5,
+      "fixability": {
+        "hypothesis_id": "h2",
         "fixability": 0.4,
         "reason": "UNCLASSIFIED: no policy row matched this hypothesis, so 0.40 is a placeholder rather than an assessment",
         "blocked_by": null,
         "assessed_by": "code",
         "classified": false
       },
-      "expected_value_ms": 0.4
+      "expected_value_ms": 0.6
     }
   ],
   "considered": [
     "h1",
-    "h2"
+    "h3"
   ],
   "candidates": [
     {
-      "id": "c1",
-      "targets_hypothesis": "h1",
-      "approach": "add_index",
-      "description": "Create a secondary covering index on (id, customer_name) to allow MySQL to satisfy the SELECT from the index without reading full rows, reducing data scanned per row and ORM hydration cost.",
-      "mechanism": "rows_examined",
-      "mechanism_changed": "rows examined",
-      "predicted_effect": "rows examined drop from 100 to ~30",
-      "files_to_touch": [
-        "src/main/resources/db/migration/V2__add_customer_profile_idx.sql"
-      ],
-      "sql_change": "CREATE INDEX idx_customer_profile_id_name ON customer_profile (id, customer_name);",
-      "sql_before": null,
-      "sql_after": null,
-      "sql_params": [],
-      "baseline_digest": null,
-      "baseline_calls": null,
-      "what_could_break": [
-        "MySQL does not allow indexing TEXT columns; the index does not include `bio`, so the query will still need to read the table rows for the `bio` column. If the optimizer chooses the primary key instead of the new index, there is no benefit."
-      ],
-      "preserves_response_bytes": true,
-      "risk_tier": 1,
-      "requires_flag": false,
-      "expected_value_ms": 2.85,
-      "sql_verification": null,
-      "not_selectable_because": "this patch changes the database schema, and both arms resolve to the SAME schema: mysql://localhost:3307/mini.\nAn index is a property of the database, not of a worktree. Once green's migration applies it, blue is querying an indexed table too, so an interleaved A/B would compare two arms that both have the index and report no improvement for a change that may be worth a great deal. That is a false negative, and it looks exactly like the system working.\nThe measurement was NOT run. This is not a statement that the patch does not help — it is a statement that this harness cannot currently find out. Give each arm its own schema and run again; docs/schema-changes.md says what that requires.",
-      "scope_reasons": {}
-    },
-    {
       "id": "c2",
       "targets_hypothesis": "h1",
-      "approach": "query_rewrite",
-      "description": "Rewrite the repository to use a native SQL query executed via Spring's JdbcTemplate and map each row manually to CustomerBioDto, avoiding JPA's constructor‑expression hydration.",
-      "mechanism": "rows_examined",
-      "mechanism_changed": "rows examined",
-      "predicted_effect": "rows examined drop from 100 to ~30",
+      "approach": "dto_projection",
+      "description": "Replace the record‑based DTO projection with a Spring Data interface projection to avoid constructing DTO objects for each row. Define an interface CustomerBioView with getId(), getCustomerName(), getBio() and let the repository return List<CustomerBioView>. Service maps these directly to the existing record, eliminating per‑row object allocation.",
+      "mechanism": "allocation",
+      "mechanism_changed": "object allocations per request",
+      "predicted_effect": "allocations drop from ~N objects to ~N/2 objects per request",
       "files_to_touch": [
         "src/main/java/com/ex/repo/CustomerProfileRepository.java",
         "src/main/java/com/ex/service/CustomerBioService.java",
         "src/main/java/com/ex/web/CustomerBioController.java"
       ],
       "sql_change": null,
-      "sql_before": "SELECT cp.id, cp.customer_name, cp.bio FROM customer_profile cp ORDER BY cp.id ASC LIMIT %s, %s",
-      "sql_after": "SELECT cp.id, cp.customer_name, cp.bio FROM customer_profile cp ORDER BY cp.id ASC LIMIT %s, %s",
-      "sql_params": [
-        "0",
-        "50"
-      ],
+      "sql_before": null,
+      "sql_after": null,
+      "sql_params": [],
       "baseline_digest": null,
       "baseline_calls": null,
       "what_could_break": [
-        "Manual mapping must match the order and types exactly; a mismatch will cause runtime exceptions or corrupted data."
+        "If other parts of the code rely on the concrete CustomerBioDto type returned from the repository, the interface projection may cause ClassCastException."
       ],
       "preserves_response_bytes": true,
-      "risk_tier": 2,
+      "risk_tier": 1,
       "requires_flag": false,
-      "expected_value_ms": 0.0,
-      "sql_verification": {
-        "verified": true,
-        "attempted": true,
-        "rows_examined_before": 50,
-        "rows_examined_after": 50,
-        "rows_delta_pct": 0.0,
-        "actual_ms_before": 0.0599,
-        "actual_ms_after": 0.02,
-        "scored": true,
-        "note": "EXPLAIN ANALYZE: rows examined 50 -> 50 (+0.0%), actual time 0.1 ms -> 0.0 ms",
-        "assessed_by": "code"
-      },
-      "not_selectable_because": "candidate c2's sql_before and sql_after are the same statement once whitespace is collapsed — a rewrite that does not change the statement cannot reduce its call count or its rows examined, whatever the description claims.",
+      "expected_value_ms": 1.05,
+      "sql_verification": null,
+      "not_selectable_because": "its mechanism is 'allocation', which this harness does not instrument — only rows_examined, sql_count carry before/after values, so MECHANISM_MATCH could never confirm this candidate regardless of what the patch does.",
       "scope_reasons": {
         "src/main/java/com/ex/web/CustomerBioController.java": "on this endpoint's own traced call path to src/main/java/com/ex/repo/CustomerProfileRepository.java, which this candidate already touches — included so a change to src/main/java/com/ex/repo/CustomerProfileRepository.java has its caller in scope"
       }
+    },
+    {
+      "id": "c1",
+      "targets_hypothesis": "h1",
+      "approach": "other",
+      "description": "Add a Spring @Bean that registers Jackson's AfterburnerModule with the auto‑configured ObjectMapper. This generates bytecode‑based serializers, cutting the per‑CustomerBioDto reflection overhead while keeping the exact JSON output unchanged.",
+      "mechanism": "serialization",
+      "mechanism_changed": "JSON serialization per request",
+      "predicted_effect": "serialization time drop from ~3.5 ms to ~2.2 ms per request",
+      "files_to_touch": [
+        "src/main/java/com/ex/Application.java"
+      ],
+      "sql_change": null,
+      "sql_before": null,
+      "sql_after": null,
+      "sql_params": [],
+      "baseline_digest": null,
+      "baseline_calls": null,
+      "what_could_break": [
+        "If the runtime JVM disallows bytecode generation, the module may fail to load and fall back to default serializers, potentially causing startup errors."
+      ],
+      "preserves_response_bytes": true,
+      "risk_tier": 3,
+      "requires_flag": true,
+      "expected_value_ms": 1.05,
+      "sql_verification": null,
+      "not_selectable_because": "its mechanism is 'serialization', which this harness does not instrument — only rows_examined, sql_count carry before/after values, so MECHANISM_MATCH could never confirm this candidate regardless of what the patch does.",
+      "scope_reasons": {}
     }
   ],
   "selected_id": null,
   "selection_reason": "no candidate cleared the selection rule: every one was either above risk tier T2 or did not claim to preserve the response bytes",
   "not_selected": [
     {
-      "candidate_id": "c1",
-      "reason": "this patch changes the database schema, and both arms resolve to the SAME schema: mysql://localhost:3307/mini.\nAn index is a property of the database, not of a worktree. Once green's migration applies it, blue is querying an indexed table too, so an interleaved A/B would compare two arms that both have the index and report no improvement for a change that may be worth a great deal. That is a false negative, and it looks exactly like the system working.\nThe measurement was NOT run. This is not a statement that the patch does not help — it is a statement that this harness cannot currently find out. Give each arm its own schema and run again; docs/schema-changes.md says what that requires."
+      "candidate_id": "c2",
+      "reason": "its mechanism is 'allocation', which this harness does not instrument — only rows_examined, sql_count carry before/after values, so MECHANISM_MATCH could never confirm this candidate regardless of what the patch does."
     },
     {
-      "candidate_id": "c2",
-      "reason": "candidate c2's sql_before and sql_after are the same statement once whitespace is collapsed — a rewrite that does not change the statement cannot reduce its call count or its rows examined, whatever the description claims."
+      "candidate_id": "c1",
+      "reason": "its mechanism is 'serialization', which this harness does not instrument — only rows_examined, sql_count carry before/after values, so MECHANISM_MATCH could never confirm this candidate regardless of what the patch does."
     }
   ],
   "prompt_hash": "5f311954ae548093",
   "base_commit": "13ca852f5151a0870b16298bbb84d87d92633416",
   "decided_by": "code",
-  "baseline_hash": "98c8d640b0e735fa"
+  "baseline_hash": "b636030cd827bfc0"
 }

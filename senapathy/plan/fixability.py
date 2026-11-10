@@ -61,9 +61,19 @@ _NO_INDEX_WORDS = (
 # a function wrapping the indexed column -- not prose a model could assert
 # without having run EXPLAIN. `\b` before each name keeps "broadcast(" from
 # matching "cast(": there is no word boundary inside a single identifier.
+#
+# Public (not `_`-prefixed): `audit/reconstruct.py` builds its own
+# column-before-placeholder pattern from this SAME list, so a predicate like
+# `DATE(paid_on) >= ?` resolves to a real sampled value for `paid_on` using
+# the identical vocabulary this module already uses to flag it as
+# non-sargable in the first place -- one source of truth, not two lists that
+# could drift apart.
+WRAPPING_FUNCTION_NAMES = (
+    "cast", "date", "year", "month", "day", "hour", "upper", "lower",
+    "substr(?:ing)?", "concat", "trim",
+)
 _FUNCTION_WRAPPED_COLUMN = re.compile(
-    r"\b(cast|date|year|month|day|hour|upper|lower|substr(?:ing)?|concat|trim)"
-    r"\s*\(",
+    r"\b(" + "|".join(WRAPPING_FUNCTION_NAMES) + r")\s*\(",
     re.I,
 )
 _LEADING_WILDCARD = re.compile(r"like\s+['\"]%", re.I)

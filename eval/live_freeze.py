@@ -76,7 +76,15 @@ def main() -> None:
     if scratch_dir.exists():
         shutil.rmtree(scratch_dir)
     scratch_dir.mkdir(parents=True)
-    for name in ("baseline.json", "endpoint_model.json", "corpus.json"):
+    # sql_audit.json is OPTIONAL -- a run frozen before the audit phase
+    # existed has none, and diagnose/plan both already treat its absence as
+    # "nothing to reconcile against" rather than an error. Carried the same
+    # way as the other three evidence files: a property of the measured
+    # system, re-used as-is rather than re-measured by this script.
+    names = ["baseline.json", "endpoint_model.json", "corpus.json"]
+    if (args.run_dir / "sql_audit.json").exists():
+        names.append("sql_audit.json")
+    for name in names:
         shutil.copy2(args.run_dir / name, scratch_dir / name)
 
     diagnose_cassettes = scenario_dir / "cassettes" / "diagnose"
@@ -148,7 +156,7 @@ def main() -> None:
     print(f"froze {len(tool_responses['diagnose'])} diagnose + "
          f"{len(tool_responses['plan'])} plan live-tool response(s)")
 
-    for name in ("endpoint_model.json", "corpus.json", "baseline.json"):
+    for name in names:   # whatever was actually carried into scratch_dir above
         shutil.copy2(args.run_dir / name, scenario_dir / name)
     shutil.copy2(hyp_path, scenario_dir / "hypotheses.json")
     shutil.copy2(plan_path, scenario_dir / "plan.json")

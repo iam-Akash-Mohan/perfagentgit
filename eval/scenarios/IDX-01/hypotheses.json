@@ -1,0 +1,132 @@
+{
+  "hypotheses": [
+    {
+      "id": "h0",
+      "claim": "The JPQL query scans millions of rows due to a missing index on paid_date, causing heavy DB work per request.",
+      "mechanism": "PaymentRepository.findByPaidDate translates to a SELECT filtering on paid_date without an index, forcing MySQL to perform a full range scan over ~19 M rows each call, consuming ~19 ms of DB CPU/I/O per request.",
+      "layer": "database_query",
+      "evidence": [
+        "server‑side SQL time 1915.2 ms for 100 requests → ≈19.15 ms per request (≈75.74 % of 28.1 ms p50)",
+        "rows examined / rows sent = 19 911 200 / 10 000 → ~1 991× more rows scanned than returned",
+        "SQL audit flags [MISSING_INDEX] and reports 51 301 rows examined to return 50 rows"
+      ],
+      "attributed_ms": 21.0,
+      "prediction": "Creating an index on payment(paid_date) will drop the per‑request SQL time from ~19 ms to <1 ms and the overall latency will fall accordingly.",
+      "confidence": 0.95
+    },
+    {
+      "id": "h1",
+      "claim": "The service loops over each projection row, creates a DTO and adds it to a list, incurring per‑row allocation and copy work.",
+      "mechanism": "PaymentsByDateService.byDate receives the JPQL projection list, iterates over each element, copies fields into a response DTO and adds it to a new List before returning; each iteration performs object allocation and method calls.",
+      "layer": "application_logic",
+      "evidence": [
+        "p50 latency rises from 5.4 ms (1 row) to 8.8 ms (100 rows) → ≈0.034 ms per extra row",
+        "SQL time stays ~0.2‑0.3 ms, so the extra ~3.4 ms is non‑SQL"
+      ],
+      "attributed_ms": 4.0,
+      "prediction": "Returning the repository list directly without the extra DTO mapping loop will reduce the per‑row latency increase by roughly 3‑4 ms for 100 rows.",
+      "confidence": 0.85
+    },
+    {
+      "id": "h2",
+      "claim": "Jackson serialises each DTO to JSON (and the server may gzip it), adding a per‑row CPU cost.",
+      "mechanism": "Spring MVC uses the Jackson HttpMessageConverter to write the List of DTOs to the HTTP response; each object is turned into JSON text and then compressed, costing time proportional to the number of rows.",
+      "layer": "serialization",
+      "evidence": [
+        "Response body size scales linearly: 72 B per row (1 row → 72 B, 100 rows → 7261 B)",
+        "Latency per row (~0.034 ms) matches typical Jackson cost for small POJOs"
+      ],
+      "attributed_ms": 3.0,
+      "prediction": "Disabling Jackson (e.g., returning a pre‑built JSON string or switching to application/octet‑stream) will eliminate the per‑row ~0.03 ms cost and flatten latency growth with row count.",
+      "confidence": 0.85
+    }
+  ],
+  "probes_run": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 10,
+        "page_size": 1,
+        "request_id": "dense-date2023-07-02-p0-s100"
+      },
+      "discriminates_between": [
+        "h0",
+        "h1",
+        "h2"
+      ],
+      "result": "Latency 5.4 ms, SQL 0.2 ms, rows 1, body 72 B – baseline constant overhead; shows that most of the 5 ms is not SQL, hinting at framework/logic/serialization cost."
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 10,
+        "page_size": 100,
+        "request_id": "dense-date2023-07-02-p0-s100"
+      },
+      "discriminates_between": [
+        "h0",
+        "h1",
+        "h2"
+      ],
+      "result": "Latency 8.8 ms, SQL 0.3 ms, rows 100, body 7261 B – latency rises ~3.4 ms with 99 extra rows, confirming a linear per‑row cost separate from SQL."
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "iterations": 10,
+        "request_id": "dense-date2023-07-02-p2-s100"
+      },
+      "discriminates_between": [
+        "h0",
+        "h1",
+        "h2"
+      ],
+      "result": "Latency 8.1 ms, SQL 2.0 ms, rows 100, body 7443 B – higher SQL time but similar total latency, reinforcing that most extra cost is still non‑SQL per‑row work."
+    }
+  ],
+  "ranked_ids": [
+    "h0",
+    "h1",
+    "h2"
+  ],
+  "measured_total_ms": 28.119,
+  "probes_executed": [
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "iterations": 10,
+        "page_size": 1
+      },
+      "result": "probe: GET http://localhost:18080/api/payments/by-date?date=2023-07-02&page=0&size=1  (request_id='dense-date2023-07-02-p0-s100', page_size=1) iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 5.4 ms\n  p95 latency                  : 8.1 ms\n  result rows in response      : 1\n  response body size (median)  : 72 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.2 ms (4.2 % of p50)\n  latency per result row       : 5.4 ms\n  body bytes per result row    : 72",
+      "endpoint_called": "GET http://localhost:18080/api/payments/by-date?date=2023-07-02&page=0&size=1"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "iterations": 10,
+        "page_size": 100
+      },
+      "result": "probe: GET http://localhost:18080/api/payments/by-date?date=2023-07-02&page=0&size=100  (request_id='dense-date2023-07-02-p0-s100', page_size=100) iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 8.8 ms\n  p95 latency                  : 11.8 ms\n  result rows in response      : 100\n  response body size (median)  : 7261 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.3 ms (3.5 % of p50)\n  latency per result row       : 0.1 ms\n  body bytes per result row    : 72",
+      "endpoint_called": "GET http://localhost:18080/api/payments/by-date?date=2023-07-02&page=0&size=100"
+    },
+    {
+      "tool": "run_probe",
+      "args": {
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "iterations": 10
+      },
+      "result": "probe: GET http://localhost:18080/api/payments/by-date?date=2023-07-02&page=2&size=100  (request_id='dense-date2023-07-02-p2-s100') iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 8.1 ms\n  p95 latency                  : 23.9 ms\n  result rows in response      : 100\n  response body size (median)  : 7443 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 2.0 ms (24.8 % of p50)\n  latency per result row       : 0.1 ms\n  body bytes per result row    : 74",
+      "endpoint_called": "GET http://localhost:18080/api/payments/by-date?date=2023-07-02&page=2&size=100"
+    }
+  ],
+  "baseline": "/Users/akashm/Documents/ak/perfagent/eval/scratch/IDX-01/baseline.json",
+  "baseline_hash": "fd3077b8ae7ab9f5",
+  "endpoint_model": "/Users/akashm/Documents/ak/perfagent/eval/scratch/IDX-01/endpoint_model.json",
+  "submissions_rejected": 3,
+  "database_tools": [
+    "explain",
+    "list_indexes"
+  ]
+}

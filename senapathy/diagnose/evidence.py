@@ -142,14 +142,65 @@ def _data_access_lines(endpoint_model: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     for access in endpoint_model.get("data_access") or []:
         scope = "PER ROW " if access.get("executes_per_row") else "per req "
+        returns = access.get("returns")
+        # Stated plainly, not just left to be discovered by rejection: a
+        # query that runs tells you nothing about whether it ALSO
+        # hydrates an object graph. "returns entities" means it does;
+        # "returns projection/scalar" means an orm_hydration hypothesis
+        # about THIS access is already contradicted by this same model.
+        returns_note = f"  returns {returns}" if returns else ""
         lines.append(
             f"  [{scope}] {access.get('kind', '?')}  {access.get('trigger', '?')}  "
-            f"({access.get('file', '?')}:{access.get('line', '?')})"
+            f"({access.get('file', '?')}:{access.get('line', '?')}){returns_note}"
         )
     return lines
 
 
-def render_evidence(baseline: dict[str, Any], endpoint_model: dict[str, Any]) -> str:
+def _sql_audit_lines(sql_audit: Any) -> list[str]:
+    """Every NON_SARGABLE/MISSING_INDEX/BAD_JOIN_ORDER finding the audit
+    phase already measured — so a diagnosis that ignores one is choosing
+    to, not missing evidence it never saw. COL-04's own shape: a full scan
+    of 1.5M rows sat unmentioned while diagnosis theorised about ORM
+    hydration instead. `validate.py`'s reconciliation check is this
+    section's enforcement; this is what makes that check fair."""
+    lines: list[str] = []
+    flagged = [s for s in sql_audit.statements
+              if s.classification in ("NON_SARGABLE", "MISSING_INDEX",
+                                      "BAD_JOIN_ORDER")]
+    if not flagged:
+        lines.append("  none — every captured statement is within the "
+                     "optimal rows-examined/rows-returned ratio")
+        return lines
+    for s in sorted(flagged, key=lambda s: s.total_ms, reverse=True):
+        ratio = (s.rows_examined / s.rows_returned if s.rows_returned
+                 else s.rows_examined)
+        lines.append(
+            f"  [{s.classification}] {s.calls}x calls, {s.total_ms:.1f} ms "
+            f"total, rows examined {s.rows_examined:,} -> returned "
+            f"{s.rows_returned:,} ({ratio:,.0f}x)"
+        )
+        lines.append(f"      {_truncate(s.digest_text, SQL_WIDTH)}")
+        if s.limit_offset_source == "fallback":
+            lines.append("      CAVEAT: LIMIT/OFFSET is a guess, not a "
+                         "measured page depth -- page depth changes rows "
+                         "examined, so treat this ratio as indicative, not "
+                         "exact.")
+        if s.index_candidate is not None and s.index_candidate.already_covered_by is None:
+            c = s.index_candidate
+            lines.append(
+                f"      MEASURED candidate: index on {c.table}"
+                f"({', '.join(c.columns)}) -> rows examined "
+                f"{c.rows_examined_after:,}"
+            )
+        if s.rewrite_candidate is not None and s.rewrite_candidate.equivalence_verified:
+            lines.append(
+                f"      MEASURED candidate: {s.rewrite_candidate.sql_after}"
+            )
+    return lines
+
+
+def render_evidence(baseline: dict[str, Any], endpoint_model: dict[str, Any],
+                    sql_audit: Any = None) -> str:
     """The ONLY view of the measurements a model ever receives.
 
     Deliberately small. Raw per-request samples and full SQL logs are excluded:
@@ -229,6 +280,12 @@ def render_evidence(baseline: dict[str, Any], endpoint_model: dict[str, Any]) ->
     else:
         out.append("  none — no digest executes more than once per request")
     out.append("")
+
+    if sql_audit is not None:
+        out.append("SQL AUDIT (every captured statement, EXPLAIN ANALYZE'd "
+                   "and classified — computed, not a model's opinion)")
+        out.extend(_sql_audit_lines(sql_audit))
+        out.append("")
 
     out.append("CALL CHAIN (from the comprehension model)")
     out.extend(_call_chain_lines(endpoint_model))

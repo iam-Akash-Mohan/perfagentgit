@@ -257,28 +257,40 @@ class Cassette:
         short of the one that was actually recorded next, and it stays
         short forever after, because nothing told it to catch up.
 
+        Multiple corrections in a row (`MAX_TOOL_CORRECTIONS` allows up to
+        3) compound this: a SECOND malformed attempt means even the
+        once-corrected request was itself never cassette-written, so the
+        only recorded file left is the one from the FINAL, fully-corrected
+        success — three or more messages longer than what replay
+        reconstructs, not one. This is still recoverable one step at a
+        time: whatever recorded file is longer only needs to agree on the
+        VERY NEXT message after our current point, regardless of how much
+        further it goes — `run_agent`'s own retry loop calls this again
+        with that message appended, which finds the next one the same way,
+        and so on until the gap closes completely.
+
         This does not invent that message: it is read back VERBATIM from
-        whichever later cassette file recorded it, by finding the one whose
-        own request is this exact conversation plus exactly one more
-        `user`-role message. If more than one file matches (ambiguous) or
-        none does (this really is just a stale cassette), returns None --
-        a wrong guess here would corrupt the replayed conversation instead
-        of fixing it.
+        whichever later cassette file recorded it, by finding one whose own
+        request starts with this exact conversation and continues with a
+        `user`-role message next. If candidate files disagree on what that
+        next message says (ambiguous) or none exists (this really is just a
+        stale cassette), returns None — a wrong guess here would corrupt
+        the replayed conversation instead of fixing it.
         """
-        candidates: list[str] = []
+        candidates: set[str] = set()
         for path in self.dir.glob("*.json"):
             try:
                 doc = json.loads(path.read_text(encoding="utf-8"))
                 recorded = doc["request"]["messages"]
             except (OSError, json.JSONDecodeError, KeyError, TypeError):
                 continue
-            if (len(recorded) == len(messages) + 1
+            if (len(recorded) > len(messages)
                     and recorded[:len(messages)] == messages
                     and recorded[len(messages)].get("role") == "user"):
-                candidates.append(str(recorded[len(messages)].get("content") or ""))
+                candidates.add(str(recorded[len(messages)].get("content") or ""))
         if len(candidates) != 1:
             return None
-        return candidates[0]
+        return next(iter(candidates))
 
 
 class HTTPLLMClient(ABC):

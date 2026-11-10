@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ..contracts import HypothesisSet, Layer
+from ..contracts import DataAccess, HypothesisSet, Layer, SqlAudit
 from ..errors import ToolError
 from .probe import ProbeLog
 
@@ -36,6 +36,14 @@ LOW_SQL_SHARE_PCT = 20.0
 # LOW sql_share makes that claim a contradiction, not just an overstatement.
 MAJORITY_ATTRIBUTION_SHARE = 0.5
 
+# A NON_SARGABLE/MISSING_INDEX finding must cost at least this share of
+# measured p50 before an unmentioned statement counts as a gap. Without a
+# floor, a statement that runs once for a fraction of a millisecond would
+# block every diagnosis forever over a finding nobody could ever call
+# material — the same reasoning MIN_ATTRIBUTION_SHARE already applies to
+# the diagnosis's own numbers, applied here to the audit's.
+MIN_AUDIT_SHARE_PCT = 5.0
+
 
 def validate_hypothesis_set(
     payload: dict[str, Any],
@@ -43,6 +51,8 @@ def validate_hypothesis_set(
     probe_log: ProbeLog | None = None,
     *,
     sql_share_of_latency_pct: float | None = None,
+    data_access: list[DataAccess] | None = None,
+    sql_audit: SqlAudit | None = None,
 ) -> HypothesisSet:
     """Accept or reject the agent's diagnosis. Code decides, not the model.
 
@@ -56,6 +66,16 @@ def validate_hypothesis_set(
     `measured_p50_ms` — never asked of the model. Optional only so that a
     caller without a baseline handy (a hand-built test, an older artifact)
     still gets every other check; passing it is what makes 2c reachable.
+
+    `data_access` is read from the endpoint's own comprehension model, same
+    discipline — optional so a caller without one (or an older model
+    recorded before `DataAccess.returns` existed) still gets every other
+    check; passing it is what makes 2d reachable.
+
+    `sql_audit` is read from the SQL audit phase's own artifact, same
+    discipline — optional so a caller without one (a run from before the
+    audit phase existed) still gets every other check; passing it is what
+    makes 2e reachable.
     """
     if not isinstance(payload, dict):
         raise ToolError(f"emit_hypotheses expects an object, got {type(payload).__name__}")
@@ -148,6 +168,93 @@ def validate_hypothesis_set(
                 suggestion="Reduce the database_query attribution to match "
                            "what sql_share_of_latency_pct actually shows, and "
                            "look elsewhere for the rest.",
+            )
+
+    # ── 2d. entity hydration cannot happen where nothing returns an entity ──
+    # "Zero per-row data accesses" never told diagnosis whether the per-REQUEST
+    # access it DID record hydrates anything -- a single query can still
+    # materialise fifty entities. This is the fact that was missing: what a
+    # data access's own query RETURNS, not merely that it runs. Three
+    # endpoints this session (CustomerBioService.bios, the payment-history
+    # endpoint, CollectionsReportService) each ran exactly one query, a JPQL
+    # constructor projection that hydrates nothing, and diagnosis invented an
+    # orm_hydration hypothesis about it anyway, on all three, surviving both
+    # the probe-hardcoding fix and this file's own per-row reconciliation.
+    if data_access:
+        known_returns = [a.returns for a in data_access if a.returns is not None]
+        # Only a verdict when EVERY access has an answer -- an access
+        # recorded before `returns` existed is unknown, not evidence of
+        # anything, and an unknown must never be read as "not an entity".
+        if (len(known_returns) == len(data_access)
+                and all(r != "entities" for r in known_returns)):
+            hydration_hypotheses = [
+                h for h in result.hypotheses if h.layer == Layer.ORM_HYDRATION]
+            if hydration_hypotheses:
+                claims = "; ".join(
+                    f"{h.id} ({h.claim})" for h in hydration_hypotheses)
+                shapes = "; ".join(
+                    f"{a.trigger}: returns {a.returns}" for a in data_access)
+                raise ToolError(
+                    f"{claims} claims entity hydration (layer=orm_hydration), "
+                    f"but every data access this endpoint's own comprehension "
+                    f"model recorded returns a projection or a scalar, never "
+                    f"a managed entity: {shapes}. That is a contradiction "
+                    "between the evidence and the diagnosis, not a "
+                    "legitimate competing theory.",
+                    suggestion="Remove the orm_hydration hypothesis(es). If "
+                               "you believe a specific access actually "
+                               "returns an entity the comprehension model "
+                               "missed, that is a comprehension error to "
+                               "flag, not something this diagnosis can "
+                               "assert on its own.",
+                )
+
+    # ── 2e. a flagged statement the diagnosis never addresses is a gap ──
+    # COL-04's own failure: a full scan of 1.5M rows sat in the baseline's
+    # own digest evidence, EXPLAIN ANALYZE already classified it
+    # MISSING_INDEX by the time diagnosis ran, and nothing in the diagnosis
+    # named the table it hit — the model theorised about ORM hydration
+    # instead. "Mentions" is checked mechanically, by table name, not by
+    # sentiment: a hypothesis whose claim, mechanism or evidence contains
+    # the flagged statement's own table name counts, whatever it concludes
+    # about it. The bar is deliberately low; silence is what this catches.
+    if sql_audit is not None:
+        from ..audit.reconstruct import extract_tables
+
+        combined_text = " ".join(
+            f"{h.claim} {h.mechanism} {' '.join(h.evidence)}"
+            for h in result.hypotheses
+        ).lower()
+        floor_ms = measured_p50_ms * MIN_AUDIT_SHARE_PCT / 100.0
+        gaps = []
+        for statement in sql_audit.statements:
+            if statement.classification not in ("NON_SARGABLE", "MISSING_INDEX"):
+                continue
+            if measured_p50_ms > 0 and statement.total_ms < floor_ms:
+                continue
+            tables = extract_tables(statement.digest_text)
+            if tables and not any(t.lower() in combined_text for t in tables):
+                gaps.append((statement, tables))
+        if gaps:
+            named = "; ".join(
+                f"{s.digest} [{s.classification}] on {', '.join(tables)} "
+                f"({s.total_ms:.1f} ms, {s.rows_examined:,} rows examined "
+                f"-> {s.rows_returned:,} returned)"
+                for s, tables in gaps
+            )
+            raise ToolError(
+                f"the SQL audit already classified {len(gaps)} statement(s) "
+                f"as NON_SARGABLE or MISSING_INDEX, costing at least "
+                f"{MIN_AUDIT_SHARE_PCT:.0f}% of measured p50 each, and no "
+                f"hypothesis mentions the table involved: {named}. That is "
+                "a gap in the diagnosis, not a legitimate thing to leave "
+                "out — the audit already did the EXPLAIN ANALYZE work.",
+                suggestion="Add or revise a hypothesis that names the "
+                           "flagged table directly, in the database_query "
+                           "layer unless you have evidence it belongs "
+                           "elsewhere. You do not need to re-run explain "
+                           "yourself -- the audit's own numbers are in the "
+                           "evidence above.",
             )
 
     # ── 3. the ranking must refer to hypotheses that exist ──────────────

@@ -1,0 +1,22 @@
+{
+  "scenario": "IDX-01",
+  "endpoint": "GET /api/payments/by-date",
+  "measured_total_ms": 38.0,
+  "required_layers": ["database_query"],
+  "forbidden_layers": [],
+  "dominant_layer_any_of": ["database_query"],
+  "plan": {
+    "selectable": true,
+    "mechanism_any_of": ["rows_examined"],
+    "approach_context": ["add_index"]
+  },
+  "tier2": {
+    "terminal_state_any_of": ["PR_OPENED", "READY_TO_SHIP"],
+    "behaviour_preserved": true,
+    "gate_path": "schema_candidate",
+    "schema_gates_passed": ["behaviour_preserved", "plan_improved",
+                           "scanning_reduced", "statement_faster",
+                           "no_forbidden_change", "index_not_redundant"]
+  },
+  "notes": "The scenario this project's SQL audit / schema-candidate gate path exists for: payment.paid_date has no index (confirmed live, EXPLAIN shows type=index, key=PRIMARY, possible_keys=NULL -- InnoDB walking the clustered primary key's own order under ORDER BY id + LIMIT, filtering 51,301 rows to return 50), and nothing else about this endpoint is wrong -- no N+1, no serialization bloat, no ORM hydration, a flat DTO projection. The live run selected add_index, cited the SQL audit's own measured finding via audit_digest, took the schema-candidate path at MEASURE (no endpoint A/B -- blue and green share one database), and cleared all six schema gates: plan_improved (type=index -> type=ref), scanning_reduced (-99.9%), statement_faster (Wilcoxon p=0.0078 over 8 interleaved rounds, +87.4% median), no_forbidden_change, and index_not_redundant. Terminal state READY_TO_SHIP (dry run; mini-spring has no remote to actually push to, same as every other scenario here). No min_rows_examined_improvement_pct is asserted above: that field reads CandidateFix.sql_verification, which only SQL-rewrite approaches carry -- add_index's own proof lives on schema_proof instead, which tier1.py's offline diagnose+plan replay does not exercise (schema_proof is attached from sql_audit.json at PLAN submission time, same as every other plan-time field, but the full statement-level benchmark proof itself is produced at AUDIT time against a live database, which is tier2 territory, not tier1's).  Two bugs were found and fixed getting this scenario to pass, both confirmed live, neither theoretical: (1) classify.py's MISSING_INDEX/OVER_FETCHING split checked only whether a key NAME was present (any_index_used), which called this exact shape OVER_FETCHING because EXPLAIN reports key=PRIMARY even for a full clustered-index scan with possible_keys=NULL -- fixed by also checking the ACCESS TYPE (ALL/index is a scan regardless of which key name is attached). (2) propose_index_candidate's access_type_before/after lookup used the real table name, but access_types/keys_used are keyed by whatever ALIAS EXPLAIN's own query used (p1_0 here) -- silently returned empty strings, so PLAN_IMPROVED failed even though the underlying plan change (and the already-correct plan_before/plan_after TEXT) was right. A third, purely statistical bug surfaced after both of those: BENCHMARK_ROUNDS=5 cannot mathematically clear a Wilcoxon p<0.05 bar (the exact two-sided floor at n=5 is 0.0625) even when every round improves -- raised to 8 (floor ~0.0078), matching measure/ab.py's own ab_iterations convention for the endpoint-level gate."
+}

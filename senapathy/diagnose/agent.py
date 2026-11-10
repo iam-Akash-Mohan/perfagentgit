@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..agent import LoopBudget, run_agent
-from ..contracts import HypothesisSet, Layer
+from ..contracts import DataAccess, HypothesisSet, Layer
 from ..errors import ContractViolation, ToolError
 from ..llm import make_client
 from ..measure.baseline import baseline_hash
@@ -167,7 +167,7 @@ EMIT_HYPOTHESES_TOOL = {
 # recorded artifact, never from prose.
 
 def build_task(baseline: dict[str, Any], endpoint_model: dict[str, Any], *,
-              catalog: ProbeCatalog) -> str:
+              catalog: ProbeCatalog, sql_audit: Any = None) -> str:
     facts = baseline["derived"]
     p50 = baseline["benchmark"]["latency"]["p50_ms"]
     per_row = ms_per_result_row(baseline)
@@ -197,7 +197,7 @@ RULES — these are not negotiable:
 4. Do not do arithmetic on raw samples — the derived facts below are already computed.
    Quote them.
 
-{render_evidence(baseline, endpoint_model)}
+{render_evidence(baseline, endpoint_model, sql_audit=sql_audit)}
 
 === THE OPEN QUESTION — THIS IS THE WHOLE TASK ===
 
@@ -312,6 +312,20 @@ def run_diagnosis(
     # validate_hypothesis_set treats that as "nothing to reconcile against"
     # rather than a missing-value error.
     sql_share = (baseline.get("derived") or {}).get("sql_share_of_latency_pct")
+    # Read, not asked of the model -- the endpoint's own comprehension
+    # model, same discipline as sql_share above. Feeds validate_hypothesis_
+    # set's entity-hydration reconciliation (2d); an older model recorded
+    # before DataAccess.returns existed still parses (the field defaults to
+    # None), that check just has nothing to reconcile against for it.
+    data_access = [DataAccess.model_validate(a)
+                  for a in endpoint_model.get("data_access") or []]
+    # Read, not asked of the model -- the SQL audit phase's own, already
+    # EXPLAIN ANALYZE'd and classified sweep over every digest this
+    # baseline captured. None for a run that predates the audit phase or
+    # skipped it; the reconciliation check below just has nothing to
+    # reconcile against then, same discipline as sql_share/data_access.
+    from ..audit.run import load_sql_audit
+    sql_audit = load_sql_audit(directory / "sql_audit.json")
 
     # The corpus this run's own workload phase generated for THIS endpoint —
     # what run_probe is allowed to replay. ProbeCatalog raises
@@ -330,7 +344,8 @@ def run_diagnosis(
         """Terminal tool. Code decides whether this is acceptable."""
         try:
             result = validate_hypothesis_set(
-                payload, p50, probe_log, sql_share_of_latency_pct=sql_share)
+                payload, p50, probe_log, sql_share_of_latency_pct=sql_share,
+                data_access=data_access, sql_audit=sql_audit)
         except ToolError as exc:
             rejections.append(str(exc))
             raise
@@ -361,7 +376,8 @@ def run_diagnosis(
     try:
         run_agent(
             client=llm,
-            task=build_task(baseline, endpoint_model, catalog=catalog),
+            task=build_task(baseline, endpoint_model, catalog=catalog,
+                        sql_audit=sql_audit),
             tools=[run_probe_tool(catalog.describe_requests(),
                                   paginates=catalog.paginates,
                                   max_page_size=catalog.max_page_size),

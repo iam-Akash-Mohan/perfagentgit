@@ -10,6 +10,7 @@ rather than mysterious.
 from __future__ import annotations
 
 from ..contracts import EndpointModel, Hypothesis, RankedHypothesis, SqlDigestStat
+from ..contracts.audit import AuditedStatement, SqlAudit
 from ..measure.baseline import is_session_control
 from .fixability import unbounded_fields
 
@@ -18,7 +19,8 @@ def render_brief(*, ranked: list[RankedHypothesis],
                  hypotheses: dict[str, Hypothesis],
                  considered: list[str],
                  model: EndpointModel,
-                 baseline_digests: list[SqlDigestStat] | None = None) -> str:
+                 baseline_digests: list[SqlDigestStat] | None = None,
+                 sql_audit: SqlAudit | None = None) -> str:
     out: list[str] = []
     out.extend(_ranking(ranked, hypotheses, considered))
     out.append("")
@@ -28,13 +30,14 @@ def render_brief(*, ranked: list[RankedHypothesis],
     out.append("")
     out.extend(_tables(model))
     out.append("")
-    out.extend(_baseline_sql(baseline_digests or []))
+    out.extend(_baseline_sql(baseline_digests or [], sql_audit))
     out.append("")
     out.extend(_files(model))
     return "\n".join(out)
 
 
-def _baseline_sql(digests: list[SqlDigestStat]) -> list[str]:
+def _baseline_sql(digests: list[SqlDigestStat],
+                  sql_audit: SqlAudit | None = None) -> list[str]:
     """Every application statement this endpoint actually ran during
     baseline measurement, with its own digest hash and call count.
 
@@ -43,6 +46,11 @@ def _baseline_sql(digests: list[SqlDigestStat]) -> list[str]:
     citation against this same list, not the candidate's prose. A statement
     that is not here was never measured running at all; a candidate that
     claims to collapse calls of one is making that up.
+
+    `sql_audit` extends this SAME section with what the audit phase already
+    measured for each digest (classification, EXPLAIN numbers, any proven
+    candidate) rather than introducing a parallel source — a candidate
+    reads the same digest hash either way.
     """
     out = ["=== BASELINE: WHAT ACTUALLY RAN, PER STATEMENT ===",
            "",
@@ -61,6 +69,54 @@ def _baseline_sql(digests: list[SqlDigestStat]) -> list[str]:
         out.append(f"    sql    {digest.sample_sql.strip()[:160]}")
         out.append(f"    calls  {digest.calls}  (rows examined "
                    f"{digest.rows_examined:,}, rows sent {digest.rows_sent:,})")
+        audited = sql_audit.by_digest(digest.digest) if sql_audit is not None else None
+        if audited is not None:
+            out.extend(_audit_lines(audited))
+    return out
+
+
+def _audit_lines(audited: AuditedStatement) -> list[str]:
+    source_note = ""
+    if audited.limit_offset_source == "fallback":
+        source_note = ("  [LIMIT/OFFSET: a guess, not a measured page depth "
+                       "-- page depth changes rows examined]")
+    elif audited.limit_offset_source is not None:
+        source_note = f"  [LIMIT/OFFSET: {audited.limit_offset_source}]"
+    if audited.classification == "UNANALYSABLE":
+        return [f"    audit  UNANALYSABLE ({audited.unanalysable_reason})"
+               f"{source_note}"]
+    ratio = (audited.rows_examined / audited.rows_returned
+             if audited.rows_returned else audited.rows_examined)
+    out = [f"    audit  [{audited.classification}]  rows examined "
+           f"{audited.rows_examined:,} -> returned {audited.rows_returned:,} "
+           f"({ratio:,.0f}x), actual {audited.actual_ms:.1f} ms{source_note}"]
+    if audited.index_candidate is not None:
+        c = audited.index_candidate
+        if c.already_covered_by is not None:
+            out.append(f"    audit  already covered by {c.already_covered_by} "
+                       "— not actually missing an index")
+        else:
+            out.append(f"    audit  MEASURED index candidate: "
+                       f"{c.table}({', '.join(c.columns)})  rows examined "
+                       f"{c.rows_examined_before:,} -> {c.rows_examined_after:,}")
+            out.append(
+                f"    audit  TO MAKE AN add_index CANDIDATE FOR THIS "
+                f"SELECTABLE: set audit_digest=\"{audited.digest}\" and "
+                f"sql_change naming EXACTLY these columns, in this order: "
+                f"{c.table}({', '.join(c.columns)}). Without audit_digest, "
+                f"add_index cannot be selected at all -- blue and green "
+                f"share one database, so there is no endpoint-level A/B to "
+                f"measure it by; citing this digest is the ONLY path to "
+                f"selection, via the statement-level proof already measured "
+                f"above. A column list that adds anything beyond what is "
+                f"listed here (an ORDER BY column, say) will not match and "
+                f"the citation will be refused by name."
+            )
+    if audited.rewrite_candidate is not None:
+        c = audited.rewrite_candidate
+        out.append(f"    audit  MEASURED rewrite candidate "
+                   f"(equivalence {'verified' if c.equivalence_verified else 'NOT verified'}): "
+                   f"{c.sql_after}")
     return out
 
 

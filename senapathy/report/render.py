@@ -366,3 +366,123 @@ bookkeeping, not application data: {excluded_tables}.
 def render_report(ledger: EvidenceLedger, **slots: Backed) -> str:
     """Render report.md. Every quantity comes off the ledger."""
     return ledger.render(_HEADER, **slots)
+
+
+# ─────────────────────────  the schema-candidate report  ─────────────────
+#
+# A SEPARATE template, not a branch inside `_HEADER`: the two reports make
+# different KINDS of claim, and sharing one template is how an endpoint-
+# level slot (`{blue_p50}`, `{p95_delta}`, ...) would end up either present
+# with nothing behind it, or quietly omitted in a way a reader could miss.
+# This template simply never names an endpoint-level slot at all — the
+# ledger's own missing-slot refusal is what makes that durable rather than
+# a convention someone could forget.
+
+_SCHEMA_HEADER = """# Performance report: {endpoint}
+
+**Terminal state:** `{terminal_state}`
+**Gate:** {gate_summary}
+
+This is a SCHEMA-CANDIDATE report. The claim below is STATEMENT-level — an
+additive index, proven by the database itself (EXPLAIN's own plan, rows
+examined, an interleaved direct-statement benchmark) — never an
+endpoint-level one. Blue and green share one database, so an endpoint p95
+figure could not be measured here without comparing two arms that both
+have the index; no such figure is asserted anywhere in this report.
+
+| | |
+|---|---|
+| Endpoint | `{endpoint}` |
+| Branch | `{branch}` |
+| Base commit | `{base_commit}` |
+| Oracle | `{oracle_hash}` |
+| Corpus | `{corpus_hash}` |
+
+## What a human must check before merging
+
+**Risk tier:** {risk_tier_check}
+
+**What the oracle did not cover:** it proves blue and green are
+byte-identical on every request in the benchmark and held-back sets counted
+below, under Behaviour — nothing else. An additive index cannot change a
+query's RESULT, only its cost, which is what makes this check sufficient
+for a schema candidate without needing per-arm isolation.
+
+**Repository test suite:** {test_suite_check}
+
+**Pre-existing risks** (found while tracing the endpoint, independent of
+this patch):
+
+{pre_existing_risks}
+
+## The bottleneck
+
+**Diagnosed cause:** {bottleneck_claim}
+
+### Root cause
+
+{narrative}
+
+## The statement-level proof
+
+**Table and columns:** `{index_table}({index_columns})`
+
+**Why this column order:** {column_rationale}
+
+**EXPLAIN plan, before and after the candidate index:**
+
+```
+{plan_before}
+{plan_after}
+```
+
+**Rows examined:** {rows_examined_before} -> {rows_examined_after}
+({rows_examined_delta})
+
+**Interleaved direct-statement benchmark** (with the index, without, with,
+without, ... — never sequential, so neither side is credited with the
+other's buffer-pool warming): {benchmark_rounds} round(s), Wilcoxon
+signed-rank p = {benchmark_p_value}, median improvement {improvement_pct}.
+
+**Redundancy check:** {redundancy_check}
+
+**Write cost** (table_io_waits_summary_by_table, cumulative since the
+server's statistics were last reset, not a rate): {table_writes}
+
+**Index size:** {index_size}
+
+## The migration
+
+{migration_evidence}
+
+## Gates
+
+| Gate | Result | Threshold | Actual |
+|---|---|---|---|
+{gate_rows}
+
+## Files changed
+
+{file_list}
+
+Lines added: {lines_added}. Lines removed: {lines_removed}.
+
+## Behaviour
+
+Requests compared: {compared}. Identical: {identical}. Differing paths:
+{diff_count}. Held-back requests: {held_back_count}.
+
+Tables excluded from the database-state comparison as schema-management
+bookkeeping, not application data: {excluded_tables}.
+
+## Provenance
+
+{provenance_rows}
+"""
+
+
+def render_schema_report(ledger: EvidenceLedger, **slots: Backed) -> str:
+    """Render report.md for a schema candidate. Every quantity comes off
+    the ledger, same discipline as `render_report` — this template just
+    never names an endpoint-level slot."""
+    return ledger.render(_SCHEMA_HEADER, **slots)

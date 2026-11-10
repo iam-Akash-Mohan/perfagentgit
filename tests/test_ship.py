@@ -18,9 +18,10 @@ import pytest
 from senapathy.contracts import (CandidateFix, EquivalenceVerdict,
                                  LatencyStats, Patch, PerfReport, Plan,
                                  RiskTier, TerminalState)
+from senapathy.contracts.audit import IndexCandidate
 from senapathy.contracts.plan import FixabilityAssessment, RankedHypothesis
 from senapathy.errors import ToolError
-from senapathy.gate.rules import terminal_state_for
+from senapathy.gate.rules import schema_terminal_state_for, terminal_state_for
 from senapathy.ship import open_pull_request, run_gate, run_ship, write_report
 
 
@@ -469,3 +470,211 @@ def test_human_check_names_the_selected_hypotheses_unclassified_fixability(
     assert "**Confidence:** **MEDIUM**" in body
     assert "placeholder" in body
     assert "test suite executed zero tests" in body
+
+
+# ─────────────────────  the schema-candidate path  ────────────────────────
+
+
+def _index_proof(**overrides) -> IndexCandidate:
+    base: dict = {
+        "table": "invoice", "columns": ["customer_id", "status"],
+        "column_rationale": "customer_id, status lead the index because "
+                           "both are filtered by equality.",
+        "plan_before": "invoice: type=ALL, key=no index",
+        "plan_after": "invoice: type=ref, key=senapathy_tmp_x",
+        "access_type_before": "ALL", "access_type_after": "ref",
+        "rows_examined_before": 1_500_000, "rows_examined_after": 3,
+        "actual_ms_before": 900.0, "actual_ms_after": 0.9,
+        "size_bytes": 4096,
+        "table_writes_since_reset": {"insert": 10, "update": 2, "delete": 0,
+                                     "fetch": 50_000},
+        "benchmark_rounds": 5,
+        "without_index_ms_samples": [20.0, 21.0, 19.5, 20.5, 20.0],
+        "with_index_ms_samples": [2.0, 2.1, 1.9, 2.2, 2.0],
+        "benchmark_p_value": 0.001, "improvement_pct": 90.0,
+    }
+    base.update(overrides)
+    return IndexCandidate.model_validate(base)
+
+
+_SCHEMA_DIFF = """diff --git a/V3__idx_invoice.sql b/V3__idx_invoice.sql
+new file mode 100644
+--- /dev/null
++++ b/V3__idx_invoice.sql
+@@ -0,0 +1,2 @@
++-- Evidence: rows examined 1,500,000 -> 3
++CREATE INDEX idx_invoice_customer_id_status ON invoice (customer_id, status);
+"""
+
+
+def _write_all_passing_schema_run(
+    run_dir: Path, *, base_commit: str, branch: str,
+    proof: IndexCandidate | None = None,
+) -> None:
+    """`_write_all_passing_run`'s own shape, for the schema-candidate path:
+    `schema_measurement.json` in place of `perf_report.json`, a candidate
+    carrying `schema_proof` in place of an ordinary one."""
+    proof = proof or _index_proof()
+
+    verdict = EquivalenceVerdict(
+        passed=True, compared=5, identical=5, diffs=[],
+        db_state_matched=True, external_calls_matched=True,
+        held_back_passed=True, oracle_hash="orc",
+    )
+    (run_dir / "verification.json").write_text(json.dumps({
+        "verdict": verdict.model_dump(mode="json"),
+        "diffs_total": 0, "oracle_hash": "orc", "corpus_hash": "corp",
+        "held_back_requests": [],
+    }))
+
+    (run_dir / "schema_measurement.json").write_text(json.dumps({
+        "schema_proof": proof.model_dump(mode="json"),
+        "migration_file": str(run_dir.parent / "green" / "V3__idx_invoice.sql"),
+        "migration_confirmed": True,
+        "migration_index_name": "idx_invoice_customer_id_status",
+    }))
+
+    patch = Patch(
+        plan_id="c1", branch=branch, diff=_SCHEMA_DIFF,
+        files_changed=["V3__idx_invoice.sql"], lines_added=2, lines_removed=0,
+        build_iterations=1, tests_passed=1, tests_before=1,
+    )
+    (run_dir / "patch.json").write_text(json.dumps({
+        "outcome": "PATCHED", "patch": patch.model_dump(mode="json"),
+        "targets_hypothesis": "h1",
+        "worktree": {"base_commit": base_commit},
+        "emitted": {"summary": "s", "mechanism_changed": "rows examined",
+                   "files_touched": ["V3__idx_invoice.sql"],
+                   "expected_effect": "e", "risks": []},
+    }))
+
+    candidate = CandidateFix(
+        id="c1", targets_hypothesis="h1", approach="add_index",
+        description="index invoice on (customer_id, status)",
+        mechanism="rows_examined", mechanism_changed="rows examined",
+        predicted_effect="rows examined per request drop",
+        files_to_touch=["V3__idx_invoice.sql"], what_could_break=[],
+        preserves_response_bytes=True, risk_tier=RiskTier.LOW,
+        expected_value_ms=100.0, audit_digest="d-missing-index",
+        schema_proof=proof,
+    )
+    plan = Plan(
+        endpoint="GET /x", measured_total_ms=1000.0, ranked=[],
+        considered=["h1"], candidates=[candidate], selected_id="c1",
+        selection_reason="r", base_commit=base_commit,
+    )
+    (run_dir / "plan.json").write_text(
+        json.dumps(plan.model_dump(mode="json")))
+
+    (run_dir / "hypotheses.json").write_text(json.dumps({
+        "measured_total_ms": 1000.0, "ranked_ids": ["h1"],
+        "hypotheses": [{
+            "id": "h1", "claim": "a full scan examines 1.5M rows",
+            "mechanism": "m", "layer": "database_query",
+            "evidence": [], "attributed_ms": 500.0, "prediction": "p",
+            "confidence": 0.8,
+        }],
+    }))
+    (run_dir / "baseline.json").write_text(json.dumps({
+        "corpus": {"hash": "x", "requests": [{"id": "r1", "path": "GET /x"}]},
+        "benchmark": {"latency": {"p50_ms": 500.0}},
+    }))
+    (run_dir / "endpoint_model.json").write_text(json.dumps({"uncertainties": []}))
+
+
+def test_run_gate_dispatches_to_the_schema_path(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_all_passing_schema_run(run_dir, base_commit="abc123", branch="b")
+
+    gated = run_gate(run_dir)
+
+    assert gated["schema_path"] is True
+    assert gated["decision"].passed is True
+    assert gated["terminal"] == TerminalState.READY_TO_SHIP
+    assert "proof" in gated and "perf" not in gated
+
+
+def test_schema_path_dry_run_ship_renders_ready_to_ship(tmp_path: Path, repo: Path) -> None:
+    base = _base_commit(repo)
+    branch = "senapathy/fixture"
+    (repo / "V3__idx_invoice.sql").write_text(
+        "-- Evidence: rows examined 1,500,000 -> 3\n"
+        "CREATE INDEX idx_invoice_customer_id_status ON invoice "
+        "(customer_id, status);\n")
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_all_passing_schema_run(run_dir, base_commit=base, branch=branch)
+
+    result = run_ship(
+        run_dir, green_path=repo, client=_NoNetworkClient(), dry_run=True)
+
+    assert result["decision"].passed is True
+    assert result["terminal"] == TerminalState.READY_TO_SHIP
+    assert result["terminal"] != TerminalState.BOTTLENECK_NOT_FIXABLE
+
+    report_text = (run_dir / "report.md").read_text()
+    assert "READY_TO_SHIP" in report_text
+    assert "SCHEMA-CANDIDATE report" in report_text
+    assert "STATEMENT-level" in report_text
+    # The endpoint-level template's own slots must never appear: there is
+    # no perf_report.json behind them for this path.
+    assert "{blue_p50}" not in report_text
+    assert "Before and after" not in report_text  # the endpoint-only section
+    assert "1,500,000" in report_text and "3" in report_text
+    assert "ref" in report_text and "ALL" in report_text
+
+
+def test_schema_path_report_states_no_endpoint_claim_explicitly(
+    tmp_path: Path, repo: Path,
+) -> None:
+    base = _base_commit(repo)
+    branch = "senapathy/fixture"
+    (repo / "V3__idx_invoice.sql").write_text("CREATE INDEX x ON invoice (a);\n")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_all_passing_schema_run(run_dir, base_commit=base, branch=branch)
+
+    run_ship(run_dir, green_path=repo, client=_NoNetworkClient(), dry_run=True)
+    report_text = (run_dir / "report.md").read_text()
+    assert "no such figure is asserted" in report_text
+
+
+def test_schema_path_reports_when_the_migration_is_not_confirmed(
+    tmp_path: Path, repo: Path,
+) -> None:
+    base = _base_commit(repo)
+    branch = "senapathy/fixture"
+    (repo / "V3__idx_invoice.sql").write_text("CREATE INDEX x ON invoice (a);\n")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _write_all_passing_schema_run(run_dir, base_commit=base, branch=branch)
+    measurement = json.loads((run_dir / "schema_measurement.json").read_text())
+    measurement["migration_confirmed"] = False
+    measurement["migration_file"] = None
+    (run_dir / "schema_measurement.json").write_text(json.dumps(measurement))
+
+    run_ship(run_dir, green_path=repo, client=_NoNetworkClient(), dry_run=True)
+    report_text = (run_dir / "report.md").read_text()
+    assert "NOT CONFIRMED" in report_text
+
+
+def test_schema_path_fails_the_gate_when_the_index_is_redundant(
+    tmp_path: Path, repo: Path,
+) -> None:
+    base = _base_commit(repo)
+    branch = "senapathy/fixture"
+    (repo / "V3__idx_invoice.sql").write_text("CREATE INDEX x ON invoice (a);\n")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    redundant = _index_proof(already_covered_by="idx_existing")
+    _write_all_passing_schema_run(
+        run_dir, base_commit=base, branch=branch, proof=redundant)
+
+    result = run_ship(
+        run_dir, green_path=repo, client=_NoNetworkClient(), dry_run=True)
+
+    assert result["decision"].passed is False
+    assert result["terminal"] == TerminalState.BOTTLENECK_NOT_FIXABLE
+    assert result["document"]["pr"] is None

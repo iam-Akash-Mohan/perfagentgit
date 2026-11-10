@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ..agent import LoopBudget, LoopStatus, run_agent
+from ..audit.run import load_sql_audit
 from ..contracts import (EndpointModel, Hypothesis, HypothesisSet, Plan,
                          RankedHypothesis, SqlDigestStat, TableInfo)
 from ..errors import ContractViolation
@@ -62,6 +63,7 @@ def build_registry(
     prompt_hash: str | None = None,
     on_tool_error: Any = None,
     baseline_digests: list[SqlDigestStat] | None = None,
+    sql_audit: Any = None,
 ) -> ToolRegistry:
     """The tools this phase offers: the read surface, plus one terminal call.
 
@@ -82,7 +84,8 @@ def build_registry(
                            measured_total_ms=measured_total_ms,
                            measured_tables=measured_tables,
                            prompt_hash=prompt_hash, mysql=mysql,
-                           baseline_digests=baseline_digests),
+                           baseline_digests=baseline_digests,
+                           sql_audit=sql_audit),
     ]
     rank = {name: i for i, name in enumerate(PROMPT_ORDER)}
     specs.sort(key=lambda spec: rank.get(spec.name, len(rank)))
@@ -134,6 +137,7 @@ def plan(
                considered=considered)
 
     baseline_digests = _load_baseline_digests(run_dir)
+    sql_audit = load_sql_audit(run_dir / "sql_audit.json")
 
     system = load_prompt(
         "plan.system", directory=prompts_directory, trace=trace, phase=PHASE,
@@ -145,7 +149,8 @@ def plan(
         measured_total_ms=f"{hypotheses.measured_total_ms:.1f}",
         brief=render_brief(ranked=ranked, hypotheses=by_id,
                            considered=considered, model=model,
-                           baseline_digests=baseline_digests),
+                           baseline_digests=baseline_digests,
+                           sql_audit=sql_audit),
     )
     prompt_hash = content_hash({"system": system.hash, "user": user.hash})
 
@@ -161,6 +166,7 @@ def plan(
         on_tool_error=lambda note: trace.emit(EventType.NOTE, phase=PHASE,
                                               note=note),
         baseline_digests=baseline_digests,
+        sql_audit=sql_audit,
     )
 
     outcome = run_agent(

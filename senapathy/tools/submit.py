@@ -69,9 +69,28 @@ DATA_ACCESS_SCHEMA: dict[str, Any] = {
                            "the code, say so in uncertainties instead of "
                            "guessing.",
         },
+        "returns": {
+            "type": "string",
+            "enum": ["entities", "projection", "scalar"],
+            "description": "What this access's OWN query returns, not what "
+                           "kind of query it is: 'entities' if it produces a "
+                           "managed JPA/Hibernate entity (e.g. 'select e "
+                           "from Entity e', a derived query returning the "
+                           "entity type, a lazy collection/association) — "
+                           "hydration happens. 'projection' if it returns a "
+                           "constructor expression or DTO (e.g. 'select new "
+                           "some.package.SomeDto(...)', a native query "
+                           "mapped straight to a record/interface projection) — "
+                           "no entity is ever materialised. 'scalar' if it "
+                           "returns a count, sum, or other aggregate — "
+                           "nothing to hydrate at all. The query SHAPE "
+                           "decides this, not the table or the SQL keyword: "
+                           "two jpql_query accesses on the same table can "
+                           "have different answers here.",
+        },
         "note": {"type": "string"},
     },
-    "required": ["trigger", "kind", "file", "line", "executes_per_row"],
+    "required": ["trigger", "kind", "file", "line", "executes_per_row", "returns"],
 }
 
 ENTITY_SCHEMA: dict[str, Any] = {

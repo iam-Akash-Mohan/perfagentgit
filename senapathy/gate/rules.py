@@ -16,8 +16,8 @@ import re
 from typing import Any
 
 from ..contracts import (CandidatePlan, EquivalenceVerdict, GateDecision,
-                         GateName, GateResult, Patch, PerfReport,
-                         TerminalState)
+                         GateName, GateResult, IndexCandidate, Patch,
+                         PerfReport, TerminalState)
 
 # ─────────────────────────────  the thresholds  ──────────────────────────
 
@@ -35,6 +35,45 @@ MAX_CHANGED_LINES = 200
 MECHANISM_MOVE_PCT = 5.0
 
 TEST_TREE = "src/test"
+
+# ─────────────────────  schema-candidate gate path  ───────────────────────
+#
+# An add_index candidate's claim is STATEMENT-level, never endpoint-level —
+# see docs/schema-changes.md. These thresholds and EVALUATE_SCHEMA_GATES
+# are the alternative to IMPROVEMENT_THRESHOLD/STATISTICAL_SIGNIFICANCE for
+# exactly that one shape of candidate; BEHAVIOUR_PRESERVED and
+# NO_FORBIDDEN_CHANGE are reused unchanged below, because both are already
+# schema-agnostic facts.
+
+# EXPLAIN's own access-type ranking, worst to best (MySQL's own ordering:
+# https://dev.mysql.com/doc/refman/8.0/en/explain-output.html#jointype_all
+# names ALL as the worst and const/system as the best). Anything not in
+# this table ranks as unknown (-1) — an access type this harness has never
+# seen is not one it can certify as an improvement over.
+_ACCESS_TYPE_RANK: dict[str, int] = {
+    "all": 0, "index": 1, "index_merge": 2,
+    "range": 3, "index_subquery": 3,
+    "ref_or_null": 4, "fulltext": 4, "ref": 4, "unique_subquery": 4,
+    "eq_ref": 5, "const": 6, "system": 6,
+}
+
+# Rows examined must fall by at least this much — a looser bar than
+# MECHANISM_MOVE_PCT's 5%, because a MISSING_INDEX finding only reaches
+# this gate at all when classify.py's own OPTIMAL_RATIO (3x) was already
+# cleared, so the floor here only needs to rule out a technically-measured
+# but practically-irrelevant index, not detect a marginal one.
+SCANNING_REDUCTION_PCT = 50.0
+
+# Wilcoxon signed-rank over the statement's own interleaved benchmark —
+# the SAME paired-significance discipline STATISTICAL_SIGNIFICANCE applies
+# at the endpoint level, applied here at the statement level instead. This
+# bar is only reachable at all if audit/candidates.py's BENCHMARK_ROUNDS is
+# large enough: the exact two-sided Wilcoxon p-value over n paired,
+# non-tied samples has a FLOOR of 2 * 0.5**n regardless of effect size, and
+# n=5 (this project's own original choice) floors at 0.0625 — comfortably
+# ABOVE this bar even when every single round improved. Live-confirmed on
+# mini-spring's IDX-01 scenario. BENCHMARK_ROUNDS=8 floors at ~0.0078.
+MAX_INDEX_P_VALUE = 0.05
 
 
 # The measurable quantities PerfReport actually carries before/after values
@@ -405,6 +444,178 @@ def _no_forbidden_change(patch: Patch) -> GateResult:
                "No schema DDL, no mapping change, no altered response record, "
                "no test file touched.",
     )
+
+
+# ─────────────────────  the schema-candidate gates  ───────────────────────
+
+
+def _plan_improved(proof: IndexCandidate) -> GateResult:
+    """Did EXPLAIN's own access type rank better with the candidate index?
+
+    Read off `access_type_before`/`access_type_after`, which `audit/
+    candidates.py` copies straight out of two real EXPLAIN calls — never
+    parsed from `plan_before`/`plan_after`'s prose, so a rendering change
+    to that text can never silently break this gate.
+    """
+    before_rank = _ACCESS_TYPE_RANK.get(proof.access_type_before.lower(), -1)
+    after_rank = _ACCESS_TYPE_RANK.get(proof.access_type_after.lower(), -1)
+    passed = after_rank > before_rank
+    return GateResult(
+        name=GateName.PLAN_IMPROVED, passed=passed,
+        threshold="EXPLAIN's own access type must rank strictly better "
+                  "with the candidate index (ALL < index < range < ref < "
+                  "eq_ref < const)",
+        actual=f"{proof.table}: {proof.access_type_before or 'unknown'!r} -> "
+               f"{proof.access_type_after or 'unknown'!r}",
+        detail=(
+            f"The access path changed from a scan to a seek: {proof.plan_before} "
+            f"-> {proof.plan_after}."
+            if passed else
+            f"EXPLAIN's own access type did not improve: {proof.plan_before} "
+            f"-> {proof.plan_after}. An index that does not change the plan "
+            "is not proven to help, whatever the row counts say."
+        ),
+    )
+
+
+def _scanning_reduced(proof: IndexCandidate) -> GateResult:
+    """Did rows examined fall by a material amount, on the real statement?"""
+    delta_pct = _pct_change(proof.rows_examined_before, proof.rows_examined_after)
+    passed = delta_pct <= -SCANNING_REDUCTION_PCT
+    return GateResult(
+        name=GateName.SCANNING_REDUCED, passed=passed,
+        threshold=f"rows examined must fall by at least "
+                  f"{SCANNING_REDUCTION_PCT:.0f}%",
+        actual=f"{proof.rows_examined_before:,} -> {proof.rows_examined_after:,} "
+               f"rows examined ({delta_pct:+.1f}%)",
+        detail=(
+            f"The candidate index cut rows examined by "
+            f"{abs(delta_pct):.1f}%, measured by rebuilding it and "
+            "re-running EXPLAIN ANALYZE on the real statement."
+            if passed else
+            f"Rows examined moved only {delta_pct:+.1f}%, short of the "
+            f"{SCANNING_REDUCTION_PCT:.0f}% floor — not a material "
+            "reduction, whatever the access type says."
+        ),
+    )
+
+
+def _statement_faster(proof: IndexCandidate) -> GateResult:
+    """Did the statement's own INTERLEAVED, real-execution benchmark show
+    a significant improvement? Distinct from PLAN_IMPROVED/SCANNING_
+    REDUCED, which both come from EXPLAIN's estimate-free but still
+    synthetic ANALYZE run — this is the one number here that is an actual
+    wall-clock measurement, just of the statement instead of the endpoint.
+    """
+    if not proof.without_index_ms_samples or not proof.with_index_ms_samples:
+        return GateResult(
+            name=GateName.STATEMENT_FASTER, passed=False,
+            threshold=f"Wilcoxon signed-rank p < {MAX_INDEX_P_VALUE} over an "
+                      "interleaved with/without benchmark, improvement_pct set",
+            actual="no interleaved benchmark was recorded",
+            detail="No with/without samples were recorded for this "
+                   "candidate. Unknown is not a pass.",
+        )
+    significant = (proof.benchmark_p_value is not None
+                  and proof.benchmark_p_value < MAX_INDEX_P_VALUE)
+    improved = proof.improvement_pct is not None
+    passed = significant and improved
+    p_text = (f"{proof.benchmark_p_value:.6f}"
+             if proof.benchmark_p_value is not None else "not computed")
+    return GateResult(
+        name=GateName.STATEMENT_FASTER, passed=passed,
+        threshold=f"Wilcoxon signed-rank p < {MAX_INDEX_P_VALUE} over an "
+                  "interleaved with/without benchmark, improvement_pct set",
+        actual=f"p = {p_text}, improvement "
+               f"{f'{proof.improvement_pct:.1f}%' if improved else 'none'} "
+               f"over {proof.benchmark_rounds} interleaved round(s)",
+        detail=(
+            f"The candidate index made the statement itself measurably "
+            f"faster, {proof.improvement_pct:.1f}% at the median, across "
+            f"an interleaved (with, without, with, without, ...) benchmark "
+            "that never credits one side with the other's buffer-pool "
+            "warming."
+            if passed else
+            "The interleaved benchmark did not show a significant, "
+            "positive improvement — EXPLAIN's plan and row counts may "
+            "still be right, but the direct execution time did not "
+            "confirm it."
+        ),
+    )
+
+
+def _index_not_redundant(proof: IndexCandidate) -> GateResult:
+    """Does an existing index already cover these columns as a prefix?
+
+    `index_benefit_measured` checks this BEFORE ever creating the
+    candidate (`covering_index`), and `already_covered_by` is its answer —
+    this gate reads that same field rather than re-deriving it, so the
+    gate can never disagree with the measurement that produced it.
+    """
+    passed = proof.already_covered_by is None
+    return GateResult(
+        name=GateName.INDEX_NOT_REDUNDANT, passed=passed,
+        threshold="no existing index may already cover these columns as a "
+                  "leading prefix",
+        actual=(f"covered by {proof.already_covered_by}" if not passed
+               else f"no existing index covers "
+                    f"{proof.table}({', '.join(proof.columns)})"),
+        detail=(
+            f"{proof.table}({', '.join(proof.columns)}) is already covered "
+            f"by {proof.already_covered_by}. Adding it again costs write "
+            "throughput and buys nothing — this is not actually a missing "
+            "index."
+            if not passed else
+            "Confirmed against the live schema before the candidate index "
+            "was ever built: nothing already serves this column set."
+        ),
+    )
+
+
+def evaluate_schema_gates(
+    verdict: EquivalenceVerdict, proof: IndexCandidate, patch: Patch,
+) -> GateDecision:
+    """The schema-candidate gate path: a STATEMENT-level claim, never an
+    endpoint-level one. BEHAVIOUR_PRESERVED and NO_FORBIDDEN_CHANGE are the
+    exact same checks the endpoint path uses — both are schema-agnostic
+    facts — in place of IMPROVEMENT_THRESHOLD/STATISTICAL_SIGNIFICANCE/
+    DIFF_MINIMALITY/MECHANISM_MATCH, which all assume an endpoint-level
+    wall-clock measurement this candidate never makes.
+
+    Every gate runs even after one has failed, same discipline as
+    `evaluate_gates` — a report that stops at the first failure hides the
+    other four.
+    """
+    results = [
+        _behaviour_preserved(verdict),
+        _plan_improved(proof),
+        _scanning_reduced(proof),
+        _statement_faster(proof),
+        _no_forbidden_change(patch),
+        _index_not_redundant(proof),
+    ]
+    passed = all(result.passed for result in results)
+    return GateDecision(results=results, passed=passed)
+
+
+def schema_terminal_state_for(
+    decision: GateDecision, *, shipped: bool = False
+) -> TerminalState:
+    """The honest terminal state for a schema-candidate gate decision —
+    mirrors `terminal_state_for`'s own ordering and reasoning, over the
+    schema-path gate names instead."""
+    failed = {r.name for r in decision.results if not r.passed}
+
+    if GateName.BEHAVIOUR_PRESERVED in failed:
+        return TerminalState.BEHAVIOUR_NOT_PRESERVED
+    if failed & {GateName.PLAN_IMPROVED, GateName.SCANNING_REDUCED,
+                GateName.STATEMENT_FASTER}:
+        return TerminalState.NO_SIGNIFICANT_IMPROVEMENT
+    if failed:
+        # NO_FORBIDDEN_CHANGE or INDEX_NOT_REDUNDANT: a real finding, but
+        # this specific index is not shippable.
+        return TerminalState.BOTTLENECK_NOT_FIXABLE
+    return TerminalState.PR_OPENED if shipped else TerminalState.READY_TO_SHIP
 
 
 # ──────────────────────────────  the decision  ───────────────────────────

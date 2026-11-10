@@ -280,7 +280,7 @@ source .venv/bin/activate
 
 ---
 
-## Headline finding of the Scenario 7/8 sweep: the diagnose phase invents bottlenecks when there is no real one to find
+## Headline finding of the Scenario 7/8 sweep: the diagnose phase invents bottlenecks when there is no real one to find — RESOLVED
 
 This is the finding the two refusal scenarios exist to surface, and it is confirmed,
 not suspected. Every live diagnose sample across Scenarios 7 (`GET /api/customers/bios`,
@@ -372,6 +372,53 @@ no-op-rewrite check, the baseline-citation check) still matter and still work �
 catch the *consequence* (an unverifiable, vacuous, or evidence-free candidate) after
 diagnose has already invented a bottleneck, which is a real, separate line of defence
 regardless of whether the hallucination itself is ever fixed at the source.
+
+**RESOLVED.** The gap identified above — `DataAccess` records that a query runs but not
+what it returns — is fixed. `DataAccess.returns: Literal["entities", "projection",
+"scalar"] | None` (`contracts/comprehension.py`), required in the comprehension agent's
+own tool schema (`tools/submit.py::DATA_ACCESS_SCHEMA`, populated with a citation like
+every other field) but optional at the pydantic layer (`None` for an access recorded
+before the field existed, read as unknown, never as a negative). Two places read it:
+
+1. **Stated plainly, not just enforced.** `diagnose/evidence.py::_data_access_lines` now
+   prints `returns <value>` on every data access line in the evidence diagnosis itself
+   reads, before it forms a single hypothesis.
+2. **Enforced as a reconciliation check.** `diagnose/validate.py`, new check 2d, the same
+   shape as the existing `sql_share_of_latency_pct` check (2c): when every data access
+   has a KNOWN `returns` and none of them is `entities`, an `orm_hydration` hypothesis is
+   refused by name, quoting both facts — the hypothesis's own claim text and each access's
+   trigger plus its recorded `returns`. An access with no recorded `returns` at all makes
+   the check a no-op for that endpoint (unknown, not a negative) — it never fires on a
+   partially-annotated or pre-existing artifact.
+
+**Live confirmation, not just unit tests.** Ran `senapathy understand` fresh against
+`SER-01`'s endpoint (`GET /api/customers/bios`), `UNB-01`'s (`GET /api/invoices/{id}/
+payment-history`), `STM-01`'s (`GET /api/customers/{id}/statement`), and `LOOP-01`'s
+(`GET /api/invoices/overdue-worklist`) — four real comprehension passes, not hand-built
+fixtures. All three single-query projection endpoints were correctly classified
+`returns: projection`; `STM-01`'s four separate repository calls were all correctly
+`projection`/`scalar`; `LOOP-01` (`feeScheduleRepo.findByActiveTrue()`, a genuine
+Spring Data derived query returning the managed `FeeSchedule` entity, no projection
+involved) was correctly classified `returns: entities` — confirming the comprehension
+agent gets the THREE-way distinction right on a real mix of shapes, not just the
+projection case this bug was found on.
+
+Then re-ran diagnose live against `SER-01`'s and `UNB-01`'s endpoints with these fresh
+facts: **three independent live samples across the two endpoints, zero proposed
+`orm_hydration`.** The fact alone, stated plainly in the evidence, was enough to stop
+the model from reaching for it at all — `emit_hypotheses` was accepted on the first
+submission every time, no rejection needed. The reconciliation check stands ready as a
+backstop for a sample that tries anyway regardless (confirmed directly: `tests/
+test_diagnose.py`'s `test_orm_hydration_is_refused_when_every_access_is_a_projection`
+and its sibling for the entity-returning/unknown/no-data-access cases).
+
+`SER-01` and `UNB-01` re-frozen against these fresh comprehension facts (full
+diagnose+plan live conversations, not hand-edited); `dominant_layer_any_of` narrowed back
+to the genuine layers and `orm_hydration` moved from tolerated context to `forbidden_
+layers` in both `expected.json` — a future sample that reintroduces it should fail
+loudly now, not be quietly accepted as a known quirk. Full suite: 936 passed. Tier 1
+after re-freezing: unchanged, `9/9 passed, 1 quarantined` (`PROJ-01`, its own unrelated,
+already-logged reason).
 
 ---
 

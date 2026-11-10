@@ -25,7 +25,8 @@ from .contracts import (ArtifactRef, CandidatePlan, EquivalenceVerdict,
                         TerminalState)
 from .errors import ContractViolation, ToolError
 from .gate.rules import (confidence_band_for, evaluate_gates,
-                         render_gate_table, terminal_state_for)
+                         render_gate_table, schema_terminal_state_for,
+                         terminal_state_for)
 from .report.narrative import write_narrative
 from .report.render import Backed, EvidenceLedger, render_report
 
@@ -148,6 +149,7 @@ def selected_plan(run_dir: Path) -> CandidatePlan:
         risk_tier=candidate.risk_tier,
         what_could_break=list(candidate.what_could_break),
         requires_flag=candidate.requires_flag,
+        schema_proof=candidate.schema_proof,
     )
 
 
@@ -161,15 +163,26 @@ def top_hypothesis(hypotheses_document: dict[str, Any]) -> Hypothesis:
 
 
 def run_gate(run_dir: Path) -> dict[str, Any]:
-    """Load the artifacts, evaluate the six gates, pick the terminal state."""
+    """Load the artifacts, evaluate the gates, pick the terminal state.
+
+    Dispatches on `plan.schema_proof`: a schema candidate's claim is
+    STATEMENT-level (an additive index, proven by `index_benefit` at
+    AUDIT/PLAN time), never an endpoint-level wall-clock one, so it reads
+    `schema_measurement.json` and runs `evaluate_schema_gates` instead of
+    `perf_report.json` and `evaluate_gates` — see `run_gate_schema` and
+    docs/schema-changes.md.
+    """
     directory = Path(run_dir)
+    plan = selected_plan(directory)
+    if plan.schema_proof is not None:
+        return run_gate_schema(directory, plan)
+
     evidence = load_evidence(directory)
     payloads = evidence["payloads"]
 
     verdict = EquivalenceVerdict.model_validate(payloads["verification"]["verdict"])
     perf = PerfReport.model_validate(payloads["perf_report"]["report"])
     patch = Patch.model_validate(payloads["patch"]["patch"])
-    plan = selected_plan(directory)
 
     decision = evaluate_gates(
         verdict, perf, patch, plan,
@@ -185,6 +198,73 @@ def run_gate(run_dir: Path) -> dict[str, Any]:
         "plan": plan,
         "decision": decision,
         "terminal": terminal,
+        "schema_path": False,
+    }
+
+
+def load_evidence_schema(run_dir: Path) -> dict[str, Any]:
+    """`load_evidence`'s own artifact-plus-ref discipline, for the schema
+    path: `schema_measurement.json` in place of `perf_report.json`, every
+    other artifact unchanged."""
+    directory = Path(run_dir)
+    payloads = {
+        "verification": _read(directory / "verification.json", "verification"),
+        "schema_measurement": _read(directory / "schema_measurement.json",
+                                    "schema measurement"),
+        "patch": _read(directory / "patch.json", "patch"),
+        "hypotheses": _read(directory / "hypotheses.json", "diagnosis"),
+        "baseline": _read(directory / "baseline.json", "baseline"),
+        "plan": _read(directory / "plan.json", "plan"),
+        "endpoint_model": _read(directory / "endpoint_model.json",
+                                "comprehension model"),
+    }
+
+    store = ArtifactStore(directory)
+    refs: dict[str, ArtifactRef] = {}
+    for kind, payload in payloads.items():
+        target = store.artifacts_dir / f"{kind}.json"
+        target.write_text(
+            json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        from .ids import content_hash
+
+        refs[kind] = ArtifactRef(
+            kind=kind, hash=content_hash(payload), path=str(target)
+        )
+
+    return {"payloads": payloads, "refs": refs, "run_dir": directory}
+
+
+def run_gate_schema(run_dir: Path, plan: CandidatePlan) -> dict[str, Any]:
+    """The schema-candidate path's own `run_gate`: `schema_measurement.json`
+    and `evaluate_schema_gates` in place of `perf_report.json` and
+    `evaluate_gates`. `plan` is already loaded by the caller (`run_gate`
+    needed it to decide which path this is)."""
+    from .contracts.audit import IndexCandidate
+    from .gate.rules import evaluate_schema_gates, schema_terminal_state_for
+
+    directory = Path(run_dir)
+    evidence = load_evidence_schema(directory)
+    payloads = evidence["payloads"]
+
+    verdict = EquivalenceVerdict.model_validate(payloads["verification"]["verdict"])
+    proof = IndexCandidate.model_validate(
+        payloads["schema_measurement"]["schema_proof"])
+    patch = Patch.model_validate(payloads["patch"]["patch"])
+
+    decision = evaluate_schema_gates(verdict, proof, patch)
+    terminal = schema_terminal_state_for(decision, shipped=False)
+
+    return {
+        "evidence": evidence,
+        "verdict": verdict,
+        "proof": proof,
+        "patch": patch,
+        "plan": plan,
+        "decision": decision,
+        "terminal": terminal,
+        "schema_path": True,
     }
 
 
@@ -592,6 +672,208 @@ def _index_evidence(gated: dict[str, Any], selected: dict[str, Any]) -> str:
             f"the index, re-running `EXPLAIN ANALYZE`, and dropping it again.")
 
 
+def build_schema_ledger(
+    gated: dict[str, Any], terminal: TerminalState
+) -> EvidenceLedger:
+    """`build_ledger`'s own discipline, for the schema-candidate path: every
+    quantity is STATEMENT-level (`schema_measurement.json`'s own proof),
+    never an endpoint-level one — there is no `perf_report.json` to read
+    here at all, so no endpoint-level slot is ever recorded, and the
+    template that reads this ledger never names one either.
+    """
+    from .contracts.audit import IndexCandidate
+
+    refs = gated["evidence"]["refs"]
+    payloads = gated["evidence"]["payloads"]
+    proof: IndexCandidate = gated["proof"]
+
+    ledger = EvidenceLedger()
+
+    ledger.record_from(refs["verification"], payloads["verification"], {
+        "oracle_hash": "oracle_hash",
+        "corpus_hash": "corpus_hash",
+        "compared": "verdict.compared",
+        "identical": "verdict.identical",
+    })
+    ledger.record(
+        "diff_count", payloads["verification"].get("diffs_total", 0),
+        refs["verification"],
+    )
+    held_back_count = len(payloads["verification"]["held_back_requests"])
+    ledger.record("held_back_count", held_back_count, refs["verification"])
+    excluded = payloads["verification"].get("excluded_tables") or []
+    ledger.record(
+        "excluded_tables",
+        ", ".join(f"`{t}`" for t in excluded) if excluded else "none",
+        refs["verification"],
+    )
+
+    ledger.record_from(refs["patch"], payloads["patch"], {
+        "branch": "patch.branch", "lines_added": "patch.lines_added",
+        "lines_removed": "patch.lines_removed",
+        "base_commit": "worktree.base_commit",
+    })
+    file_list = "\n".join(f"- `{f}`" for f in gated["patch"].files_changed)
+    ledger.record("file_list", file_list, refs["patch"])
+    ledger.record("test_suite_check", _test_suite_check(payloads["patch"]),
+                  refs["patch"])
+
+    hypothesis = top_hypothesis(payloads["hypotheses"])
+    ledger.record("bottleneck_claim", hypothesis.claim, refs["hypotheses"])
+    ledger.record_from(refs["baseline"], payloads["baseline"],
+                       {"endpoint": "corpus.requests.0.path"})
+
+    gate_rows = "\n".join(
+        f"| `{r.name.value}` | {'PASS' if r.passed else 'FAIL'} | "
+        f"{r.threshold} | {r.actual} |"
+        for r in gated["decision"].results
+    )
+    decision_ref = _gate_decision_ref(gated)
+    ledger.record("gate_rows", gate_rows, decision_ref)
+    ledger.record(
+        "gate_summary",
+        "all gates passed" if gated["decision"].passed
+        else f"{sum(1 for r in gated['decision'].results if not r.passed)} of "
+             f"{len(gated['decision'].results)} gates failed",
+        decision_ref,
+    )
+    ledger.record("terminal_state", terminal.value, decision_ref)
+
+    plan_ref = refs["plan"]
+    plan_payload = payloads["plan"]
+    risk_tier_int = int(gated["plan"].risk_tier)
+    ledger.record("risk_tier_check", _risk_tier_check(risk_tier_int), plan_ref)
+    ledger.record("fixability_check", _fixability_check(plan_payload, hypothesis.id),
+                  plan_ref)
+
+    model_ref = refs["endpoint_model"]
+    uncertainties = payloads["endpoint_model"].get("uncertainties") or []
+    ledger.record("pre_existing_risks", _pre_existing_rows(uncertainties), model_ref)
+
+    # ── the statement-level proof itself ─────────────────────────────────
+    measurement_ref = refs["schema_measurement"]
+    ledger.record("index_table", proof.table, measurement_ref)
+    ledger.record("index_columns", ", ".join(proof.columns), measurement_ref)
+    ledger.record("column_rationale", proof.column_rationale or "(none recorded)",
+                  measurement_ref)
+    ledger.record("plan_before", proof.plan_before or "(not recorded)",
+                  measurement_ref)
+    ledger.record("plan_after", proof.plan_after or "(not recorded)",
+                  measurement_ref)
+    ledger.record("rows_examined_before", f"{proof.rows_examined_before:,}",
+                  measurement_ref)
+    ledger.record("rows_examined_after", f"{proof.rows_examined_after:,}",
+                  measurement_ref)
+    rows_delta = _pct_change_for_ledger(
+        proof.rows_examined_before, proof.rows_examined_after)
+    ledger.record("rows_examined_delta", rows_delta, measurement_ref)
+
+    ledger.record("benchmark_rounds", proof.benchmark_rounds, measurement_ref)
+    p = proof.benchmark_p_value
+    ledger.record("benchmark_p_value", f"{p:.6f}" if p is not None else "not computed",
+                  measurement_ref)
+    ledger.record(
+        "improvement_pct",
+        f"{proof.improvement_pct:.1f}%" if proof.improvement_pct is not None
+        else "none measured",
+        measurement_ref,
+    )
+
+    ledger.record(
+        "redundancy_check",
+        (f"already covered by `{proof.already_covered_by}` — this would NOT "
+         f"have been proposed as missing"
+         if proof.already_covered_by else
+         "confirmed against the live schema before the candidate index was "
+         "built: nothing already serves this column set"),
+        measurement_ref,
+    )
+    writes = proof.table_writes_since_reset
+    ledger.record(
+        "table_writes",
+        (f"{writes.get('insert', 0):,} insert, {writes.get('update', 0):,} "
+         f"update, {writes.get('delete', 0):,} delete, vs. "
+         f"{writes.get('fetch', 0):,} read — every insert/update on "
+         f"{proof.table} pays this index's maintenance cost"
+         if writes else "not recorded (performance_schema unreadable)"),
+        measurement_ref,
+    )
+    ledger.record(
+        "index_size",
+        (f"{proof.size_bytes:,} bytes" if proof.size_bytes is not None
+         else "not recorded (mysql.innodb_index_stats unreadable)"),
+        measurement_ref,
+    )
+
+    migration_file = payloads["schema_measurement"].get("migration_file")
+    migration_confirmed = payloads["schema_measurement"].get("migration_confirmed")
+    ledger.record(
+        "migration_evidence",
+        (f"Confirmed: `{migration_file}` creates "
+         f"`{proof.table}({', '.join(proof.columns)})` — the same index "
+         f"this report's proof measured, nothing more."
+         if migration_confirmed else
+         f"**NOT CONFIRMED** — no migration creating "
+         f"`{proof.table}({', '.join(proof.columns)})` was found in the "
+         f"green worktree's migration directory. The statement-level proof "
+         f"above does not correspond to a shipped schema change."),
+        refs["schema_measurement"],
+    )
+
+    return ledger
+
+
+def _pct_change_for_ledger(before: int, after: int) -> str:
+    if before == 0:
+        return "n/a"
+    pct = 100.0 * (after - before) / before
+    return f"{pct:+.1f}%"
+
+
+def write_schema_report(
+    gated: dict[str, Any], *, terminal: TerminalState, client: Any = None
+) -> tuple[str, Path, dict[str, Any]]:
+    """`write_report`'s own shape, for the schema-candidate path: the SAME
+    narrative call (it only ever explains the diagnosed cause, not an
+    endpoint number), a different ledger, and `render_schema_report`
+    instead of `render_report`."""
+    from .report.render import render_schema_report
+
+    ledger = build_schema_ledger(gated, terminal)
+
+    narrative, narrative_trace = write_narrative(
+        top_hypothesis(gated["evidence"]["payloads"]["hypotheses"]),
+        gated["plan"], client=client,
+    )
+    ledger.record(
+        "narrative", narrative, gated["evidence"]["refs"]["hypotheses"]
+    )
+
+    provenance_block = "\n".join([
+        "<details>",
+        "<summary>Provenance (every number, with its artifact and hash)</summary>",
+        "",
+        "Every number above is templated from a recorded artifact; the "
+        "renderer refuses a slot with no `ArtifactRef` behind it and "
+        "refuses a template containing a bare numeral.",
+        "",
+        *(f"- `{entry['claim']}` = {entry['value']} "
+          f"(`{entry['artifact']}`, hash `{entry['hash']}`)"
+          for entry in ledger.provenance()),
+        "",
+        "</details>",
+    ])
+    ledger.record(
+        "provenance_rows", provenance_block,
+        gated["evidence"]["refs"]["schema_measurement"],
+    )
+
+    body = render_schema_report(ledger)
+    out_path = Path(gated["evidence"]["run_dir"]) / "report.md"
+    out_path.write_text(body, encoding="utf-8")
+    return body, out_path, narrative_trace
+
+
 def write_report(
     gated: dict[str, Any], *, terminal: TerminalState, client: Any = None
 ) -> tuple[str, Path, dict[str, Any]]:
@@ -600,7 +882,13 @@ def write_report(
     `terminal` must be the state this run actually reached (the caller
     computes it, since only the caller knows dry-run vs. a real push) — it is
     not re-derived here, so the rendered body can never drift from it.
+
+    Dispatches to `write_schema_report` when `gated` came from
+    `run_gate_schema` — see `run_gate`.
     """
+    if gated.get("schema_path"):
+        return write_schema_report(gated, terminal=terminal, client=client)
+
     ledger, _ = build_ledger(gated, terminal)
 
     narrative, narrative_trace = write_narrative(
@@ -771,7 +1059,15 @@ def run_ship(
     # only matters when decision.passed (terminal_state_for ignores it
     # otherwise) — true exactly when this is not a dry run, since a passing,
     # non-dry-run decision is shipped by the open_pull_request call below.
-    terminal = terminal_state_for(decision, shipped=not dry_run)
+    # The schema path's own GateNames (PLAN_IMPROVED, SCANNING_REDUCED, ...)
+    # mean the ENDPOINT terminal_state_for would silently misclassify every
+    # failure as BOTTLENECK_NOT_FIXABLE — schema_terminal_state_for reads
+    # the right set.
+    terminal = (
+        schema_terminal_state_for(decision, shipped=not dry_run)
+        if gated.get("schema_path") else
+        terminal_state_for(decision, shipped=not dry_run)
+    )
 
     body, report_path, narrative_trace = write_report(
         gated, client=client, terminal=terminal

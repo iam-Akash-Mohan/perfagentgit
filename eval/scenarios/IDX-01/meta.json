@@ -1,0 +1,6 @@
+{
+  "scenario": "IDX-01",
+  "endpoint": "GET /api/payments/by-date",
+  "mini_spring_commit": "0de062f4cf568b2debdec8e86c1cf10b843ff407",
+  "mini_spring_tag": "eval/IDX-01"
+}

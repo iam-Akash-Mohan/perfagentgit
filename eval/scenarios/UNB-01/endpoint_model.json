@@ -27,19 +27,19 @@
       "method": "InvoicePaymentHistoryController.paymentHistory",
       "file": "src/main/java/com/ex/web/InvoicePaymentHistoryController.java",
       "line": 16,
-      "does": "handle GET request and delegate to service"
+      "does": "Handles GET request, extracts path variable and delegates to service"
     },
     {
       "method": "InvoicePaymentHistoryService.history",
       "file": "src/main/java/com/ex/service/InvoicePaymentHistoryService.java",
       "line": 23,
-      "does": "fetch all invoice header fields and its allocations in a single query, then compute running balance and build DTO"
+      "does": "Fetches invoice header and allocations, computes running balance, builds DTO"
     },
     {
       "method": "PaymentAllocationRepository.findInvoiceWithAllocations",
       "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
       "line": 36,
-      "does": "execute JPQL query that left‑joins Invoice, PaymentAllocation and CustomerPayment to retrieve invoice header and allocation rows"
+      "does": "Executes JPQL query returning projection rows of invoice + allocations"
     }
   ],
   "data_access": [
@@ -48,14 +48,15 @@
       "kind": "jpql_query",
       "file": "src/main/java/com/ex/repo/PaymentAllocationRepository.java",
       "line": 29,
-      "sql": "select i.amount, i.status, pa.id, p.paid_on, pa.allocated_amount, p.method from invoice i left join payment_allocation pa on pa.invoice_id = i.id left join customer_payment p on p.id = pa.payment_id where i.id = ? order by p.paid_on asc, p.id asc, pa.id asc",
+      "sql": "select new com.ex.dto.InvoiceAllocationRowDto(i.amount, i.status, pa.id, p.paidOn, pa.allocatedAmount, p.method) from Invoice i left join PaymentAllocation pa on pa.invoiceId = i.id left join CustomerPayment p on p.id = pa.paymentId where i.id = :invoiceId order by p.paidOn asc, p.id asc",
       "tables": [
         "invoice",
         "payment_allocation",
         "customer_payment"
       ],
       "executes_per_row": false,
-      "note": "select new com.ex.dto.InvoiceAllocationRowDto(i.amount, i.status, pa.id, p.paidOn, pa.allocatedAmount, p.method) from Invoice i left join PaymentAllocation pa on pa.invoiceId = i.id left join CustomerPayment p on p.id = pa.paymentId where i.id = :invoiceId order by p.paidOn asc, p.id asc, pa.id asc"
+      "returns": "projection",
+      "note": "select new com.ex.dto.InvoiceAllocationRowDto(i.amount, i.status, pa.id, p.paidOn, pa.allocatedAmount, p.method) from Invoice i left join PaymentAllocation pa on pa.invoiceId = i.id left join CustomerPayment p on p.id = pa.paymentId where i.id = :invoiceId order by p.paidOn asc, p.id asc"
     }
   ],
   "sql_sources": [
@@ -74,47 +75,7 @@
       }
     }
   ],
-  "entities": [
-    {
-      "name": "Invoice",
-      "table": "invoice",
-      "citation": {
-        "file": "src/main/java/com/ex/domain/Invoice.java",
-        "line": 7,
-        "symbol": "Invoice"
-      },
-      "relations": [
-        {
-          "field": "customer",
-          "type": "ManyToOne",
-          "fetch": "LAZY",
-          "target": "Customer",
-          "batch_size": null,
-          "fetch_mode": null
-        }
-      ]
-    },
-    {
-      "name": "PaymentAllocation",
-      "table": "payment_allocation",
-      "citation": {
-        "file": "src/main/java/com/ex/domain/PaymentAllocation.java",
-        "line": 11,
-        "symbol": "PaymentAllocation"
-      },
-      "relations": []
-    },
-    {
-      "name": "CustomerPayment",
-      "table": "customer_payment",
-      "citation": {
-        "file": "src/main/java/com/ex/domain/CustomerPayment.java",
-        "line": 10,
-        "symbol": "CustomerPayment"
-      },
-      "relations": []
-    }
-  ],
+  "entities": [],
   "transactions": [
     {
       "method": "InvoicePaymentHistoryService.history",
@@ -133,12 +94,10 @@
       "table": "invoice",
       "entity": "Invoice",
       "columns_read": [
+        "id",
         "amount",
         "status",
-        "id",
-        "allocated_amount",
-        "paid_on",
-        "method"
+        "customer_id"
       ],
       "all_columns": [
         "id bigint NOT NULL",
@@ -213,6 +172,8 @@
       "entity": "PaymentAllocation",
       "columns_read": [
         "id",
+        "invoice_id",
+        "payment_id",
         "allocated_amount"
       ],
       "all_columns": [
@@ -267,8 +228,10 @@
       "table": "customer_payment",
       "entity": "CustomerPayment",
       "columns_read": [
+        "id",
         "paid_on",
-        "method"
+        "method",
+        "customer_id"
       ],
       "all_columns": [
         "id bigint NOT NULL",
@@ -345,7 +308,7 @@
   ],
   "per_row_work": [
     {
-      "description": "computes running remaining balance and creates a PaymentHistoryLineDto for each allocation row",
+      "description": "Iterates over each allocation row, subtracts allocated amount from remaining balance, creates a PaymentHistoryLineDto and adds to list",
       "file": "src/main/java/com/ex/service/InvoicePaymentHistoryService.java",
       "line": 37,
       "kind": "object_creation",
@@ -384,7 +347,7 @@
         "citation": {
           "file": "src/main/java/com/ex/web/InvoicePaymentHistoryController.java",
           "line": 16,
-          "symbol": null
+          "symbol": "id"
         }
       }
     ]
@@ -397,9 +360,7 @@
   },
   "caching": [],
   "hidden_query_triggers": [],
-  "tests_covering": [
-    "src/test/java/com/ex/InvoicePaymentHistoryIT.java"
-  ],
+  "tests_covering": [],
   "uncertainties": [
     "AUTOMATED CHECK: id are required request parameters with no recorded default and no allowed_values. Corpus generation cannot invent a value for a required parameter and will refuse by name unless one of those is filled in — check whether the code actually constrains the value (an enum, a @Pattern) that was missed."
   ],

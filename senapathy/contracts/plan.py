@@ -25,6 +25,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from .audit import IndexCandidate
+
 
 class RiskTier(int, Enum):
     """How much behaviour risk an approach carries. Assigned by CODE.
@@ -212,6 +214,17 @@ class CandidateFix(BaseModel):
         default=None,
         description="The call count this candidate claims that baseline "
                     "digest runs today, copied from the same evidence.")
+    audit_digest: str | None = Field(
+        default=None,
+        description="For approach='add_index': the digest hash, from the "
+                    "SQL audit's own sql_audit.json, of the MISSING_INDEX "
+                    "statement this index fixes. Checked against that same "
+                    "evidence, not trusted — a match attaches the audit's "
+                    "own already-measured proof (schema_proof) and lets "
+                    "this candidate take the schema-candidate gate path "
+                    "instead of the endpoint-level one neither arm's "
+                    "shared schema can honestly run. Omit to fall back to "
+                    "the ordinary (currently unmeasurable) schema path.")
     what_could_break: list[str]
     preserves_response_bytes: bool  # the model's claim; verified by the oracle
 
@@ -235,7 +248,21 @@ class CandidateFix(BaseModel):
                     "report a false negative. The candidate is NOT deleted: "
                     "'we could not verify this here' is itself a finding, and "
                     "the argument for building per-arm schemas. A model never "
-                    "sets this field; only code does.")
+                    "sets this field; only code does. Never set when "
+                    "schema_proof is — the statement-level path proves what "
+                    "this field exists to say could not be proven.")
+    schema_proof: IndexCandidate | None = Field(
+        default=None,
+        description="Set at PLAN time when audit_digest matches a "
+                    "MISSING_INDEX statement in sql_audit.json: the audit's "
+                    "own already-measured proof (EXPLAIN plan before/after, "
+                    "rows examined, an interleaved statement-level "
+                    "benchmark, redundancy, write cost, size), copied onto "
+                    "this candidate rather than re-measured. Its presence IS "
+                    "the switch: every downstream phase (MEASURE, GATE, "
+                    "SHIP) takes the schema-candidate path when this is set, "
+                    "the ordinary endpoint-level path otherwise. Never set "
+                    "by the model.")
     scope_reasons: dict[str, str] = Field(
         default_factory=dict,
         description="Files CODE added to files_to_touch beyond what the "

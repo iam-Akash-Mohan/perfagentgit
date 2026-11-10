@@ -1,0 +1,222 @@
+{
+  "route": "GET /api/payments/by-date",
+  "entry": {
+    "file": "src/main/java/com/ex/web/PaymentsByDateController.java",
+    "line": 23,
+    "symbol": "PaymentsByDateController.byDate"
+  },
+  "path": [
+    {
+      "file": "src/main/java/com/ex/web/PaymentsByDateController.java",
+      "line": 23,
+      "symbol": "PaymentsByDateController.byDate"
+    },
+    {
+      "file": "src/main/java/com/ex/service/PaymentsByDateService.java",
+      "line": 22,
+      "symbol": "PaymentsByDateService.byDate"
+    },
+    {
+      "file": "src/main/java/com/ex/repo/PaymentRepository.java",
+      "line": 26,
+      "symbol": "PaymentRepository.findByPaidDate"
+    }
+  ],
+  "call_chain": [
+    {
+      "method": "PaymentsByDateController.byDate",
+      "file": "src/main/java/com/ex/web/PaymentsByDateController.java",
+      "line": 23,
+      "does": "delegates to PaymentsByDateService.byDate with date, page, size"
+    },
+    {
+      "method": "PaymentsByDateService.byDate",
+      "file": "src/main/java/com/ex/service/PaymentsByDateService.java",
+      "line": 22,
+      "does": "computes bounded page size and calls PaymentRepository.findByPaidDate"
+    },
+    {
+      "method": "PaymentRepository.findByPaidDate",
+      "file": "src/main/java/com/ex/repo/PaymentRepository.java",
+      "line": 26,
+      "does": "executes JPQL projection query selecting payments for the given date with pagination"
+    }
+  ],
+  "data_access": [
+    {
+      "trigger": "paymentRepo.findByPaidDate",
+      "kind": "jpql_query",
+      "file": "src/main/java/com/ex/repo/PaymentRepository.java",
+      "line": 26,
+      "sql": "select new com.ex.dto.PaymentByDateDto(p.id, p.invoiceId, p.amount, p.paidDate) from Payment p where p.paidDate = :date order by p.id",
+      "tables": [
+        "payment"
+      ],
+      "executes_per_row": false,
+      "returns": "projection",
+      "note": "projection query returning PaymentByDateDto"
+    }
+  ],
+  "sql_sources": [
+    {
+      "method": "paymentRepo.findByPaidDate",
+      "kind": "@Query JPQL",
+      "tables": [
+        "payment"
+      ],
+      "citation": {
+        "file": "src/main/java/com/ex/repo/PaymentRepository.java",
+        "line": 26,
+        "symbol": null
+      }
+    }
+  ],
+  "entities": [
+    {
+      "name": "Payment",
+      "table": "payment",
+      "citation": {
+        "file": "src/main/java/com/ex/domain/Payment.java",
+        "line": 10,
+        "symbol": "Payment"
+      },
+      "relations": []
+    }
+  ],
+  "transactions": [
+    {
+      "method": "PaymentsByDateService.byDate",
+      "propagation": "REQUIRED",
+      "read_only": true,
+      "citation": {
+        "file": "src/main/java/com/ex/service/PaymentsByDateService.java",
+        "line": 21,
+        "symbol": "Transactional"
+      }
+    }
+  ],
+  "external_calls": [],
+  "tables": [
+    {
+      "table": "payment",
+      "entity": "Payment",
+      "columns_read": [
+        "id",
+        "invoice_id",
+        "amount",
+        "paid_date"
+      ],
+      "all_columns": [
+        "id bigint NOT NULL",
+        "invoice_id bigint NOT NULL",
+        "amount decimal(19,2) NOT NULL",
+        "paid_date date NULL"
+      ],
+      "existing_indexes": [
+        {
+          "name": "idx_payment_invoice_id",
+          "columns": [
+            "invoice_id"
+          ],
+          "unique": false,
+          "cardinality": 891924
+        },
+        {
+          "name": "PRIMARY",
+          "columns": [
+            "id"
+          ],
+          "unique": true,
+          "cardinality": 891924
+        }
+      ],
+      "approx_rows": 891924,
+      "foreign_keys": [
+        {
+          "direction": "out",
+          "constraint": "fk_payment_invoice",
+          "column": "invoice_id",
+          "references": "invoice.id"
+        }
+      ]
+    }
+  ],
+  "per_row_work": [],
+  "response_shape": {
+    "dto": "PaymentByDateDto",
+    "fields_returned": [
+      "id",
+      "invoiceId",
+      "amount",
+      "paidDate"
+    ],
+    "computed_fields": [],
+    "unbounded_collections": [],
+    "citation": {
+      "file": "src/main/java/com/ex/web/PaymentsByDateController.java",
+      "line": 23,
+      "symbol": "List<PaymentByDateDto>"
+    }
+  },
+  "request_shape": {
+    "parameters": [
+      {
+        "name": "date",
+        "location": "query",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/PaymentsByDateController.java",
+          "line": 24,
+          "symbol": "date"
+        }
+      },
+      {
+        "name": "page",
+        "location": "query",
+        "type": "integer",
+        "required": false,
+        "default": 0,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/PaymentsByDateController.java",
+          "line": 25,
+          "symbol": "page"
+        }
+      },
+      {
+        "name": "size",
+        "location": "query",
+        "type": "integer",
+        "required": false,
+        "default": 50,
+        "allowed_values": [],
+        "citation": {
+          "file": "src/main/java/com/ex/web/PaymentsByDateController.java",
+          "line": 26,
+          "symbol": "size"
+        }
+      }
+    ]
+  },
+  "pagination": {
+    "mechanism": "offset",
+    "fires_count_query": false,
+    "max_page_size": 100,
+    "citation": {
+      "file": "src/main/java/com/ex/service/PaymentsByDateService.java",
+      "line": 16,
+      "symbol": "MAX_PAGE_SIZE"
+    }
+  },
+  "caching": [],
+  "hidden_query_triggers": [],
+  "tests_covering": [],
+  "uncertainties": [
+    "AUTOMATED CHECK: date are required request parameters with no recorded default and no allowed_values. Corpus generation cannot invent a value for a required parameter and will refuse by name unless one of those is filled in — check whether the code actually constrains the value (an enum, a @Pattern) that was missed."
+  ],
+  "prompt_hash": "b4cf7ea7df5e8d57",
+  "base_commit": "0de062f4cf568b2debdec8e86c1cf10b843ff407"
+}

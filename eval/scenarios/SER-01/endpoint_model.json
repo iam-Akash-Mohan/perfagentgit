@@ -13,12 +13,12 @@
     },
     {
       "file": "src/main/java/com/ex/service/CustomerBioService.java",
-      "line": 22,
+      "line": 21,
       "symbol": "CustomerBioService.bios"
     },
     {
       "file": "src/main/java/com/ex/repo/CustomerProfileRepository.java",
-      "line": 24,
+      "line": 22,
       "symbol": "CustomerProfileRepository.findBioRows"
     }
   ],
@@ -27,45 +27,46 @@
       "method": "CustomerBioController.bios",
       "file": "src/main/java/com/ex/web/CustomerBioController.java",
       "line": 21,
-      "does": "controller method returns bios DTO list"
+      "does": "Calls CustomerBioService.bios with page and size parameters"
     },
     {
       "method": "CustomerBioService.bios",
       "file": "src/main/java/com/ex/service/CustomerBioService.java",
-      "line": 22,
-      "does": "service validates page size and calls repository"
+      "line": 21,
+      "does": "Bounds the requested size to 1\u2011100 and invokes CustomerProfileRepository.findBioRows"
     },
     {
       "method": "CustomerProfileRepository.findBioRows",
       "file": "src/main/java/com/ex/repo/CustomerProfileRepository.java",
-      "line": 24,
-      "does": "repository executes JPQL query returning DTOs"
+      "line": 22,
+      "does": "Executes a JPQL projection query that returns CustomerBioDto rows"
     }
   ],
   "data_access": [
     {
-      "trigger": "repo.findBioRows",
+      "trigger": "customerProfileRepo.findBioRows",
       "kind": "jpql_query",
       "file": "src/main/java/com/ex/repo/CustomerProfileRepository.java",
-      "line": 24,
-      "sql": "SELECT cp.id, cp.customer_name, cp.bio FROM customer_profile cp ORDER BY cp.id ASC",
+      "line": 22,
+      "sql": "select new com.ex.dto.CustomerBioDto(cp.id, cp.customerName, cp.bio) from CustomerProfile cp order by cp.id asc",
       "tables": [
         "customer_profile"
       ],
       "executes_per_row": false,
-      "note": "select new com.ex.dto.CustomerBioDto(cp.id, cp.customerName, cp.bio) from CustomerProfile cp order by cp.id asc"
+      "returns": "projection",
+      "note": "Projection query selecting only id, customerName and bio"
     }
   ],
   "sql_sources": [
     {
-      "method": "repo.findBioRows",
+      "method": "customerProfileRepo.findBioRows",
       "kind": "@Query JPQL",
       "tables": [
         "customer_profile"
       ],
       "citation": {
         "file": "src/main/java/com/ex/repo/CustomerProfileRepository.java",
-        "line": 24,
+        "line": 22,
         "symbol": null
       }
     }
@@ -76,7 +77,7 @@
       "table": "customer_profile",
       "citation": {
         "file": "src/main/java/com/ex/domain/CustomerProfile.java",
-        "line": 8,
+        "line": 6,
         "symbol": "CustomerProfile"
       },
       "relations": []
@@ -90,7 +91,7 @@
       "citation": {
         "file": "src/main/java/com/ex/service/CustomerBioService.java",
         "line": 21,
-        "symbol": "bios"
+        "symbol": "CustomerBioService.bios"
       }
     }
   ],
@@ -126,17 +127,7 @@
       "foreign_keys": []
     }
   ],
-  "per_row_work": [
-    {
-      "description": "creates a CustomerBioDto object for each row returned by the query",
-      "file": "src/main/java/com/ex/repo/CustomerProfileRepository.java",
-      "line": 24,
-      "kind": "object_creation",
-      "scales_with": "page size",
-      "bounded": true,
-      "bound": "page size, max 100"
-    }
-  ],
+  "per_row_work": [],
   "response_shape": {
     "dto": "CustomerBioDto",
     "fields_returned": [
@@ -147,9 +138,9 @@
     "computed_fields": [],
     "unbounded_collections": [],
     "citation": {
-      "file": "src/main/java/com/ex/web/CustomerBioController.java",
-      "line": 21,
-      "symbol": "List<CustomerBioDto>"
+      "file": "src/main/java/com/ex/dto/CustomerBioDto.java",
+      "line": 5,
+      "symbol": "CustomerBioDto"
     }
   },
   "request_shape": {
@@ -189,7 +180,7 @@
     "citation": {
       "file": "src/main/java/com/ex/service/CustomerBioService.java",
       "line": 23,
-      "symbol": "boundedSize"
+      "symbol": "CustomerBioService.bios"
     }
   },
   "caching": [],

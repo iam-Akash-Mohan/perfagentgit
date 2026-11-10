@@ -17,19 +17,19 @@ from typing import Any, Callable
 from pydantic import ValidationError
 
 from ..contracts import (APPROACHES, MECHANISMS, CandidateFix, EndpointModel,
-                         Plan, RankedHypothesis, Rejection, SqlDigestStat,
-                         TableInfo)
+                         Plan, RankedHypothesis, Rejection, SqlAudit,
+                         SqlDigestStat, TableInfo)
 from ..errors import ToolError
 from ..gate.rules import INSTRUMENTED_MECHANISMS
 from ..tools import SourceRoot, ToolSpec
 from ..tools.db import DbToolbox, is_select
 from .fixability import covering_index
 from .risk import (MAX_SELECTABLE_TIER, SQL_REWRITE_APPROACHES, TEST_TREE,
-                   assess_risk, derive_scope, forbidden_reason,
-                   is_additive_index, parse_index, schema_change_blocked,
-                   scope_mismatch_reason, selection_problem,
-                   sql_verification_failure, sql_verification_needed,
-                   verify_sql_candidate)
+                   assess_risk, audit_proof_for, derive_scope,
+                   forbidden_reason, is_additive_index, parse_index,
+                   schema_change_blocked, scope_mismatch_reason,
+                   selection_problem, sql_verification_failure,
+                   sql_verification_needed, verify_sql_candidate)
 
 MIN_CANDIDATES = 2
 MAX_CANDIDATES = 4
@@ -135,6 +135,23 @@ CANDIDATE_SCHEMA: dict[str, Any] = {
                            "copied — what you are claiming this statement "
                            "runs TODAY, before your fix.",
         },
+        "audit_digest": {
+            "type": "string",
+            "description": "For approach='add_index' ONLY: the digest hash "
+                           "of a MISSING_INDEX statement from the brief's "
+                           "SQL AUDIT section, whose own measured "
+                           "index_candidate names the SAME table and SAME "
+                           "columns as sql_change. A citation that matches "
+                           "attaches the audit's own already-measured proof "
+                           "(EXPLAIN plan before/after, rows examined, an "
+                           "interleaved benchmark) and lets this candidate "
+                           "be selected on that statement-level evidence — "
+                           "otherwise an add_index candidate cannot be "
+                           "selected at all, because blue and green share "
+                           "one database and an endpoint-level A/B would be "
+                           "comparing two arms that both have the index. "
+                           "Omit for any other approach.",
+        },
         "what_could_break": {
             "type": "array", "items": {"type": "string"},
             "description": "Honest failure modes. A candidate with nothing "
@@ -201,6 +218,7 @@ def make_submit_plan(
     prompt_hash: str | None = None,
     mysql: Any = None,
     baseline_digests: list[SqlDigestStat] | None = None,
+    sql_audit: SqlAudit | None = None,
 ) -> Callable[..., str]:
     """Build the handler. `sink` receives the accepted Plan under "plan".
 
@@ -218,6 +236,11 @@ def make_submit_plan(
     such statement existed any more (the endpoint had already been reduced to
     one query), and nothing before this checked that the statement being
     reduced ever actually ran.
+
+    `sql_audit` is this run's own sql_audit.json, read for the SAME reason
+    `baseline_digests` is: an `add_index` candidate's `audit_digest`
+    citation is checked against it, not trusted — see
+    `plan/risk.py::audit_proof_for`.
 
     `mysql` is this run's own target, used ONLY to independently verify a
     SQL-rewrite candidate's `sql_before`/`sql_after` claim with EXPLAIN
@@ -280,7 +303,8 @@ def make_submit_plan(
                        root=root, model=model, expected=expected_by_hypothesis,
                        attributed=attributed_by_hypothesis,
                        considered=considered, seen_ids=seen_ids,
-                       get_box=get_box, baseline_by_digest=baseline_by_digest)
+                       get_box=get_box, baseline_by_digest=baseline_by_digest,
+                       sql_audit=sql_audit)
             )
 
         _check_set(candidates, top_id=top_id)
@@ -395,6 +419,7 @@ def _build(entry: dict[str, Any], *, index: int, tables: dict[str, TableInfo],
            attributed: dict[str, float], considered: list[str],
            seen_ids: set[str], get_box: Callable[[], DbToolbox | None],
            baseline_by_digest: dict[str, SqlDigestStat],
+           sql_audit: SqlAudit | None = None,
            ) -> CandidateFix:
     """Validate one candidate and stamp the fields code owns."""
     identifier = str(entry.get("id") or f"c{index + 1}")
@@ -531,8 +556,31 @@ def _build(entry: dict[str, Any], *, index: int, tables: dict[str, TableInfo],
     )
 
     _check_files(identifier, files, root)
-    if sql_change:
-        _check_index(identifier, str(sql_change), tables)
+    index_table_columns = (
+        _check_index(identifier, str(sql_change), tables) if sql_change else None
+    )
+
+    # An add_index candidate that CITES a matching SQL-audit finding takes
+    # the schema-candidate gate path instead of schema_change_blocked's
+    # unconditional refusal -- see audit_proof_for and CandidateFix.
+    # schema_proof. audit_digest not set at all is not an attempt to claim
+    # this path, so it is not an error; it falls through to
+    # schema_change_blocked exactly as before this existed.
+    audit_digest = entry.get("audit_digest") or None
+    schema_proof: Any = None
+    audit_citation_problem: str | None = None
+    if audit_digest is not None:
+        if index_table_columns is None:
+            audit_citation_problem = (
+                f"candidate {identifier} sets audit_digest but has no "
+                f"sql_change naming a table and columns to look up a "
+                f"matching SQL-audit proof for."
+            )
+        else:
+            schema_proof, audit_citation_problem = audit_proof_for(
+                table=index_table_columns[0], columns=index_table_columns[1],
+                audit_digest=str(audit_digest), sql_audit=sql_audit,
+            )
 
     tier, requires_flag, _why = assess_risk(
         approach=approach, description=description,
@@ -556,13 +604,20 @@ def _build(entry: dict[str, Any], *, index: int, tables: dict[str, TableInfo],
     # while the arms share one database could never have been verified, and
     # the patch agent should not spend a build iteration finding that out.
     # Not deleted from the plan either way — "we could not verify this here"
-    # is a finding a reviewer should see.
-    not_selectable_because = (
+    # is a finding a reviewer should see. Skipped entirely when schema_proof
+    # resolved: that candidate is proven at the statement level instead, and
+    # needs no per-arm isolation because it never compares the two arms.
+    schema_problem = (
+        audit_citation_problem if schema_proof is None else None
+    ) or (
         schema_change_blocked(
             approach=approach, sql_change=sql_change, files_to_touch=files,
             repo=root.path,
-        ) or scope_mismatch or mechanism_unmeasured or no_op_rewrite
-        or baseline_unsupported
+        ) if schema_proof is None else None
+    )
+    not_selectable_because = (
+        schema_problem or scope_mismatch or mechanism_unmeasured
+        or no_op_rewrite or baseline_unsupported
         or (sql_verification_failure(verification) if verification else None)
     )
 
@@ -593,6 +648,7 @@ def _build(entry: dict[str, Any], *, index: int, tables: dict[str, TableInfo],
             "requires_flag": requires_flag,
             "expected_value_ms": expected_value_ms,
             "not_selectable_because": not_selectable_because,
+            "schema_proof": schema_proof,
             "scope_reasons": scope_reasons,
         })
     except ValidationError as exc:
@@ -632,8 +688,10 @@ def _check_files(identifier: str, files: list[str], root: SourceRoot) -> None:
 
 
 def _check_index(identifier: str, sql: str,
-                 tables: dict[str, TableInfo]) -> None:
-    """An index must be additive, on a table on the path, and not already there."""
+                 tables: dict[str, TableInfo]) -> tuple[str, list[str]]:
+    """An index must be additive, on a table on the path, and not already
+    there. Returns (table, columns) so the caller can look up whether an
+    audit_digest citation names a matching statement-level proof."""
     if not is_additive_index(sql):
         raise ToolError(
             f"candidate {identifier} carries a sql_change that is not a single "
@@ -680,6 +738,8 @@ def _check_index(identifier: str, sql: str,
             suggestion="Either extend the index with a further column that is "
                        "actually filtered on, or propose a different fix.",
         )
+
+    return table_name, columns
 
 
 # ────────────────────────────  the whole set  ────────────────────────────

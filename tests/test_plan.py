@@ -28,9 +28,11 @@ from senapathy.plan.agent import load_plan, plan
 from senapathy.plan.fixability import (assess_fixability, covering_index,
                                        matching_per_row_work, rank_hypotheses,
                                        uncovered_columns)
-from senapathy.plan.risk import (assess_risk, forbidden_reason,
-                                 is_additive_index, parse_index,
-                                 schema_change_blocked, selection_problem)
+from senapathy.contracts.audit import AuditedStatement, IndexCandidate, SqlAudit
+from senapathy.plan.risk import (assess_risk, audit_proof_for,
+                                 forbidden_reason, is_additive_index,
+                                 parse_index, schema_change_blocked,
+                                 selection_problem)
 from senapathy.plan.submit import make_submit_plan
 from senapathy.tools import SourceRoot
 from senapathy.trace import Trace
@@ -1120,7 +1122,8 @@ def default_baseline_digests() -> list[SqlDigestStat]:
 
 def submit_handler(root: SourceRoot, sink: dict[str, Any],
                    model: EndpointModel | None = None,
-                   baseline_digests: list[SqlDigestStat] | None = None):
+                   baseline_digests: list[SqlDigestStat] | None = None,
+                   sql_audit: Any = None):
     hypotheses, default_model = recorded()
     model = model or default_model
     ranked = rank_hypotheses(hypotheses, model)
@@ -1131,6 +1134,7 @@ def submit_handler(root: SourceRoot, sink: dict[str, Any],
         measured_total_ms=hypotheses.measured_total_ms,
         baseline_digests=(default_baseline_digests()
                           if baseline_digests is None else baseline_digests),
+        sql_audit=sql_audit,
     )
 
 
@@ -1197,6 +1201,90 @@ def test_a_two_candidate_plan_is_accepted_and_one_is_selected(
     # And the loser is recorded with a reason.
     assert len(result.not_selected) == 1
     assert result.not_selected[0].reason
+
+
+def test_an_add_index_candidate_citing_a_matching_audit_digest_is_selectable(
+    root: SourceRoot
+) -> None:
+    """The whole point: an add_index candidate that CITES a matching
+    SQL-audit finding is selectable even though blue and green share one
+    database — schema_change_blocked's unconditional refusal is skipped,
+    because this candidate is proven at the statement level instead."""
+    sink: dict[str, Any] = {}
+    citing = candidate_payload(
+        id="c2", approach="add_index",
+        description="index order_line on (order_id, status)",
+        mechanism="rows_examined", mechanism_changed="rows examined",
+        predicted_effect="rows examined per request drop from 1.1M to 42",
+        sql_change="CREATE INDEX idx_line_order_id_status ON order_line "
+                   "(order_id, status);",
+        what_could_break=["slower writes to order_line"],
+        audit_digest="d-missing-index",
+    )
+    audit = _sql_audit_with(_measured_index_candidate())
+
+    submit_handler(root, sink, sql_audit=audit)(
+        candidates=[candidate_payload(), citing],
+        reasoning="batching first, a proven index second",
+    )
+    result: Plan = sink["plan"]
+    index_candidate = next(c for c in result.candidates if c.id == "c2")
+
+    assert index_candidate.not_selectable_because is None
+    assert index_candidate.schema_proof is not None
+    assert index_candidate.schema_proof.rows_examined_before == 1_500_000
+    assert index_candidate.schema_proof.rows_examined_after == 3
+
+
+def test_an_add_index_candidate_citing_the_wrong_table_is_refused_by_name(
+    root: SourceRoot
+) -> None:
+    sink: dict[str, Any] = {}
+    citing = candidate_payload(
+        id="c2", approach="add_index",
+        description="index customer on (region)",
+        mechanism="rows_examined", mechanism_changed="rows examined",
+        predicted_effect="fewer rows",
+        sql_change="CREATE INDEX idx_customer_region ON customer (region);",
+        what_could_break=["slower writes"],
+        audit_digest="d-missing-index",
+    )
+    audit = _sql_audit_with(_measured_index_candidate())  # proof is on order_line
+
+    blind = endpoint_model(tables=[
+        {"table": "order_line", "entity": "OrderLine",
+         "columns_read": ["order_id"],
+         "existing_indexes": [{"name": "idx_line_order_id",
+                               "columns": ["order_id"], "unique": False}]},
+        {"table": "customer", "entity": "Customer",
+         "columns_read": ["region"],
+         "existing_indexes": [{"name": "pk_customer",
+                               "columns": ["id"], "unique": True}]},
+    ])
+    submit_handler(root, sink, model=blind, sql_audit=audit)(
+        candidates=[candidate_payload(), citing])
+    result: Plan = sink["plan"]
+    index_candidate = next(c for c in result.candidates if c.id == "c2")
+
+    assert index_candidate.schema_proof is None
+    assert "order_line" in (index_candidate.not_selectable_because or "")
+    assert "customer" in (index_candidate.not_selectable_because or "")
+
+
+def test_an_add_index_candidate_without_a_citation_is_still_blocked(
+    root: SourceRoot
+) -> None:
+    """Unchanged behaviour for the common case: no audit_digest at all
+    falls straight through to schema_change_blocked, same as before this
+    existed."""
+    sink: dict[str, Any] = {}
+    submit_handler(root, sink)(
+        candidates=[candidate_payload(), INDEX_CANDIDATE])
+    result: Plan = sink["plan"]
+    index_candidate = next(c for c in result.candidates if c.id == "c2")
+
+    assert index_candidate.schema_proof is None
+    assert index_candidate.not_selectable_because is not None
 
 
 def test_an_index_that_already_exists_is_refused_and_named(
@@ -2044,6 +2132,121 @@ def test_schema_change_not_blocked_when_the_repo_is_genuinely_isolated(
         approach="add_index", sql_change="CREATE INDEX idx_a ON t (a);",
         files_to_touch=["x"], repo=repo,
     ) is None
+
+
+# ─────────────────────────  audit_proof_for  ─────────────────────────────
+
+
+def _measured_index_candidate(**overrides: Any) -> IndexCandidate:
+    base: dict[str, Any] = {
+        "table": "order_line", "columns": ["order_id", "status"],
+        "column_rationale": "order_id, status lead the index because...",
+        "plan_before": "order_line: type=ALL, key=no index",
+        "plan_after": "order_line: type=ref, key=senapathy_tmp_x",
+        "rows_examined_before": 1_500_000, "rows_examined_after": 3,
+        "actual_ms_before": 900.0, "actual_ms_after": 0.9,
+        "benchmark_rounds": 5,
+        "without_index_ms_samples": [20.0] * 5,
+        "with_index_ms_samples": [2.0] * 5,
+        "benchmark_p_value": 0.001, "improvement_pct": 90.0,
+    }
+    base.update(overrides)
+    return IndexCandidate.model_validate(base)
+
+
+def _sql_audit_with(index_candidate: IndexCandidate | None, *,
+                    digest: str = "d-missing-index",
+                    classification: str = "MISSING_INDEX") -> SqlAudit:
+    return SqlAudit(
+        endpoint="POST /api/orders/search", measured_total_ms=1000.0,
+        statements=[AuditedStatement(
+            digest=digest,
+            digest_text="SELECT * FROM order_line WHERE order_id = ? AND status = ?",
+            calls=10, total_ms=900.0, classification=classification,
+            rows_examined=1_500_000, rows_returned=3,
+            index_candidate=index_candidate,
+        )],
+    )
+
+
+def test_audit_proof_for_returns_none_without_a_citation() -> None:
+    proof, problem = audit_proof_for(
+        table="order_line", columns=["order_id", "status"],
+        audit_digest=None, sql_audit=_sql_audit_with(_measured_index_candidate()),
+    )
+    assert proof is None and problem is None
+
+
+def test_audit_proof_for_refuses_a_citation_with_no_audit_evidence_at_all() -> None:
+    proof, problem = audit_proof_for(
+        table="order_line", columns=["order_id", "status"],
+        audit_digest="d-missing-index", sql_audit=None,
+    )
+    assert proof is None
+    assert "no SQL audit evidence" in problem
+
+
+def test_audit_proof_for_refuses_an_unknown_digest() -> None:
+    proof, problem = audit_proof_for(
+        table="order_line", columns=["order_id", "status"],
+        audit_digest="d-does-not-exist",
+        sql_audit=_sql_audit_with(_measured_index_candidate()),
+    )
+    assert proof is None
+    assert "not among the statements" in problem
+
+
+def test_audit_proof_for_refuses_a_digest_that_is_not_missing_index() -> None:
+    proof, problem = audit_proof_for(
+        table="order_line", columns=["order_id", "status"],
+        audit_digest="d-missing-index",
+        sql_audit=_sql_audit_with(None, classification="OPTIMAL"),
+    )
+    assert proof is None
+    assert "MISSING_INDEX" in problem
+
+
+def test_audit_proof_for_refuses_an_already_covered_candidate() -> None:
+    covered = _measured_index_candidate(
+        already_covered_by="idx_existing", rows_examined_before=0,
+        rows_examined_after=0, actual_ms_before=0.0, actual_ms_after=0.0,
+    )
+    proof, problem = audit_proof_for(
+        table="order_line", columns=["order_id", "status"],
+        audit_digest="d-missing-index", sql_audit=_sql_audit_with(covered),
+    )
+    assert proof is None
+    assert "already covered" in problem
+
+
+def test_audit_proof_for_refuses_a_mismatched_table() -> None:
+    proof, problem = audit_proof_for(
+        table="customer", columns=["order_id", "status"],
+        audit_digest="d-missing-index",
+        sql_audit=_sql_audit_with(_measured_index_candidate()),
+    )
+    assert proof is None
+    assert "order_line" in problem and "customer" in problem
+
+
+def test_audit_proof_for_refuses_a_mismatched_column_list() -> None:
+    proof, problem = audit_proof_for(
+        table="order_line", columns=["order_id"],
+        audit_digest="d-missing-index",
+        sql_audit=_sql_audit_with(_measured_index_candidate()),
+    )
+    assert proof is None
+    assert "order_id, status" in problem
+
+
+def test_audit_proof_for_returns_the_measured_candidate_on_a_real_match() -> None:
+    expected = _measured_index_candidate()
+    proof, problem = audit_proof_for(
+        table="order_line", columns=["order_id", "status"],
+        audit_digest="d-missing-index", sql_audit=_sql_audit_with(expected),
+    )
+    assert problem is None
+    assert proof == expected
 
 
 def test_selection_problem_reads_not_selectable_because_first() -> None:

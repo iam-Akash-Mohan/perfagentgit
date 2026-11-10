@@ -479,6 +479,58 @@ def _run_baseline(ctx: Context) -> PhaseOutcome:
     )
 
 
+def _run_audit(ctx: Context) -> PhaseOutcome:
+    """Analyse every application SQL digest BASELINE captured — ordinary
+    code, not an agent, and unconditional: COL-04's full scan sat in the
+    baseline's own digest evidence while diagnosis theorised about ORM
+    hydration instead of ever calling `explain` on it. This phase would
+    have found it without anyone asking.
+
+    No live HTTP arm is opened — `run_sql_audit` only needs direct database
+    access (EXPLAIN ANALYZE, index_benefit, query_equivalent), none of
+    which touches the application.
+    """
+    import json as _json
+
+    from .audit import run_sql_audit
+    from .contracts import SqlDigestStat
+    from .measure.baseline import baseline_hash, is_session_control
+    from .measure.corpus import load_corpus
+    from .measure.sql import MySQLTarget
+    from .understand.agent import load_model
+
+    model = load_model(ctx.run_dir / "endpoint_model.json")
+    baseline_path = ctx.run_dir / "baseline.json"
+    document = _json.loads(baseline_path.read_text(encoding="utf-8"))
+    digests = [SqlDigestStat.model_validate(d) for d in document["sql_digests"]]
+    corpus_path = ctx.run_dir / "corpus.json"
+    corpus = load_corpus(corpus_path) if corpus_path.exists() else None
+
+    audit = run_sql_audit(
+        endpoint=ctx.endpoint,
+        measured_total_ms=document["derived"]["measured_latency_ms"],
+        digests=digests, target=MySQLTarget.from_profile(ctx.profile().database),
+        allowed_tables=[t.table for t in model.tables],
+        run_dir=ctx.run_dir, baseline_hash=baseline_hash(document),
+        corpus=corpus,
+    )
+
+    non_optimal = audit.non_optimal()
+    analysed = [s for d in digests if not is_session_control(d)
+               for s in [audit.by_digest(d.digest)] if s is not None]
+    return PhaseOutcome(
+        artifact=ctx.run_dir / "sql_audit.json",
+        summary=(f"{len(analysed)} application statement(s) audited, "
+                 f"{len(non_optimal)} not optimal"),
+        detail={"statements": len(analysed),
+                "non_optimal": len(non_optimal),
+                "by_classification": {
+                    kind: sum(1 for s in analysed if s.classification == kind)
+                    for kind in sorted({s.classification for s in analysed})
+                }},
+    )
+
+
 def _run_diagnose(ctx: Context) -> PhaseOutcome:
     from .agent import LoopBudget
     from .diagnose.agent import run_diagnosis
@@ -680,6 +732,10 @@ def _run_verify(ctx: Context) -> PhaseOutcome:
 
 
 def _run_measure(ctx: Context) -> PhaseOutcome:
+    schema_proof = _selected_schema_proof(ctx)
+    if schema_proof is not None:
+        return _run_measure_schema(ctx, schema_proof)
+
     from .measure.ab import (ArmSql, build_report, measure_sql_for_arm,
                              run_interleaved, wilcoxon_p)
     from .measure.arms import both_arms
@@ -740,6 +796,49 @@ def _run_measure(ctx: Context) -> PhaseOutcome:
         artifact=path,
         summary=f"measured p95 {report.p95_delta_pct:+.1f}% ({direction})",
         detail={"p95_delta_pct": report.p95_delta_pct},
+    )
+
+
+def _run_measure_schema(ctx: Context, schema_proof: Any) -> PhaseOutcome:
+    """The schema-candidate path's own "measurement": not an endpoint A/B
+    at all (there is nothing to interleave — the whole point of this path
+    is that it makes no endpoint-level claim), just a confirmation that the
+    migration IMPLEMENT wrote actually creates the SAME index PLAN already
+    proved, at the STATEMENT level, via `index_benefit`'s own temporary
+    trial — no live re-measurement, because by the time this phase runs,
+    green's boot has applied that migration to the SHARED schema, and the
+    index now exists for real; there is no "without it" state left to
+    re-measure live. The proof the gate reads is the one AUDIT/PLAN already
+    captured, carried forward unchanged.
+    """
+    from .measure.arms import existing_worktree
+    from .plan.migration import existing_migration_for, find_migration_dir, index_name
+
+    green = existing_worktree(".senapathy/green", repo=ctx.repo)
+    wanted_name = index_name(schema_proof.table, schema_proof.columns)
+    directory = find_migration_dir(green.path)
+    migration_path = (
+        existing_migration_for(directory, wanted_name) if directory is not None
+        else None
+    )
+    migration_confirmed = migration_path is not None
+
+    document = {
+        "schema_proof": schema_proof.model_dump(mode="json"),
+        "migration_file": str(migration_path) if migration_path else None,
+        "migration_confirmed": migration_confirmed,
+        "migration_index_name": wanted_name,
+    }
+    path = ctx.run_dir / "schema_measurement.json"
+    path.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8")
+    return PhaseOutcome(
+        artifact=path,
+        summary=(f"schema-candidate path: {schema_proof.table}"
+                 f"({', '.join(schema_proof.columns)}), migration "
+                 f"{'confirmed' if migration_confirmed else 'NOT FOUND'}"),
+        detail={"migration_confirmed": migration_confirmed,
+                "table": schema_proof.table, "columns": schema_proof.columns},
     )
 
 
@@ -848,6 +947,24 @@ def _isolation_problem(ctx: Context) -> str | None:
     blue = _repo_root(ctx)
     return isolation_problem(blue, green_path, approach=approach, diff=diff,
                              files_changed=files)
+
+
+def _selected_schema_proof(ctx: Context) -> Any:
+    """The selected candidate's `schema_proof`, or None — the single switch
+    every downstream phase (MEASURE, GATE, SHIP) reads to take the
+    schema-candidate path instead of the endpoint-level one. None for
+    every run without a plan yet, or whose plan.json predates this field.
+    """
+    plan_path = ctx.run_dir / "plan.json"
+    if not plan_path.exists():
+        return None
+    try:
+        from .plan.agent import load_plan
+
+        selected = load_plan(plan_path).selected()
+    except Exception:  # noqa: BLE001 — a missing/invalid plan is caught elsewhere
+        return None
+    return selected.schema_proof if selected is not None else None
 
 
 def _valid_json(ctx: Context, path: Path) -> str | None:
@@ -1172,6 +1289,9 @@ PIPELINE: tuple[PhaseSpec, ...] = (
     PhaseSpec(Phase.BASELINE, "baseline",
               _run_artifact("baseline.json"), _run_baseline, _valid_json,
               describe="blue-arm latency and SQL evidence"),
+    PhaseSpec(Phase.AUDIT, "audit",
+              _run_artifact("sql_audit.json"), _run_audit, _valid_json,
+              describe="every captured SQL statement, classified"),
     PhaseSpec(Phase.DIAGNOSE, "diagnose",
               _run_artifact("hypotheses.json"), _run_diagnose, _valid_json,
               uses_llm=True, describe="ranked bottleneck hypotheses"),
@@ -1209,6 +1329,13 @@ def _preconditions(spec: PhaseSpec, ctx: Context, state: RunState) -> str | None
     read artifacts rather than trusting `state.completed_phases`, and there is
     no argument that turns them off.
     """
+    if spec.phase is Phase.AUDIT:
+        if not (ctx.run_dir / "baseline.json").exists():
+            return ("cannot enter the audit phase without a baseline: "
+                    f"{ctx.run_dir / 'baseline.json'} is missing. The audit "
+                    "analyses the digests baseline captured; there is "
+                    "nothing captured yet.")
+
     if spec.phase is Phase.PLAN:
         if not (ctx.run_dir / "hypotheses.json").exists():
             return ("cannot enter the plan phase without a diagnosis: "
@@ -1257,15 +1384,23 @@ def _preconditions(spec: PhaseSpec, ctx: Context, state: RunState) -> str | None
         except ContractViolation as exc:
             return f"cannot enter the measure phase: {exc}"
 
-        # A schema change cannot be A/B measured while both arms share one
-        # database. Checked BEFORE measuring, because the failure mode is a
-        # believable number rather than an error — see measure/isolation.py.
-        shared = _isolation_problem(ctx)
-        if shared is not None:
-            return f"ISOLATION: {shared}"
+        # An ENDPOINT-level wall-clock A/B cannot be run while both arms
+        # share one database. Does not apply to a schema_proof candidate —
+        # it was already proven at the STATEMENT level (audit/candidates.py,
+        # at AUDIT/PLAN time), never by comparing the two arms, so there is
+        # nothing for this guard to find unshared. See docs/schema-
+        # changes.md and gate.rules.evaluate_schema_gates.
+        if _selected_schema_proof(ctx) is None:
+            shared = _isolation_problem(ctx)
+            if shared is not None:
+                return f"ISOLATION: {shared}"
 
     if spec.phase in (Phase.GATE, Phase.SHIP):
-        for needed in ("verification.json", "perf_report.json", "patch.json"):
+        measurement_artifact = (
+            "schema_measurement.json" if _selected_schema_proof(ctx) is not None
+            else "perf_report.json"
+        )
+        for needed in ("verification.json", measurement_artifact, "patch.json"):
             if not (ctx.run_dir / needed).exists():
                 return (f"cannot enter the {spec.name} phase: "
                         f"{needed} has not been produced.")

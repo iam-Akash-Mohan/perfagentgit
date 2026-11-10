@@ -1,0 +1,918 @@
+{
+  "schema_version": 1,
+  "kind": "baseline",
+  "arm": "blue",
+  "captured_at": "20261110T092128Z",
+  "corpus_hash": "f8fe67f11c9eeb07",
+  "target": {
+    "base_url": "http://localhost:62514",
+    "health": {
+      "url": "http://localhost:62514/actuator/health",
+      "http_status": 200,
+      "status": "UP",
+      "body": {
+        "status": "UP",
+        "components": {
+          "db": {
+            "status": "UP",
+            "details": {
+              "database": "MySQL",
+              "validationQuery": "isValid()"
+            }
+          },
+          "diskSpace": {
+            "status": "UP",
+            "details": {
+              "total": 494384795648,
+              "free": 129570852864,
+              "threshold": 10485760,
+              "path": "/Users/akashm/Documents/ak/perfagent/.senapathy/blue/.",
+              "exists": true
+            }
+          },
+          "livenessState": {
+            "status": "UP"
+          },
+          "ping": {
+            "status": "UP"
+          },
+          "readinessState": {
+            "status": "UP"
+          }
+        },
+        "groups": [
+          "liveness",
+          "readiness"
+        ]
+      }
+    },
+    "mysql": "root@localhost:3307/mini"
+  },
+  "corpus": {
+    "path": ".senapathy/runs/idx01-live/corpus.json",
+    "hash": "f8fe67f11c9eeb07",
+    "requests": [
+      {
+        "id": "dense-date2023-07-02-p0-s100",
+        "method": "GET",
+        "path": "/api/payments/by-date?date=2023-07-02&page=0&size=100",
+        "headers": {},
+        "body": null,
+        "note": "generated: path/query params from the comprehension model; page depth 0, page size 100",
+        "expected_status": 200
+      },
+      {
+        "id": "dense-date2023-07-02-p2-s100",
+        "method": "GET",
+        "path": "/api/payments/by-date?date=2023-07-02&page=2&size=100",
+        "headers": {},
+        "body": null,
+        "note": "generated: path/query params from the comprehension model; page depth 2, page size 100",
+        "expected_status": 200
+      }
+    ]
+  },
+  "benchmark": {
+    "base_url": "http://localhost:62514",
+    "corpus_hash": "f8fe67f11c9eeb07",
+    "requests_in_corpus": 2,
+    "warmup": 20,
+    "iterations": 100,
+    "started_at": "2026-11-10T09:21:26.336252+00:00",
+    "finished_at": "2026-11-10T09:21:28.867850+00:00",
+    "wall_ms": 2531.608,
+    "latency": {
+      "n": 100,
+      "p50_ms": 28.119,
+      "p95_ms": 37.747,
+      "p99_ms": 43.562,
+      "mean_ms": 25.284,
+      "stdev_ms": 9.503
+    },
+    "status_counts": {
+      "200": 100
+    },
+    "first_non_2xx": null,
+    "transport_failures": 0,
+    "warmup_discarded": {
+      "n": 20,
+      "failures": 0,
+      "mean_ms": 32.299
+    },
+    "per_request": {
+      "dense-date2023-07-02-p0-s100": {
+        "n": 50,
+        "statuses": {
+          "200": 50
+        },
+        "latency": {
+          "n": 50,
+          "p50_ms": 15.521,
+          "p95_ms": 21.376,
+          "p99_ms": 24.034,
+          "mean_ms": 16.205,
+          "stdev_ms": 2.23
+        }
+      },
+      "dense-date2023-07-02-p2-s100": {
+        "n": 50,
+        "statuses": {
+          "200": 50
+        },
+        "latency": {
+          "n": 50,
+          "p50_ms": 33.451,
+          "p95_ms": 41.344,
+          "p99_ms": 44.663,
+          "mean_ms": 34.364,
+          "stdev_ms": 3.038
+        }
+      }
+    },
+    "samples": [
+      {
+        "i": 0,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 22.124,
+        "error": null
+      },
+      {
+        "i": 1,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 36.66,
+        "error": null
+      },
+      {
+        "i": 2,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 16.414,
+        "error": null
+      },
+      {
+        "i": 3,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.583,
+        "error": null
+      },
+      {
+        "i": 4,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 16.214,
+        "error": null
+      },
+      {
+        "i": 5,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.638,
+        "error": null
+      },
+      {
+        "i": 6,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.554,
+        "error": null
+      },
+      {
+        "i": 7,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.373,
+        "error": null
+      },
+      {
+        "i": 8,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.273,
+        "error": null
+      },
+      {
+        "i": 9,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.498,
+        "error": null
+      },
+      {
+        "i": 10,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 17.459,
+        "error": null
+      },
+      {
+        "i": 11,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.89,
+        "error": null
+      },
+      {
+        "i": 12,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.556,
+        "error": null
+      },
+      {
+        "i": 13,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.147,
+        "error": null
+      },
+      {
+        "i": 14,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.097,
+        "error": null
+      },
+      {
+        "i": 15,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 32.43,
+        "error": null
+      },
+      {
+        "i": 16,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.449,
+        "error": null
+      },
+      {
+        "i": 17,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 31.827,
+        "error": null
+      },
+      {
+        "i": 18,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.042,
+        "error": null
+      },
+      {
+        "i": 19,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 31.746,
+        "error": null
+      },
+      {
+        "i": 20,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.157,
+        "error": null
+      },
+      {
+        "i": 21,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.58,
+        "error": null
+      },
+      {
+        "i": 22,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 17.395,
+        "error": null
+      },
+      {
+        "i": 23,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 32.619,
+        "error": null
+      },
+      {
+        "i": 24,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.196,
+        "error": null
+      },
+      {
+        "i": 25,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 42.12,
+        "error": null
+      },
+      {
+        "i": 26,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.66,
+        "error": null
+      },
+      {
+        "i": 27,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 32.995,
+        "error": null
+      },
+      {
+        "i": 28,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 14.972,
+        "error": null
+      },
+      {
+        "i": 29,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 32.328,
+        "error": null
+      },
+      {
+        "i": 30,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.397,
+        "error": null
+      },
+      {
+        "i": 31,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 32.669,
+        "error": null
+      },
+      {
+        "i": 32,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.008,
+        "error": null
+      },
+      {
+        "i": 33,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 34.196,
+        "error": null
+      },
+      {
+        "i": 34,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.678,
+        "error": null
+      },
+      {
+        "i": 35,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.08,
+        "error": null
+      },
+      {
+        "i": 36,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.637,
+        "error": null
+      },
+      {
+        "i": 37,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 34.018,
+        "error": null
+      },
+      {
+        "i": 38,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 22.997,
+        "error": null
+      },
+      {
+        "i": 39,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 35.361,
+        "error": null
+      },
+      {
+        "i": 40,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 14.758,
+        "error": null
+      },
+      {
+        "i": 41,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 37.728,
+        "error": null
+      },
+      {
+        "i": 42,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.741,
+        "error": null
+      },
+      {
+        "i": 43,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 34.544,
+        "error": null
+      },
+      {
+        "i": 44,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.466,
+        "error": null
+      },
+      {
+        "i": 45,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.553,
+        "error": null
+      },
+      {
+        "i": 46,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 14.381,
+        "error": null
+      },
+      {
+        "i": 47,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 38.102,
+        "error": null
+      },
+      {
+        "i": 48,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 14.842,
+        "error": null
+      },
+      {
+        "i": 49,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 34.121,
+        "error": null
+      },
+      {
+        "i": 50,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.122,
+        "error": null
+      },
+      {
+        "i": 51,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.692,
+        "error": null
+      },
+      {
+        "i": 52,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.737,
+        "error": null
+      },
+      {
+        "i": 53,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.008,
+        "error": null
+      },
+      {
+        "i": 54,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 17.387,
+        "error": null
+      },
+      {
+        "i": 55,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 32.569,
+        "error": null
+      },
+      {
+        "i": 56,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 19.38,
+        "error": null
+      },
+      {
+        "i": 57,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 32.312,
+        "error": null
+      },
+      {
+        "i": 58,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.463,
+        "error": null
+      },
+      {
+        "i": 59,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 32.317,
+        "error": null
+      },
+      {
+        "i": 60,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 14.989,
+        "error": null
+      },
+      {
+        "i": 61,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.045,
+        "error": null
+      },
+      {
+        "i": 62,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 17.709,
+        "error": null
+      },
+      {
+        "i": 63,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 35.195,
+        "error": null
+      },
+      {
+        "i": 64,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.179,
+        "error": null
+      },
+      {
+        "i": 65,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 37.508,
+        "error": null
+      },
+      {
+        "i": 66,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 25.03,
+        "error": null
+      },
+      {
+        "i": 67,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 43.54,
+        "error": null
+      },
+      {
+        "i": 68,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 16.814,
+        "error": null
+      },
+      {
+        "i": 69,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.404,
+        "error": null
+      },
+      {
+        "i": 70,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.875,
+        "error": null
+      },
+      {
+        "i": 71,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 32.825,
+        "error": null
+      },
+      {
+        "i": 72,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.61,
+        "error": null
+      },
+      {
+        "i": 73,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 36.475,
+        "error": null
+      },
+      {
+        "i": 74,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.488,
+        "error": null
+      },
+      {
+        "i": 75,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.533,
+        "error": null
+      },
+      {
+        "i": 76,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 15.244,
+        "error": null
+      },
+      {
+        "i": 77,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 40.395,
+        "error": null
+      },
+      {
+        "i": 78,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 20.462,
+        "error": null
+      },
+      {
+        "i": 79,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.333,
+        "error": null
+      },
+      {
+        "i": 80,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 17.28,
+        "error": null
+      },
+      {
+        "i": 81,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.316,
+        "error": null
+      },
+      {
+        "i": 82,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 14.401,
+        "error": null
+      },
+      {
+        "i": 83,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 34.898,
+        "error": null
+      },
+      {
+        "i": 84,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 16.587,
+        "error": null
+      },
+      {
+        "i": 85,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 33.04,
+        "error": null
+      },
+      {
+        "i": 86,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 14.975,
+        "error": null
+      },
+      {
+        "i": 87,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 34.358,
+        "error": null
+      },
+      {
+        "i": 88,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 16.15,
+        "error": null
+      },
+      {
+        "i": 89,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 45.741,
+        "error": null
+      },
+      {
+        "i": 90,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 16.337,
+        "error": null
+      },
+      {
+        "i": 91,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 31.697,
+        "error": null
+      },
+      {
+        "i": 92,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 13.938,
+        "error": null
+      },
+      {
+        "i": 93,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 31.265,
+        "error": null
+      },
+      {
+        "i": 94,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 13.886,
+        "error": null
+      },
+      {
+        "i": 95,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 31.207,
+        "error": null
+      },
+      {
+        "i": 96,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 14.406,
+        "error": null
+      },
+      {
+        "i": 97,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 32.79,
+        "error": null
+      },
+      {
+        "i": 98,
+        "request_id": "dense-date2023-07-02-p0-s100",
+        "status": 200,
+        "latency_ms": 14.315,
+        "error": null
+      },
+      {
+        "i": 99,
+        "request_id": "dense-date2023-07-02-p2-s100",
+        "status": 200,
+        "latency_ms": 31.93,
+        "error": null
+      }
+    ],
+    "errors": []
+  },
+  "sql_digests": [
+    {
+      "digest": "1a06948f18f2b7d8df242006caa89c2649687cc623552c1aec54eaefba75549f",
+      "sample_sql": "SELECT `p1_0` . `id` , `p1_0` . `invoice_id` , `p1_0` . `amount` , `p1_0` . `paid_date` FROM `payment` `p1_0` WHERE `p1_0` . `paid_date` = ? ORDER BY `p1_0` . `id` LIMIT ?, ...",
+      "calls": 100,
+      "total_ms": 1895.976,
+      "mean_ms": 18.9598,
+      "rows_examined": 19911200,
+      "rows_sent": 10000,
+      "no_index_used": false,
+      "sample_params": []
+    },
+    {
+      "digest": "158bfe3d4b4b0a372a4acdb38affe2cb4f6b3cb21a9af0ea9fad9a9a083ac18a",
+      "sample_sql": "SET `autocommit` = ?",
+      "calls": 200,
+      "total_ms": 6.859,
+      "mean_ms": 0.0343,
+      "rows_examined": 0,
+      "rows_sent": 0,
+      "no_index_used": false,
+      "sample_params": []
+    },
+    {
+      "digest": "f2b9be5f0f32ca7507e4ddf133cd2fad0993a1c26fde9caa6f067b1af2b7603c",
+      "sample_sql": "COMMIT",
+      "calls": 100,
+      "total_ms": 5.405,
+      "mean_ms": 0.0541,
+      "rows_examined": 0,
+      "rows_sent": 0,
+      "no_index_used": false,
+      "sample_params": []
+    },
+    {
+      "digest": "9cf78ec1ee2746bb4c688b21593f69a1eba7026ba2277d7717cd8defb167449a",
+      "sample_sql": "SET SESSION TRANSACTION READ ONLY",
+      "calls": 100,
+      "total_ms": 4.183,
+      "mean_ms": 0.0418,
+      "rows_examined": 0,
+      "rows_sent": 0,
+      "no_index_used": false,
+      "sample_params": []
+    },
+    {
+      "digest": "664a2aec28f52c38fac12d5adf14d7f8da06346ba3a594072cc152ad9bcecb59",
+      "sample_sql": "SET SESSION TRANSACTION READ WRITE",
+      "calls": 100,
+      "total_ms": 2.73,
+      "mean_ms": 0.0273,
+      "rows_examined": 0,
+      "rows_sent": 0,
+      "no_index_used": false,
+      "sample_params": []
+    }
+  ],
+  "derived": {
+    "measured_requests": 100,
+    "measured_latency_ms": 2528.43,
+    "total_sql_statements": 600,
+    "statements_per_request": 6.0,
+    "app_sql_statements": 100,
+    "app_statements_per_request": 1.0,
+    "session_control_statements": 500,
+    "total_sql_ms": 1915.153,
+    "sql_share_of_latency_pct": 75.74,
+    "total_rows_examined": 19911200,
+    "total_rows_sent": 10000,
+    "distinct_digests": 5,
+    "distinct_app_digests": 1,
+    "distinct_session_digests": 4,
+    "digests_without_index": 0,
+    "busiest_digest": {
+      "digest": "1a06948f18f2b7d8df242006caa89c2649687cc623552c1aec54eaefba75549f",
+      "sample_sql": "SELECT `p1_0` . `id` , `p1_0` . `invoice_id` , `p1_0` . `amount` , `p1_0` . `paid_date` FROM `payment` `p1_0` WHERE `p1_0` . `paid_date` = ? ORDER BY `p1_0` . `id` LIMIT ?, ...",
+      "calls": 100,
+      "calls_per_request": 1.0,
+      "total_ms": 1895.976,
+      "rows_examined": 19911200
+    }
+  }
+}

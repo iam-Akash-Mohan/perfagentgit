@@ -375,6 +375,35 @@ def test_a_miss_recovers_the_correction_a_live_self_correction_left_behind(
     assert found == "schema error: fix your call"
 
 
+def test_recovery_handles_two_corrections_stacked_in_a_row(tmp_path: Path) -> None:
+    """UNB-01: a request was rejected, corrected, and the CORRECTED attempt
+    was rejected again (MAX_TOOL_CORRECTIONS allows up to 3) -- neither the
+    original nor the once-corrected request ever got cassette-written, only
+    the twice-corrected success. recover_self_correction must still find
+    the FIRST correction from that one far-ahead file (it only needs
+    agreement on the very next message, not the whole tail); the second
+    correction is then found the same way once run_agent's own loop has
+    appended the first."""
+    base = [{"role": "user", "content": "go"},
+           {"role": "assistant", "tool_calls": [{"id": "t1"}]},
+           {"role": "tool", "tool_call_id": "t1", "content": "result"}]
+    twice_corrected = [
+        *base,
+        {"role": "user", "content": "first schema error"},
+        {"role": "user", "content": "second schema error"},
+    ]
+    recorded = client(Recorder(ok(OPENAI_OK)), tmp_path)
+    recorded.cassette.write("k1", "cerebras", "gpt-oss-120b",
+                           {"messages": twice_corrected}, OPENAI_OK)
+
+    first = recorded.cassette.recover_self_correction(base)
+    assert first == "first schema error"
+
+    after_first = [*base, {"role": "user", "content": first}]
+    second = recorded.cassette.recover_self_correction(after_first)
+    assert second == "second schema error"
+
+
 def test_recovery_does_not_guess_when_ambiguous_or_absent(tmp_path: Path) -> None:
     recorded = client(Recorder(ok(OPENAI_OK)), tmp_path)
     base = [{"role": "user", "content": "go"}]

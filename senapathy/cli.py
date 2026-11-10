@@ -5,6 +5,7 @@ from typing import Any, Sequence
 
 import typer
 
+from .audit.cli import audit_command
 from .errors import ContractViolation, ToolError
 from .measure.baseline import baseline_command
 from .plan.cli import plan_command
@@ -20,6 +21,7 @@ app = typer.Typer(
 # `baseline` have moved; the rest follow in their own sessions.
 app.command(name="understand")(understand_command)
 app.command(name="baseline")(baseline_command)
+app.command(name="audit")(audit_command)
 app.command(name="plan")(plan_command)
 
 

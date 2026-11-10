@@ -400,7 +400,11 @@ def test_every_gate_runs_even_after_one_fails() -> None:
         plan(files=[]), paired_p_value=None,
     )
     assert len(decision.results) == 6
-    assert {r.name for r in decision.results} == set(GateName)
+    assert {r.name for r in decision.results} == {
+        GateName.BEHAVIOUR_PRESERVED, GateName.IMPROVEMENT_THRESHOLD,
+        GateName.STATISTICAL_SIGNIFICANCE, GateName.DIFF_MINIMALITY,
+        GateName.MECHANISM_MATCH, GateName.NO_FORBIDDEN_CHANGE,
+    }
 
 
 def test_no_argument_can_make_a_failing_gate_pass() -> None:
@@ -812,3 +816,200 @@ def test_pre_existing_rows_says_so_when_there_are_none() -> None:
     from senapathy.ship import _pre_existing_rows
 
     assert _pre_existing_rows([]) == "- (none recorded)"
+
+
+# ─────────────────────────  the schema-candidate gates  ──────────────────
+#
+# An add_index candidate's claim is STATEMENT-level: EXPLAIN's own plan,
+# rows examined, an interleaved direct-statement benchmark — never an
+# endpoint-level wall-clock figure, because blue and green share one
+# database. evaluate_schema_gates is the alternative path for exactly this
+# one shape of candidate; see docs/schema-changes.md.
+
+from senapathy.contracts.audit import IndexCandidate
+from senapathy.gate.rules import (MAX_INDEX_P_VALUE, SCANNING_REDUCTION_PCT,
+                                  evaluate_schema_gates,
+                                  schema_terminal_state_for)
+
+MIGRATION_DIFF = """diff --git a/src/main/resources/db/migration/V3__idx_invoice.sql b/src/main/resources/db/migration/V3__idx_invoice.sql
+--- /dev/null
++++ b/src/main/resources/db/migration/V3__idx_invoice.sql
+@@ -0,0 +1,2 @@
++-- Evidence: rows examined 1,500,000 -> 3
++CREATE INDEX idx_invoice_customer_id ON invoice (customer_id);
+"""
+
+
+def migration_patch(diff: str = MIGRATION_DIFF) -> Patch:
+    return Patch(
+        plan_id="h1", branch="senapathy/p12-004", diff=diff,
+        files_changed=["src/main/resources/db/migration/V3__idx_invoice.sql"],
+        lines_added=2, lines_removed=0, build_iterations=1,
+        tests_passed=0, tests_before=0,
+    )
+
+
+def proof(**overrides) -> IndexCandidate:
+    base: dict = {
+        "table": "invoice", "columns": ["customer_id"],
+        "column_rationale": "customer_id leads the index because it is "
+                           "filtered by equality.",
+        "plan_before": "invoice: type=ALL, key=no index",
+        "plan_after": "invoice: type=ref, key=senapathy_tmp_x",
+        "access_type_before": "ALL", "access_type_after": "ref",
+        "rows_examined_before": 1_500_000, "rows_examined_after": 3,
+        "actual_ms_before": 900.0, "actual_ms_after": 0.9,
+        "size_bytes": 4096,
+        "table_writes_since_reset": {"insert": 10, "update": 2, "delete": 0,
+                                     "fetch": 50_000},
+        "benchmark_rounds": 5,
+        "without_index_ms_samples": [20.0, 21.0, 19.5, 20.5, 20.0],
+        "with_index_ms_samples": [2.0, 2.1, 1.9, 2.2, 2.0],
+        "benchmark_p_value": 0.001, "improvement_pct": 90.0,
+    }
+    base.update(overrides)
+    return IndexCandidate.model_validate(base)
+
+
+def result_for_schema(decision, name: GateName):
+    return next(r for r in decision.results if r.name == name)
+
+
+def test_plan_improved_passes_when_access_type_ranks_better() -> None:
+    decision = evaluate_schema_gates(verdict(), proof(), migration_patch())
+    result = result_for_schema(decision, GateName.PLAN_IMPROVED)
+    assert result.passed is True
+    assert "ALL" in result.actual and "ref" in result.actual
+
+
+def test_plan_improved_fails_when_the_access_type_does_not_improve() -> None:
+    decision = evaluate_schema_gates(
+        verdict(),
+        proof(access_type_before="ref", access_type_after="ref"),
+        migration_patch(),
+    )
+    assert result_for_schema(decision, GateName.PLAN_IMPROVED).passed is False
+
+
+def test_plan_improved_fails_on_an_unknown_access_type() -> None:
+    """An access type this harness has never seen ranks as unknown, not as
+    an improvement by default."""
+    decision = evaluate_schema_gates(
+        verdict(), proof(access_type_before="all", access_type_after="weird"),
+        migration_patch(),
+    )
+    assert result_for_schema(decision, GateName.PLAN_IMPROVED).passed is False
+
+
+def test_scanning_reduced_passes_above_the_floor() -> None:
+    decision = evaluate_schema_gates(verdict(), proof(), migration_patch())
+    assert result_for_schema(decision, GateName.SCANNING_REDUCED).passed is True
+
+
+def test_scanning_reduced_fails_below_the_floor() -> None:
+    """Rows examined moving less than SCANNING_REDUCTION_PCT is not a
+    material reduction, even though it IS a reduction."""
+    decision = evaluate_schema_gates(
+        verdict(),
+        proof(rows_examined_before=1000, rows_examined_after=900),
+        migration_patch(),
+    )
+    result = result_for_schema(decision, GateName.SCANNING_REDUCED)
+    assert result.passed is False
+    assert f"{SCANNING_REDUCTION_PCT:.0f}%" in result.threshold
+
+
+def test_statement_faster_passes_on_a_significant_improvement() -> None:
+    decision = evaluate_schema_gates(verdict(), proof(), migration_patch())
+    assert result_for_schema(decision, GateName.STATEMENT_FASTER).passed is True
+
+
+def test_statement_faster_fails_without_a_recorded_benchmark() -> None:
+    decision = evaluate_schema_gates(
+        verdict(),
+        proof(without_index_ms_samples=[], with_index_ms_samples=[],
+             benchmark_p_value=None, improvement_pct=None),
+        migration_patch(),
+    )
+    result = result_for_schema(decision, GateName.STATEMENT_FASTER)
+    assert result.passed is False
+    assert "no interleaved benchmark" in result.actual
+
+
+def test_statement_faster_fails_when_the_p_value_does_not_clear_the_bar() -> None:
+    decision = evaluate_schema_gates(
+        verdict(),
+        proof(benchmark_p_value=MAX_INDEX_P_VALUE + 0.1),
+        migration_patch(),
+    )
+    assert result_for_schema(decision, GateName.STATEMENT_FASTER).passed is False
+
+
+def test_index_not_redundant_passes_when_nothing_covers_it() -> None:
+    decision = evaluate_schema_gates(verdict(), proof(), migration_patch())
+    assert result_for_schema(decision, GateName.INDEX_NOT_REDUNDANT).passed is True
+
+
+def test_index_not_redundant_fails_when_already_covered() -> None:
+    decision = evaluate_schema_gates(
+        verdict(), proof(already_covered_by="idx_invoice_customer_id_status"),
+        migration_patch(),
+    )
+    result = result_for_schema(decision, GateName.INDEX_NOT_REDUNDANT)
+    assert result.passed is False
+    assert "idx_invoice_customer_id_status" in result.detail
+
+
+def test_behaviour_preserved_and_no_forbidden_change_are_reused_unchanged() -> None:
+    """The schema path's six gates are BEHAVIOUR_PRESERVED and
+    NO_FORBIDDEN_CHANGE (the exact same functions the endpoint path uses)
+    plus the four new ones — never a parallel, possibly-divergent copy."""
+    decision = evaluate_schema_gates(verdict(passed=False), proof(), migration_patch())
+    assert result_for_schema(decision, GateName.BEHAVIOUR_PRESERVED).passed is False
+
+    bad_diff = migration_patch(
+        diff=MIGRATION_DIFF.replace(
+            "CREATE INDEX idx_invoice_customer_id ON invoice (customer_id);",
+            "ALTER TABLE invoice ADD COLUMN foo VARCHAR(10);",
+        )
+    )
+    decision2 = evaluate_schema_gates(verdict(), proof(), bad_diff)
+    assert result_for_schema(decision2, GateName.NO_FORBIDDEN_CHANGE).passed is False
+
+
+def test_evaluate_schema_gates_runs_every_gate_even_after_one_fails() -> None:
+    decision = evaluate_schema_gates(
+        verdict(passed=False), proof(already_covered_by="idx_x"), migration_patch())
+    assert len(decision.results) == 6
+    assert {r.name for r in decision.results} == {
+        GateName.BEHAVIOUR_PRESERVED, GateName.PLAN_IMPROVED,
+        GateName.SCANNING_REDUCED, GateName.STATEMENT_FASTER,
+        GateName.NO_FORBIDDEN_CHANGE, GateName.INDEX_NOT_REDUNDANT,
+    }
+
+
+def test_schema_terminal_state_behaviour_failure_wins_first() -> None:
+    decision = evaluate_schema_gates(
+        verdict(passed=False), proof(already_covered_by="idx_x"), migration_patch())
+    assert schema_terminal_state_for(decision) == TerminalState.BEHAVIOUR_NOT_PRESERVED
+
+
+def test_schema_terminal_state_no_significant_improvement_for_the_proof_gates() -> None:
+    decision = evaluate_schema_gates(
+        verdict(), proof(access_type_before="ref", access_type_after="ref"),
+        migration_patch(),
+    )
+    assert schema_terminal_state_for(decision) == TerminalState.NO_SIGNIFICANT_IMPROVEMENT
+
+
+def test_schema_terminal_state_bottleneck_not_fixable_for_redundancy() -> None:
+    decision = evaluate_schema_gates(
+        verdict(), proof(already_covered_by="idx_x"), migration_patch())
+    assert schema_terminal_state_for(decision) == TerminalState.BOTTLENECK_NOT_FIXABLE
+
+
+def test_schema_terminal_state_ready_to_ship_then_pr_opened() -> None:
+    decision = evaluate_schema_gates(verdict(), proof(), migration_patch())
+    assert schema_terminal_state_for(decision) == TerminalState.READY_TO_SHIP
+    assert (schema_terminal_state_for(decision, shipped=True)
+           == TerminalState.PR_OPENED)

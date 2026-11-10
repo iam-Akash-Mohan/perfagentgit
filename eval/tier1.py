@@ -100,7 +100,8 @@ def tools_from_cassettes(cassette_dir: Path) -> list[dict[str, Any]]:
 
 
 def replay_diagnose(scenario_dir: Path) -> HypothesisSet:
-    from senapathy.contracts import RequestCorpus
+    from senapathy.audit.run import load_sql_audit
+    from senapathy.contracts import DataAccess, RequestCorpus
     from senapathy.diagnose.agent import build_task
     from senapathy.diagnose.probe import ProbeCatalog, ProbeLog
     from senapathy.diagnose.validate import validate_hypothesis_set
@@ -112,6 +113,12 @@ def replay_diagnose(scenario_dir: Path) -> HypothesisSet:
         json.loads((scenario_dir / "corpus.json").read_text()))
     p50 = baseline["benchmark"]["latency"]["p50_ms"]
     sql_share = (baseline.get("derived") or {}).get("sql_share_of_latency_pct")
+    data_access = [DataAccess.model_validate(a)
+                  for a in endpoint_model_raw.get("data_access") or []]
+    # None for every scenario frozen before the audit phase existed --
+    # render_evidence/validate_hypothesis_set both degrade to "nothing to
+    # reconcile against", so an old recording replays byte-identical.
+    sql_audit = load_sql_audit(scenario_dir / "sql_audit.json")
 
     # Must match diagnose/agent.py::run_diagnosis exactly (same base_url, same
     # endpoint_model/corpus) -- the catalog's own description text goes into
@@ -134,7 +141,8 @@ def replay_diagnose(scenario_dir: Path) -> HypothesisSet:
     def emit_hypotheses(**payload: Any) -> str:
         try:
             result = validate_hypothesis_set(
-                payload, p50, probe_log, sql_share_of_latency_pct=sql_share)
+                payload, p50, probe_log, sql_share_of_latency_pct=sql_share,
+                data_access=data_access, sql_audit=sql_audit)
         except ToolError as exc:
             rejections.append(str(exc))
             raise
@@ -147,7 +155,8 @@ def replay_diagnose(scenario_dir: Path) -> HypothesisSet:
     client = make_client(cassette_dir=cassette_dir, offline=True)
     outcome = run_agent(
         client=client,
-        task=build_task(baseline, endpoint_model_raw, catalog=catalog),
+        task=build_task(baseline, endpoint_model_raw, catalog=catalog,
+                        sql_audit=sql_audit),
         tools=tools_from_cassettes(cassette_dir),
         handlers={"run_probe": run_probe, "emit_hypotheses": emit_hypotheses},
         budget=LoopBudget(max_steps=30),
@@ -258,6 +267,10 @@ def replay_plan(scenario_dir: Path, repo: Path, hypotheses: HypothesisSet) -> An
          for d in json.loads(baseline_path.read_text()).get("sql_digests") or []]
         if baseline_path.exists() else []
     )
+    # None for every scenario frozen before the audit phase existed -- same
+    # degrade-to-nothing discipline as replay_diagnose's own sql_audit load.
+    from senapathy.audit.run import load_sql_audit
+    sql_audit = load_sql_audit(scenario_dir / "sql_audit.json")
 
     system = load_prompt(
         "plan.system", unbounded_collections=_unbounded_summary(endpoint_model))
@@ -267,7 +280,8 @@ def replay_plan(scenario_dir: Path, repo: Path, hypotheses: HypothesisSet) -> An
         measured_total_ms=f"{hypotheses.measured_total_ms:.1f}",
         brief=render_brief(ranked=ranked, hypotheses=by_id,
                            considered=considered, model=endpoint_model,
-                           baseline_digests=baseline_digests),
+                           baseline_digests=baseline_digests,
+                           sql_audit=sql_audit),
     )
     prompt_hash = content_hash({"system": system.hash, "user": user.hash})
 
@@ -276,7 +290,7 @@ def replay_plan(scenario_dir: Path, repo: Path, hypotheses: HypothesisSet) -> An
         root=root, model=endpoint_model, ranked=ranked, considered=considered,
         sink=sink, endpoint=endpoint_model.route,
         measured_total_ms=hypotheses.measured_total_ms, prompt_hash=prompt_hash,
-        baseline_digests=baseline_digests,
+        baseline_digests=baseline_digests, sql_audit=sql_audit,
     )
 
     tool_responses = load_tool_responses(scenario_dir)

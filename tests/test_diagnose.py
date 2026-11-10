@@ -215,6 +215,25 @@ def test_rendered_evidence_carries_every_required_section() -> None:
     assert "autocommit" not in text
 
 
+def test_rendered_evidence_omits_the_sql_audit_section_when_none_given() -> None:
+    assert "SQL AUDIT" not in render_evidence(_baseline(), _endpoint_model())
+
+
+def test_rendered_evidence_shows_flagged_statements_from_the_audit() -> None:
+    text = render_evidence(_baseline(), _endpoint_model(),
+                           sql_audit=_sql_audit(total_ms=800.0))
+    assert "SQL AUDIT" in text
+    assert "MISSING_INDEX" in text
+    assert "500,000" in text
+
+
+def test_rendered_evidence_says_so_when_the_audit_found_nothing_flagged() -> None:
+    audit = _sql_audit(classification="OPTIMAL")
+    text = render_evidence(_baseline(), _endpoint_model(), sql_audit=audit)
+    assert "SQL AUDIT" in text
+    assert "none" in text.lower()
+
+
 def test_task_states_the_open_question_with_computed_numbers() -> None:
     catalog = ProbeCatalog("http://app", _paginated_endpoint_model(), _paginated_corpus())
     task = build_task(_baseline(), _paginated_endpoint_model(), catalog=catalog)
@@ -224,6 +243,14 @@ def test_task_states_the_open_question_with_computed_numbers() -> None:
     assert "SWEEPING page_size" in task   # this endpoint paginates
     assert "MEASURED FACTS" in task
     assert "must not exceed 1200 ms" in task   # p50 * 1.20
+
+
+def test_task_carries_the_sql_audit_section_when_one_is_given() -> None:
+    catalog = ProbeCatalog("http://app", _paginated_endpoint_model(), _paginated_corpus())
+    task = build_task(_baseline(), _paginated_endpoint_model(), catalog=catalog,
+                      sql_audit=_sql_audit(total_ms=800.0))
+    assert "SQL AUDIT" in task
+    assert "MISSING_INDEX" in task
 
 
 def test_task_tells_a_non_paginated_endpoint_to_vary_request_id_instead() -> None:
@@ -320,6 +347,129 @@ def test_sql_share_checks_are_skipped_when_not_supplied() -> None:
     no_database = [_h(1, 300, "orm_hydration"), _h(2, 200, "serialization"),
                   _h(3, 100, "application_logic")]
     result = validate_hypothesis_set(_payload(hypotheses=no_database), P50)
+    assert result.measured_total_ms == P50
+
+
+# ──────────────  2d: entity hydration needs something to hydrate  ────────
+#
+# "Zero per-row data accesses" never told diagnosis whether the per-REQUEST
+# access it DID record hydrates anything at all -- a single query can still
+# materialise fifty entities. These exercise the fact that closes that gap:
+# what a data access's own query RETURNS, not merely that it runs.
+
+def _projection_only_access() -> list[dict[str, Any]]:
+    """SER-01/UNB-01/COL-04's shape: every access is a JPQL constructor
+    projection or a scalar aggregate -- nothing here ever hydrates."""
+    return [
+        {"trigger": "repo.findBioRows", "kind": "jpql_query",
+         "file": "repo/CustomerProfileRepository.java", "line": 20,
+         "executes_per_row": False, "returns": "projection"},
+        {"trigger": "repo.countActive", "kind": "derived_query",
+         "file": "repo/CustomerProfileRepository.java", "line": 24,
+         "executes_per_row": False, "returns": "scalar"},
+    ]
+
+
+def _entity_returning_access() -> list[dict[str, Any]]:
+    """A genuine hydration case: one access returns a managed entity."""
+    return [
+        {"trigger": "repo.findById", "kind": "derived_query",
+         "file": "repo/CustomerProfileRepository.java", "line": 18,
+         "executes_per_row": False, "returns": "entities"},
+    ]
+
+
+def test_orm_hydration_is_refused_when_every_access_is_a_projection() -> None:
+    """The exact shape that survived both the probe-hardcoding fix and the
+    per-row reconciliation check: a single JPQL constructor-expression query
+    that hydrates nothing, and an orm_hydration hypothesis about it anyway."""
+    from senapathy.contracts import DataAccess
+
+    with pytest.raises(ToolError, match="claims entity hydration"):
+        validate_hypothesis_set(
+            _payload(), P50,
+            data_access=[DataAccess.model_validate(a)
+                        for a in _projection_only_access()])
+
+
+def test_orm_hydration_is_accepted_when_an_access_returns_an_entity() -> None:
+    from senapathy.contracts import DataAccess
+
+    result = validate_hypothesis_set(
+        _payload(), P50,
+        data_access=[DataAccess.model_validate(a)
+                    for a in _entity_returning_access()])
+    assert result.measured_total_ms == P50
+
+
+def test_orm_hydration_is_accepted_when_returns_is_unknown() -> None:
+    """An access recorded before `returns` existed is unknown, never a
+    negative -- a partially-annotated endpoint model must not start
+    refusing hypotheses it has no real evidence against."""
+    from senapathy.contracts import DataAccess
+
+    mixed = [DataAccess.model_validate(a) for a in _projection_only_access()]
+    mixed.append(DataAccess.model_validate(
+        {"trigger": "repo.legacy", "kind": "jpql_query",
+         "file": "repo/Legacy.java", "line": 9, "executes_per_row": False}))
+    result = validate_hypothesis_set(_payload(), P50, data_access=mixed)
+    assert result.measured_total_ms == P50
+
+
+def test_entity_hydration_check_is_skipped_when_no_data_access_supplied() -> None:
+    result = validate_hypothesis_set(_payload(), P50, data_access=None)
+    assert result.measured_total_ms == P50
+
+
+def _sql_audit(classification: str = "MISSING_INDEX", total_ms: float = 800.0,
+              digest_text: str = "select * from customer where region = ?"):
+    from senapathy.contracts.audit import AuditedStatement, SqlAudit
+
+    return SqlAudit(
+        endpoint="GET /x", measured_total_ms=P50,
+        statements=[AuditedStatement(
+            digest="d1", digest_text=digest_text, calls=5, total_ms=total_ms,
+            classification=classification, rows_examined=500_000,
+            rows_returned=3, actual_ms=total_ms,
+        )],
+    )
+
+
+def test_an_unmentioned_missing_index_finding_is_a_gap() -> None:
+    """COL-04's own shape: a flagged statement nobody names by table."""
+    with pytest.raises(ToolError, match="no hypothesis mentions"):
+        validate_hypothesis_set(_payload(), P50, sql_audit=_sql_audit())
+
+
+def test_a_missing_index_finding_named_by_table_is_accepted() -> None:
+    payload = _payload()
+    payload["hypotheses"][0]["claim"] = "the customer table full scan dominates"
+    result = validate_hypothesis_set(payload, P50, sql_audit=_sql_audit())
+    assert result.measured_total_ms == P50
+
+
+def test_a_trivial_finding_below_the_materiality_floor_is_not_a_gap() -> None:
+    """10 ms of a 1000 ms p50 (1%) is below the 5% floor -- not worth a
+    diagnosis blocking forever over, unlike COL-04's own dominant scan."""
+    result = validate_hypothesis_set(_payload(), P50, sql_audit=_sql_audit(total_ms=10.0))
+    assert result.measured_total_ms == P50
+
+
+def test_an_optimal_statement_is_never_a_gap() -> None:
+    result = validate_hypothesis_set(
+        _payload(), P50, sql_audit=_sql_audit(classification="OPTIMAL"))
+    assert result.measured_total_ms == P50
+
+
+def test_a_statement_with_no_extractable_table_is_not_a_gap() -> None:
+    """Nothing to name by table -- refusing to guess, not refusing to pass."""
+    result = validate_hypothesis_set(
+        _payload(), P50, sql_audit=_sql_audit(digest_text="select 1"))
+    assert result.measured_total_ms == P50
+
+
+def test_sql_audit_reconciliation_is_skipped_when_none_supplied() -> None:
+    result = validate_hypothesis_set(_payload(), P50, sql_audit=None)
     assert result.measured_total_ms == P50
 
 

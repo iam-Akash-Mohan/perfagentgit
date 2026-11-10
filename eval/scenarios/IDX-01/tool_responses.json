@@ -1,0 +1,31 @@
+{
+  "diagnose": [
+    {
+      "args": {
+        "iterations": 10,
+        "page_size": 1,
+        "request_id": "dense-date2023-07-02-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/payments/by-date?date=2023-07-02&page=0&size=1  (request_id='dense-date2023-07-02-p0-s100', page_size=1) iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 5.4 ms\n  p95 latency                  : 8.1 ms\n  result rows in response      : 1\n  response body size (median)  : 72 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.2 ms (4.2 % of p50)\n  latency per result row       : 5.4 ms\n  body bytes per result row    : 72",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 10,
+        "page_size": 100,
+        "request_id": "dense-date2023-07-02-p0-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/payments/by-date?date=2023-07-02&page=0&size=100  (request_id='dense-date2023-07-02-p0-s100', page_size=100) iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 8.8 ms\n  p95 latency                  : 11.8 ms\n  result rows in response      : 100\n  response body size (median)  : 7261 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 0.3 ms (3.5 % of p50)\n  latency per result row       : 0.1 ms\n  body bytes per result row    : 72",
+      "tool": "run_probe"
+    },
+    {
+      "args": {
+        "iterations": 10,
+        "request_id": "dense-date2023-07-02-p2-s100"
+      },
+      "result": "probe: GET http://localhost:18080/api/payments/by-date?date=2023-07-02&page=2&size=100  (request_id='dense-date2023-07-02-p2-s100') iterations=10 (1 warmup discarded)\n  statuses                     : {'200': 10}\n  p50 latency                  : 8.1 ms\n  p95 latency                  : 23.9 ms\n  result rows in response      : 100\n  response body size (median)  : 7443 bytes\n  application SQL per request  : 1.0 statements\n  server-side SQL per request  : 2.0 ms (24.8 % of p50)\n  latency per result row       : 0.1 ms\n  body bytes per result row    : 74",
+      "tool": "run_probe"
+    }
+  ],
+  "plan": []
+}

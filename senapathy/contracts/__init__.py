@@ -12,12 +12,14 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
+from .audit import (AuditClassification, AuditedStatement, IndexCandidate,
+                    RewriteCandidate, SqlAudit)
 from .comprehension import (CacheInfo, CallHop, DataAccess, DataAccessKind,
-                            EndpointModel, EntityInfo, EntityRelation,
-                            ExternalCall, HiddenQueryTrigger, IndexInfo,
-                            PaginationInfo, PerRowWork, RequestParameter,
-                            RequestShape, ResponseShape, SqlSource, TableInfo,
-                            TransactionInfo)
+                            DataAccessReturns, EndpointModel, EntityInfo,
+                            EntityRelation, ExternalCall, HiddenQueryTrigger,
+                            IndexInfo, PaginationInfo, PerRowWork,
+                            RequestParameter, RequestShape, ResponseShape,
+                            SqlSource, TableInfo, TransactionInfo)
 from .plan import (APPROACHES, BLOCKED_BELOW, MECHANISMS, Approach,
                    CandidateFix, FixabilityAssessment, Mechanism, Plan,
                    RankedHypothesis, Rejection, RiskTier, SqlVerification)
@@ -26,8 +28,12 @@ from .primitives import ArtifactRef, Citation
 __all__ = [
     # primitives
     "Citation", "ArtifactRef",
+    # audit
+    "AuditClassification", "AuditedStatement", "IndexCandidate",
+    "RewriteCandidate", "SqlAudit",
     # comprehension
-    "CacheInfo", "CallHop", "DataAccess", "DataAccessKind", "EndpointModel",
+    "CacheInfo", "CallHop", "DataAccess", "DataAccessKind", "DataAccessReturns",
+    "EndpointModel",
     "EntityInfo", "EntityRelation", "ExternalCall", "HiddenQueryTrigger",
     "IndexInfo", "PaginationInfo", "PerRowWork", "RequestParameter",
     "RequestShape", "ResponseShape", "SqlSource", "TableInfo",
@@ -291,6 +297,12 @@ class CandidatePlan(BaseModel):
     risk_tier: RiskTier                    # assigned by CODE, not the model
     what_could_break: list[str]
     requires_flag: bool = False
+    schema_proof: IndexCandidate | None = Field(
+        default=None,
+        description="Copied from the selected CandidateFix. Its presence IS "
+                    "the switch every downstream phase reads to take the "
+                    "schema-candidate path instead of the endpoint-level "
+                    "one — see CandidateFix.schema_proof.")
 
 
 # ──────────────────────────  P12 implementation  ─────────────────────────
@@ -351,6 +363,16 @@ class GateName(str, Enum):
     DIFF_MINIMALITY = "diff_minimality"
     MECHANISM_MATCH = "mechanism_match"
     NO_FORBIDDEN_CHANGE = "no_forbidden_change"
+    # The schema-candidate path (gate.rules.evaluate_schema_gates): a
+    # statement-level claim, never an endpoint-level one, for a candidate
+    # whose proof is an additive index measured by index_benefit rather
+    # than an endpoint A/B neither arm's shared schema can honestly run.
+    # BEHAVIOUR_PRESERVED and NO_FORBIDDEN_CHANGE are reused unchanged —
+    # both are already schema-agnostic facts.
+    PLAN_IMPROVED = "plan_improved"
+    SCANNING_REDUCED = "scanning_reduced"
+    STATEMENT_FASTER = "statement_faster"
+    INDEX_NOT_REDUNDANT = "index_not_redundant"
 
 
 class GateResult(BaseModel):
@@ -380,8 +402,14 @@ class TerminalState(str, Enum):
     NO_SIGNIFICANT_IMPROVEMENT = "NO_SIGNIFICANT_IMPROVEMENT"
     # "we could not measure this" is a different fact from "this did not
     # help", and a report in which they look alike is a report that teaches
-    # the reader the wrong lesson. Raised when a schema change cannot be A/B
-    # measured because both arms share one database.
+    # the reader the wrong lesson. Raised when a candidate's claim is
+    # ENDPOINT-level wall-clock p95 and the two arms share one database, so
+    # that claim specifically cannot be honestly measured. Narrower than it
+    # used to be: an add_index candidate that cites a matching SQL-audit
+    # finding takes the schema-candidate gate path instead (plan shape and
+    # rows examined, proven by the database on either arm's shared schema)
+    # and never reaches this state at all — this is what remains for a
+    # schema change someone tried to prove by an endpoint-level A/B anyway.
     MEASUREMENT_NOT_ISOLATED = "MEASUREMENT_NOT_ISOLATED"
     ENVIRONMENT_INFEASIBLE = "ENVIRONMENT_INFEASIBLE"
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
@@ -392,7 +420,7 @@ class TerminalState(str, Enum):
 
 class Phase(str, Enum):
     ONBOARD = "P-1"; PROVISION = "P0"; COMPREHEND = "P1"; WORKLOAD = "P2"
-    ORACLE = "P3"; BASELINE = "P4"; DIAGNOSE = "P5"; PLAN = "P6"
+    ORACLE = "P3"; BASELINE = "P4"; AUDIT = "P4.5"; DIAGNOSE = "P5"; PLAN = "P6"
     IMPLEMENT = "P7"; VERIFY = "P8"; MEASURE = "P9"; GATE = "P10"; SHIP = "P11"
 
 

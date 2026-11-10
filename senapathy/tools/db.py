@@ -183,12 +183,58 @@ class PlanReading:
     def any_index_used(self) -> bool:
         return any(key for key in self.keys_used.values())
 
+    @property
+    def uses_filesort(self) -> bool:
+        """EXPLAIN ANALYZE's tree format says `-> Sort: ...`, never the word
+        'filesort' — that spelling is classic EXPLAIN's "Extra" column, a
+        different report this tool does not read. Verified directly against
+        a real server: `ORDER BY amount LIMIT 10` with no serving index
+        produces a `-> Sort: customer_payment.amount, limit input to ...`
+        node, not the word 'filesort' anywhere in the tree."""
+        return "-> sort:" in self.tree.lower()
+
+    @property
+    def uses_temporary(self) -> bool:
+        """Two real spellings seen on a live server for a GROUP BY/ORDER BY
+        combination neither an index nor the aggregation path alone can
+        serve: `Table scan on <temporary>` and `Temporary table with
+        deduplication`. Checking for '<temporary>' covers both — the second
+        phrase always accompanies a temp table that also gets scanned."""
+        return "<temporary>" in self.tree.lower()
+
     def summary(self) -> str:
         parts = []
         for table, access in self.access_types.items():
             key = self.keys_used.get(table) or "no index"
             parts.append(f"{table}: type={access}, key={key}")
         return " · ".join(parts) or "no table access reported"
+
+
+@dataclass
+class IndexBenefitResult:
+    """`index_benefit`'s own measurement, structured rather than rendered.
+
+    Exactly one of two shapes: `covered_by` set means the call was REFUSED
+    (an index already serves this column set) and `before`/`after` are both
+    None — there was nothing to measure. Otherwise `covered_by` is None and
+    `before`/`after` carry the comparison (unless `timed_out`, in which case
+    `after` stays None too — the index was killed mid-build).
+    """
+
+    table: str
+    columns: list[str]
+    index_name: str | None
+    covered_by: str | None = None
+    covered_by_columns: list[str] = field(default_factory=list)
+    before: PlanReading | None = None
+    after: PlanReading | None = None
+    created_ms: float = 0.0
+    size_bytes: int | None = None
+    dropped: bool = True
+    swept: list[str] = field(default_factory=list)
+    timed_out: bool = False
+    without_index_ms_samples: list[float] = field(default_factory=list)
+    with_index_ms_samples: list[float] = field(default_factory=list)
 
 
 def parse_tree(tree: str) -> tuple[int, int, float]:
@@ -370,16 +416,7 @@ class DbToolbox:
 
     def explain(self, sql: str, params: list[str] | None = None) -> str:
         """EXPLAIN ANALYZE one SELECT and report what it actually did."""
-        statement = require_select(sql, what="explain")
-        with connect(self.target) as conn:
-            cursor = self._cursor(conn)
-            try:
-                reading = self._read_plan(cursor, statement, params)
-            except Exception as exc:  # noqa: BLE001 — the model must read this
-                raise _explain_error(exc, statement) from exc
-            finally:
-                cursor.close()
-
+        reading = self.explain_measured(sql, params)
         return "\n".join([
             "PLAN (EXPLAIN ANALYZE — actual rows and actual time)",
             reading.tree,
@@ -396,6 +433,57 @@ class DbToolbox:
         ])
 
     # ── verify a candidate's own before/after claim, read-only ───────────
+
+    def explain_measured(self, sql: str,
+                        params: list[str] | None = None) -> PlanReading:
+        """The structured `PlanReading` behind `explain()`'s rendered text —
+        for code that needs the numbers themselves (the SQL audit's
+        classifier), not a model-facing report. Same SELECT-only guardrail,
+        same single EXPLAIN ANALYZE; `explain()` is now a thin renderer over
+        this."""
+        statement = require_select(sql, what="explain_measured")
+        with connect(self.target) as conn:
+            cursor = self._cursor(conn)
+            try:
+                return self._read_plan(cursor, statement, params)
+            except Exception as exc:  # noqa: BLE001 — the caller must read this
+                raise _explain_error(exc, statement) from exc
+            finally:
+                cursor.close()
+
+    def table_write_volume(self, table: str) -> dict[str, int] | None:
+        """{'insert': n, 'update': n, 'delete': n, 'fetch': n} for `table`,
+        from `performance_schema.table_io_waits_summary_by_table` —
+        CUMULATIVE since the server's statistics were last reset, not a
+        rate. An index is not free: it slows every INSERT and UPDATE on the
+        table it sits on, and EXPLAIN never shows that cost. This is the
+        write side of that trade-off, read the same way `_index_size`
+        reads the size side — both degrade to None rather than raising,
+        because an account that cannot read performance_schema should
+        still get whatever evidence IS available, not a hard failure.
+        """
+        name = self._check_table(table)
+        try:
+            with connect(self.target) as conn:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(
+                        "SELECT COUNT_INSERT, COUNT_UPDATE, COUNT_DELETE, "
+                        "COUNT_FETCH FROM "
+                        "performance_schema.table_io_waits_summary_by_table "
+                        "WHERE OBJECT_SCHEMA = %s AND OBJECT_NAME = %s",
+                        (self.target.database, name),
+                    )
+                    row = cursor.fetchone()
+                finally:
+                    cursor.close()
+        except Exception:  # noqa: BLE001 — a missing privilege is not a failure
+            return None
+        if row is None:
+            return None
+        insert, update, delete, fetch = row
+        return {"insert": int(insert or 0), "update": int(update or 0),
+               "delete": int(delete or 0), "fetch": int(fetch or 0)}
 
     def plan_delta(self, sql_before: str, sql_after: str,
                    params: list[str] | None = None) -> tuple[PlanReading, PlanReading]:
@@ -422,6 +510,58 @@ class DbToolbox:
             finally:
                 cursor.close()
         return before, after
+
+    def benchmark_interleaved(
+        self, sql_a: str, sql_b: str, params: list[str] | None = None,
+        *, rounds: int = 5,
+    ) -> tuple[list[float], list[float]]:
+        """Wall-clock timings for two statements, interleaved (A, B, A, B,
+        ...), never sequentially. A sequential A-then-B comparison credits
+        B with whatever buffer-pool warming A already paid for; alternating
+        gives both statements the same cold/warm mix across the run.
+        Read-only, nothing created or dropped — same safety properties as
+        `explain`/`plan_delta`: SELECT-only, one connection, the session
+        timeout `_cursor` already sets.
+
+        Returns `(a_timings_ms, b_timings_ms)`, `rounds` entries each, in
+        the order they were measured. The caller decides what to do with
+        the distribution (median is what `audit/candidates.py` uses) —
+        this method measures, it does not summarise.
+        """
+        a_sql = require_select(sql_a, what="benchmark_interleaved (sql_a)")
+        b_sql = require_select(sql_b, what="benchmark_interleaved (sql_b)")
+        bound = bind_params(params)
+        with connect(self.target) as conn:
+            cursor = self._cursor(conn)
+            try:
+                return self._interleave(cursor, a_sql, b_sql, bound, rounds)
+            except Exception as exc:  # noqa: BLE001 — the caller must read this
+                raise _explain_error(exc, f"{a_sql}  /  {b_sql}") from exc
+            finally:
+                cursor.close()
+
+    def _interleave(
+        self, cursor: Any, a_sql: str, b_sql: str, bound: tuple[Any, ...],
+        rounds: int,
+    ) -> tuple[list[float], list[float]]:
+        """The actual A,B,A,B,... loop, on a cursor the caller already
+        opened — shared by `benchmark_interleaved` (opens its own
+        connection) and `index_benefit_measured` (reuses the connection
+        that just built the candidate index, so the benchmark runs WHILE
+        it exists rather than needing a second create/drop cycle)."""
+        a_timings: list[float] = []
+        b_timings: list[float] = []
+        for _ in range(max(1, rounds)):
+            started = time.perf_counter()
+            cursor.execute(a_sql, bound)
+            cursor.fetchall()
+            a_timings.append((time.perf_counter() - started) * 1000.0)
+
+            started = time.perf_counter()
+            cursor.execute(b_sql, bound)
+            cursor.fetchall()
+            b_timings.append((time.perf_counter() - started) * 1000.0)
+        return a_timings, b_timings
 
     # ── 2. list_indexes ──────────────────────────────────────────────────
 
@@ -464,7 +604,64 @@ class DbToolbox:
         """Measure what an index WOULD be worth, then leave no trace.
 
         The index is created, the statement re-measured, and the index dropped
-        in a `finally` — on success, on failure, and on timeout.
+        in a `finally` — on success, on failure, and on timeout. Thin wrapper
+        over `index_benefit_measured`, which does the actual work and hands
+        back the numbers rather than rendered text — the SQL audit phase
+        calls that one directly rather than parsing this string back apart.
+        """
+        result = self.index_benefit_measured(table, columns, sql, params)
+        if result.covered_by is not None:
+            return (
+                f"REFUSED: {result.table}({', '.join(result.columns)}) is "
+                f"already covered by the existing index {result.covered_by}"
+                f"({', '.join(result.covered_by_columns)}). Creating it "
+                f"again costs write throughput and buys nothing. Stop here "
+                f"and measure something else."
+            )
+        if result.timed_out:
+            raise ToolError(
+                f"creating {result.index_name} on {result.table}"
+                f"({', '.join(result.columns)}) exceeded the "
+                f"{self.index_timeout_s:.0f}s ceiling and was killed. The "
+                f"index was dropped"
+                f"{'' if result.dropped else ' — VERIFY MANUALLY, the drop also failed'}.",
+                suggestion="Measure a narrower index, or accept that an index "
+                           "this expensive to build is itself a cost.",
+            )
+        assert result.before is not None and result.after is not None
+        return _render_benefit(
+            table=result.table, columns=result.columns,
+            index_name=result.index_name, before=result.before,
+            after=result.after, created_ms=result.created_ms,
+            size_bytes=result.size_bytes, dropped=result.dropped,
+            swept=result.swept,
+        )
+
+    def index_benefit_measured(
+        self, table: str, columns: list[str], sql: str,
+        params: list[str] | None = None, *,
+        benchmark_hint_position: int | None = None,
+        benchmark_rounds: int = 0,
+    ) -> "IndexBenefitResult":
+        """`index_benefit`'s own measurement, as numbers rather than text.
+
+        Not exposed to the model as a tool — called from code (the SQL audit
+        phase) the same way `plan_delta` is: a caller that already has its
+        own reason to run this and needs the structured result, not a model
+        exploring. Same safety properties as `index_benefit`: additive only,
+        `senapathy_tmp_*` naming, dropped in `finally`, swept at
+        construction, KILL QUERY watchdog on timeout.
+
+        `benchmark_hint_position` (an offset into `sql`, from
+        `audit.reconstruct.table_reference_end`) turns on an INTERLEAVED
+        real-execution benchmark, run WHILE the candidate index still
+        exists — the only way to measure "with it" against "without it"
+        without a second create/drop cycle. `sql` with an `IGNORE INDEX
+        (...)` clause spliced in at that position is the "without" side;
+        `sql` unchanged is the "with" side, since the optimizer picks the
+        index it was just given automatically. Skipped (both samples lists
+        stay empty) when no position is given, when `benchmark_rounds` is
+        0, or when the index could not be built at all.
         """
         self._assert_measurement_database()
         name = self._check_table(table)
@@ -478,12 +675,11 @@ class DbToolbox:
                 existing = self._indexes(cursor, name)
                 covered = covering_index(existing, wanted)
                 if covered is not None:
-                    return (
-                        f"REFUSED: {name}({', '.join(wanted)}) is already "
-                        f"covered by the existing index {covered}"
-                        f"({', '.join(_columns_of(existing, covered))}). "
-                        f"Creating it again costs write throughput and buys "
-                        f"nothing. Stop here and measure something else."
+                    return IndexBenefitResult(
+                        table=name, columns=wanted, index_name=None,
+                        covered_by=covered,
+                        covered_by_columns=_columns_of(existing, covered),
+                        swept=swept,
                     )
                 _check_columns_exist(cursor, self.target.database, name, wanted)
 
@@ -494,6 +690,8 @@ class DbToolbox:
                 size_bytes: int | None = None
                 after: PlanReading | None = None
                 timed_out = False
+                without_samples: list[float] = []
+                with_samples: list[float] = []
                 try:
                     started = time.perf_counter()
                     timed_out = self._create_index(conn, cursor, index_name,
@@ -502,26 +700,29 @@ class DbToolbox:
                     if not timed_out:
                         after = self._read_plan(cursor, statement, params)
                         size_bytes = self._index_size(cursor, name, index_name)
+                        if benchmark_hint_position is not None and benchmark_rounds > 0:
+                            without_sql = require_select(
+                                statement[:benchmark_hint_position]
+                                + f" IGNORE INDEX (`{index_name}`)"
+                                + statement[benchmark_hint_position:],
+                                what="index_benefit (benchmark without-index variant)",
+                            )
+                            without_samples, with_samples = self._interleave(
+                                cursor, without_sql, statement,
+                                bind_params(params), benchmark_rounds,
+                            )
                 finally:
                     # The one line this whole tool is organised around.
                     dropped = self._drop_index(cursor, name, index_name)
             finally:
                 cursor.close()
 
-        if timed_out:
-            raise ToolError(
-                f"creating {index_name} on {name}({', '.join(wanted)}) "
-                f"exceeded the {self.index_timeout_s:.0f}s ceiling and was "
-                f"killed. The index was dropped"
-                f"{'' if dropped else ' — VERIFY MANUALLY, the drop also failed'}.",
-                suggestion="Measure a narrower index, or accept that an index "
-                           "this expensive to build is itself a cost.",
-            )
-        assert after is not None
-        return _render_benefit(
+        return IndexBenefitResult(
             table=name, columns=wanted, index_name=index_name,
             before=before, after=after, created_ms=created_ms,
             size_bytes=size_bytes, dropped=dropped, swept=swept,
+            timed_out=timed_out, without_index_ms_samples=without_samples,
+            with_index_ms_samples=with_samples,
         )
 
     def _create_index(self, conn: Any, cursor: Any, index_name: str,
